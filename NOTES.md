@@ -4,7 +4,7 @@ Every finding, measurement and decision, by date. Newest at the bottom.
 
 ## Pinned versions
 
-- Bend **2.0.37** (`bend version`), Lean **4.34.0** for `--verdict`.
+- Bend **2.0.38** (`bend version`), Lean **4.34.0** for `--verdict`.
 - `bend-ml-tensor-array@0.1.14.0`, `bend-ml-nat-lemmas@0.1.1.0` (BendHub); outside the proofs `bend-ml-tensor-fork@0.1.2.0`
   (`fast.bend`), `bend-ml-tensor-gpu@0.1.2.1` (`gpu.bend`) and `bend-ml-binary-read@0.1.0.0` (`load.bend`). Updated 2026-10-19.
 - Python 3.14.7, torch 2.14.1+cpu, numpy 2.5.4 (`reference/requirements.txt`).

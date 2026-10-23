@@ -34,7 +34,7 @@ A pull request should pass `make check`. If it touches `torch/`, `LAWS.bend` or 
 
 ## Rules for code
 
-- **Bend stays pinned to 2.0.37.** A version bump is its own change, with an entry in `NOTES.md`.
+- **Bend stays pinned to 2.0.38.** A version bump is its own change, with an entry in `NOTES.md`.
 - **Every proof is real.** No `@unsafe`, no `?TODO`, no axioms. A law that cannot be proved yet goes into an issue, not
   into `LAWS.bend`. The exceptions are three files outside the laws, each with its own package below: `torch/fast.bend`
   and `torch/gpu.bend` (Base's `@unsafe` `Array.fork`, inside bend-ml's packages) and `torch/load.bend` (foreign C and
