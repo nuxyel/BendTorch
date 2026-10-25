@@ -809,6 +809,12 @@ def seq_step(~P1: Type, ~P2: Type, ~X: Type, ~Y: Type, ~Z: Type, ~S1: Type, ~S2:
   seq_step2(~P1, ~P2, ~X, ~Y, ~Z, ~S1, ~S2, ~la, ~lb, op, p, g, OptState.split(P1, P2, st))
 
 # dump and load for a pair of layers: the first layer's numbers, then the second's
+# a pair's zeros, the two halves in a parallel let: a model's gradient and optimizer state are many arrays, and making
+# them one after another left the training state's zeroing (page faults, mostly) on one thread
+def pair_zeros(~P1: Type, ~X1: Type, ~Y1: Type, ~S1: Type, ~P2: Type, ~X2: Type, ~Y2: Type, ~S2: Type, ~la: Layer<P1, X1, Y1, S1>, ~lb: Layer<P2, X2, Y2, S2>) -> Two<P1, P2>:
+  a b = Layer.zeros(P1, X1, Y1, S1, la) Layer.zeros(P2, X2, Y2, S2, lb)
+  Two{a, b}
+
 def pair_dump(~P1: Type, ~X1: Type, ~Y1: Type, ~S1: Type, ~P2: Type, ~X2: Type, ~Y2: Type, ~S2: Type, ~la: Layer<P1, X1, Y1, S1>, ~lb: Layer<P2, X2, Y2, S2>, p: Two<P1, P2>) -> PL<Two<P1, P2>>:
   match p:
     case Two{p1, p2}:
@@ -835,7 +841,7 @@ def pair_store(~P1: Type, ~X1: Type, ~Y1: Type, ~S1: Type, ~P2: Type, ~X2: Type,
       pair_store2(~P2, ~X2, ~Y2, ~S2, ~lb, P1, p2, Layer.store(P1, X1, Y1, S1, la, p1, xs, off))
 
 def Seq(~P1: Type, ~P2: Type, ~X: Type, ~Y: Type, ~Z: Type, ~S1: Type, ~S2: Type, ~la: Layer<P1, X, Y, S1>, ~lb: Layer<P2, Y, Z, S2>) -> Layer<Two<P1, P2>, X, Z, Two<S1, S2>>:
-  Layer{p => x => seq_fwd(~P1, ~P2, ~X, ~Y, ~Z, ~S1, ~S2, ~la, ~lb, p, x), p => s => dz => g => seq_bwd(~P1, ~P2, ~X, ~Y, ~Z, ~S1, ~S2, ~la, ~lb, p, s, dz, g), op => p => g => st => seq_step(~P1, ~P2, ~X, ~Y, ~Z, ~S1, ~S2, ~la, ~lb, op, p, g, st), u => Two{Layer.zeros(P1, X, Y, S1, la), Layer.zeros(P2, Y, Z, S2, lb)}, p => pair_dump(~P1, ~X, ~Y, ~S1, ~P2, ~Y, ~Z, ~S2, ~la, ~lb, p), p => xs => off => pair_load(~P1, ~X, ~Y, ~S1, ~P2, ~Y, ~Z, ~S2, ~la, ~lb, p, xs, off), p => xs => off => pair_store(~P1, ~X, ~Y, ~S1, ~P2, ~Y, ~Z, ~S2, ~la, ~lb, p, xs, off), u => (Layer.count(P1, X, Y, S1, la) + Layer.count(P2, Y, Z, S2, lb) : U32)}
+  Layer{p => x => seq_fwd(~P1, ~P2, ~X, ~Y, ~Z, ~S1, ~S2, ~la, ~lb, p, x), p => s => dz => g => seq_bwd(~P1, ~P2, ~X, ~Y, ~Z, ~S1, ~S2, ~la, ~lb, p, s, dz, g), op => p => g => st => seq_step(~P1, ~P2, ~X, ~Y, ~Z, ~S1, ~S2, ~la, ~lb, op, p, g, st), u => pair_zeros(~P1, ~X, ~Y, ~S1, ~P2, ~Y, ~Z, ~S2, ~la, ~lb), p => pair_dump(~P1, ~X, ~Y, ~S1, ~P2, ~Y, ~Z, ~S2, ~la, ~lb, p), p => xs => off => pair_load(~P1, ~X, ~Y, ~S1, ~P2, ~Y, ~Z, ~S2, ~la, ~lb, p, xs, off), p => xs => off => pair_store(~P1, ~X, ~Y, ~S1, ~P2, ~Y, ~Z, ~S2, ~la, ~lb, p, xs, off), u => (Layer.count(P1, X, Y, S1, la) + Layer.count(P2, Y, Z, S2, lb) : U32)}
 
 # Owned layer composition for dimensions read at run time. Each child record is opened once; each closure goes to
 # exactly one corresponding closure of the composite layer. The template-based Seq above keeps its existing laws.
@@ -1994,7 +2000,7 @@ def fork_fwd(~P1: Type, ~P2: Type, ~X: Type, ~Y1: Type, ~Y2: Type, ~S1: Type, ~S
       fork_f2(~P1, ~P2, ~X, ~Y1, ~Y2, ~S1, ~S2, ~la, ~lb, p1, p2, dup(x))
 
 def Fork(~P1: Type, ~P2: Type, ~X: Type, ~Y1: Type, ~Y2: Type, ~S1: Type, ~S2: Type, ~dup: X -> Two<X, X>, ~add: X -> X -> X, ~la: Layer<P1, X, Y1, S1>, ~lb: Layer<P2, X, Y2, S2>) -> Layer<Two<P1, P2>, X, Two<Y1, Y2>, Two<S1, S2>>:
-  Layer{p => x => fork_fwd(~P1, ~P2, ~X, ~Y1, ~Y2, ~S1, ~S2, ~dup, ~la, ~lb, p, x), p => s => dy => g => fork_bwd(~P1, ~P2, ~X, ~Y1, ~Y2, ~S1, ~S2, ~add, ~la, ~lb, p, s, dy, g), op => p => g => st => pair_step(~P1, ~X, ~Y1, ~S1, ~P2, ~X, ~Y2, ~S2, ~la, ~lb, op, p, g, st), u => Two{Layer.zeros(P1, X, Y1, S1, la), Layer.zeros(P2, X, Y2, S2, lb)}, p => pair_dump(~P1, ~X, ~Y1, ~S1, ~P2, ~X, ~Y2, ~S2, ~la, ~lb, p), p => xs => off => pair_load(~P1, ~X, ~Y1, ~S1, ~P2, ~X, ~Y2, ~S2, ~la, ~lb, p, xs, off), p => xs => off => pair_store(~P1, ~X, ~Y1, ~S1, ~P2, ~X, ~Y2, ~S2, ~la, ~lb, p, xs, off), u => (Layer.count(P1, X, Y1, S1, la) + Layer.count(P2, X, Y2, S2, lb) : U32)}
+  Layer{p => x => fork_fwd(~P1, ~P2, ~X, ~Y1, ~Y2, ~S1, ~S2, ~dup, ~la, ~lb, p, x), p => s => dy => g => fork_bwd(~P1, ~P2, ~X, ~Y1, ~Y2, ~S1, ~S2, ~add, ~la, ~lb, p, s, dy, g), op => p => g => st => pair_step(~P1, ~X, ~Y1, ~S1, ~P2, ~X, ~Y2, ~S2, ~la, ~lb, op, p, g, st), u => pair_zeros(~P1, ~X, ~Y1, ~S1, ~P2, ~X, ~Y2, ~S2, ~la, ~lb), p => pair_dump(~P1, ~X, ~Y1, ~S1, ~P2, ~X, ~Y2, ~S2, ~la, ~lb, p), p => xs => off => pair_load(~P1, ~X, ~Y1, ~S1, ~P2, ~X, ~Y2, ~S2, ~la, ~lb, p, xs, off), p => xs => off => pair_store(~P1, ~X, ~Y1, ~S1, ~P2, ~X, ~Y2, ~S2, ~la, ~lb, p, xs, off), u => (Layer.count(P1, X, Y1, S1, la) + Layer.count(P2, X, Y2, S2, lb) : U32)}
 
 # ---- Both: la on the first of a pair, lb on the second ----
 
@@ -2019,7 +2025,7 @@ def both_fwd(~P1: Type, ~P2: Type, ~X1: Type, ~X2: Type, ~Y1: Type, ~Y2: Type, ~
       pair_f3(~P2, ~X2, ~Y2, ~S2, ~lb, P1, Y1, S1, p2, x2, Layer.fwd(P1, X1, Y1, S1, la, p1, x1))
 
 def Both(~P1: Type, ~P2: Type, ~X1: Type, ~X2: Type, ~Y1: Type, ~Y2: Type, ~S1: Type, ~S2: Type, ~la: Layer<P1, X1, Y1, S1>, ~lb: Layer<P2, X2, Y2, S2>) -> Layer<Two<P1, P2>, Two<X1, X2>, Two<Y1, Y2>, Two<S1, S2>>:
-  Layer{p => x => both_fwd(~P1, ~P2, ~X1, ~X2, ~Y1, ~Y2, ~S1, ~S2, ~la, ~lb, p, x), p => s => dy => g => both_bwd(~P1, ~P2, ~X1, ~X2, ~Y1, ~Y2, ~S1, ~S2, ~la, ~lb, p, s, dy, g), op => p => g => st => pair_step(~P1, ~X1, ~Y1, ~S1, ~P2, ~X2, ~Y2, ~S2, ~la, ~lb, op, p, g, st), u => Two{Layer.zeros(P1, X1, Y1, S1, la), Layer.zeros(P2, X2, Y2, S2, lb)}, p => pair_dump(~P1, ~X1, ~Y1, ~S1, ~P2, ~X2, ~Y2, ~S2, ~la, ~lb, p), p => xs => off => pair_load(~P1, ~X1, ~Y1, ~S1, ~P2, ~X2, ~Y2, ~S2, ~la, ~lb, p, xs, off), p => xs => off => pair_store(~P1, ~X1, ~Y1, ~S1, ~P2, ~X2, ~Y2, ~S2, ~la, ~lb, p, xs, off), u => (Layer.count(P1, X1, Y1, S1, la) + Layer.count(P2, X2, Y2, S2, lb) : U32)}
+  Layer{p => x => both_fwd(~P1, ~P2, ~X1, ~X2, ~Y1, ~Y2, ~S1, ~S2, ~la, ~lb, p, x), p => s => dy => g => both_bwd(~P1, ~P2, ~X1, ~X2, ~Y1, ~Y2, ~S1, ~S2, ~la, ~lb, p, s, dy, g), op => p => g => st => pair_step(~P1, ~X1, ~Y1, ~S1, ~P2, ~X2, ~Y2, ~S2, ~la, ~lb, op, p, g, st), u => pair_zeros(~P1, ~X1, ~Y1, ~S1, ~P2, ~X2, ~Y2, ~S2, ~la, ~lb), p => pair_dump(~P1, ~X1, ~Y1, ~S1, ~P2, ~X2, ~Y2, ~S2, ~la, ~lb, p), p => xs => off => pair_load(~P1, ~X1, ~Y1, ~S1, ~P2, ~X2, ~Y2, ~S2, ~la, ~lb, p, xs, off), p => xs => off => pair_store(~P1, ~X1, ~Y1, ~S1, ~P2, ~X2, ~Y2, ~S2, ~la, ~lb, p, xs, off), u => (Layer.count(P1, X1, Y1, S1, la) + Layer.count(P2, X2, Y2, S2, lb) : U32)}
 
 # ---- Tie: first, mid, last, where first and last share one parameter (tied embeddings: the table is also the output
 # layer's weight). Forward runs the three in order with the same P for first and last; backward runs last, mid, first,
@@ -2071,7 +2077,7 @@ def tie_bwd(~P: Type, ~Q: Type, ~X: Type, ~Y: Type, ~Z: Type, ~W: Type, ~S1: Typ
 # The shared parameter steps once (through first's step; last's must be the same kind of layer for P, e.g. Embedding
 # and LinearNB over the same v x d matrix), the middle with its own.
 def Tie(~P: Type, ~Q: Type, ~X: Type, ~Y: Type, ~Z: Type, ~W: Type, ~S1: Type, ~S2: Type, ~S3: Type, ~la: Layer<P, X, Y, S1>, ~lb: Layer<Q, Y, Z, S2>, ~lc: Layer<P, Z, W, S3>) -> Layer<Two<P, Q>, X, W, Three<S1, S2, S3>>:
-  Layer{pq => x => tie_fwd(~P, ~Q, ~X, ~Y, ~Z, ~W, ~S1, ~S2, ~S3, ~la, ~lb, ~lc, pq, x), pq => s => dw => g => tie_bwd(~P, ~Q, ~X, ~Y, ~Z, ~W, ~S1, ~S2, ~S3, ~la, ~lb, ~lc, pq, s, dw, g), op => p => g => st => pair_step(~P, ~X, ~Y, ~S1, ~Q, ~Y, ~Z, ~S2, ~la, ~lb, op, p, g, st), u => Two{Layer.zeros(P, X, Y, S1, la), Layer.zeros(Q, Y, Z, S2, lb)}, p => pair_dump(~P, ~X, ~Y, ~S1, ~Q, ~Y, ~Z, ~S2, ~la, ~lb, p), p => xs => off => pair_load(~P, ~X, ~Y, ~S1, ~Q, ~Y, ~Z, ~S2, ~la, ~lb, p, xs, off), p => xs => off => pair_store(~P, ~X, ~Y, ~S1, ~Q, ~Y, ~Z, ~S2, ~la, ~lb, p, xs, off), u => (Layer.count(P, X, Y, S1, la) + Layer.count(Q, Y, Z, S2, lb) : U32)}
+  Layer{pq => x => tie_fwd(~P, ~Q, ~X, ~Y, ~Z, ~W, ~S1, ~S2, ~S3, ~la, ~lb, ~lc, pq, x), pq => s => dw => g => tie_bwd(~P, ~Q, ~X, ~Y, ~Z, ~W, ~S1, ~S2, ~S3, ~la, ~lb, ~lc, pq, s, dw, g), op => p => g => st => pair_step(~P, ~X, ~Y, ~S1, ~Q, ~Y, ~Z, ~S2, ~la, ~lb, op, p, g, st), u => pair_zeros(~P, ~X, ~Y, ~S1, ~Q, ~Y, ~Z, ~S2, ~la, ~lb), p => pair_dump(~P, ~X, ~Y, ~S1, ~Q, ~Y, ~Z, ~S2, ~la, ~lb, p), p => xs => off => pair_load(~P, ~X, ~Y, ~S1, ~Q, ~Y, ~Z, ~S2, ~la, ~lb, p, xs, off), p => xs => off => pair_store(~P, ~X, ~Y, ~S1, ~Q, ~Y, ~Z, ~S2, ~la, ~lb, p, xs, off), u => (Layer.count(P, X, Y, S1, la) + Layer.count(Q, Y, Z, S2, lb) : U32)}
 
 # ---- Add2 and Mul2: element-wise sum and product of a pair of matrices ----
 
@@ -2353,6 +2359,22 @@ def pmul_copy(left: Nat, +idx: U32, +c: U32, +ow: U32, +oc: U32, o: Array<F32>, 
 def cols_in(+t: Nat, +c: Nat, +ow: U32, +oc: U32, src: Array<F32>, dst: Array<F32>) -> Array<F32>:
   a2_b(pmul_copy(Nat.sub(Nat.mul(t, c), 1n), 0, U32.from_nat(c), ow, oc, dst, Array.get(F32, src, 0)))
 
+# t x c numbers of src read from rows r0.. and columns c0.. (src ow wide), written in order into d; idx counts d's cells
+def pick_copy(left: Nat, +idx: U32, +c: U32, +ow: U32, +oc: U32, d: Array<F32>, r: Array<F32> & F32) -> A2:
+  match left r:
+    case 0n Tuple{s, +x}:
+      A2{s, Array.set(F32, d, idx, x)}
+    case 1n+n Tuple{s, +x}:
+      pick_copy(n, (idx + 1 : U32), c, ow, oc, Array.set(F32, d, idx, x), Array.get(F32, s, ((U32.div((idx + 1 : U32), c) * ow : U32) + (oc + U32.mod((idx + 1 : U32), c) : U32) : U32)))
+
+# the block of rows r0.. (t of them) and columns c0.. (c of them) of src (ow wide) into a new t x c array, src handed back
+def block_out(+t: Nat, +c: Nat, +ow: Nat, +r0: Nat, +c0: Nat, src: Array<F32>) -> A2:
+  pick_copy(Nat.sub(Nat.mul(t, c), 1n), 0, U32.from_nat(c), U32.from_nat(ow), U32.from_nat(Nat.add(Nat.mul(r0, ow), c0)), zeros_a(Nat.mul(t, c)), Array.get(F32, src, U32.from_nat(Nat.add(Nat.mul(r0, ow), c0))))
+
+# a t x c block into dst's rows r0.. and columns c0.. (dst ow wide); the block is dropped
+def block_in(+t: Nat, +c: Nat, +ow: Nat, +r0: Nat, +c0: Nat, blk: Array<F32>, dst: Array<F32>) -> Array<F32>:
+  cols_in(t, c, U32.from_nat(ow), U32.from_nat(Nat.add(Nat.mul(r0, ow), c0)), blk, dst)
+
 # ---- the forward pass of one sequence: every head's O = P·V into its columns of o ----
 
 type FS is Type:
@@ -2557,33 +2579,43 @@ def cut(-A: Type, n: Nat, xs: List<&1, A>, acc: List<&1, A>) -> Halves<A>:
 type FL is Type:
   FL{q: Array<F32>, k: Array<F32>, v: Array<F32>, xs: List<&1, FS>}
 
-def fl3(+t: Nat, +w: Nat, qq: Array<F32>, kk: Array<F32>, xs: List<&1, FS>, q: Array<F32>, k: Array<F32>, r: A2) -> FL:
+# a unit of the parallel work is one sequence's key/value group j: its g query heads' columns of Q (t x g·hd), head j's
+# columns of K and V (t x hd), and an output of its own (t x g·hd). Inside a unit the heads keep their order and their
+# arithmetic (head_cols with j = 0: the law kv_cols), so the units give the bits of the whole sequence computed at once.
+def fu3(+t: Nat, +gw: Nat, qq: Array<F32>, kk: Array<F32>, xs: List<&1, FS>, q: Array<F32>, k: Array<F32>, r: A2) -> FL:
   match r:
     case A2{vv, v}:
-      FL{qq, kk, vv, FS{q, k, v, zeros_a(Nat.mul(t, w))} <> xs}
+      FL{qq, kk, vv, FS{q, k, v, zeros_a(Nat.mul(t, gw))} <> xs}
 
-def fl2(+t: Nat, +w: Nat, +kvw: Nat, +r0: Nat, qq: Array<F32>, vv: Array<F32>, xs: List<&1, FS>, q: Array<F32>, r: A2) -> FL:
+def fu2(+t: Nat, +hd: Nat, +kvw: Nat, +r0: Nat, +kc: Nat, +gw: Nat, qq: Array<F32>, vv: Array<F32>, xs: List<&1, FS>, q: Array<F32>, r: A2) -> FL:
   match r:
     case A2{kk, k}:
-      fl3(t, w, qq, kk, xs, q, k, rows_out(t, kvw, r0, vv))
+      fu3(t, gw, qq, kk, xs, q, k, block_out(t, hd, kvw, r0, kc, vv))
 
-def fl1(+t: Nat, +w: Nat, +kvw: Nat, +r0: Nat, kk: Array<F32>, vv: Array<F32>, xs: List<&1, FS>, r: A2) -> FL:
+def fu1(+t: Nat, +hd: Nat, +kvw: Nat, +r0: Nat, +kc: Nat, +gw: Nat, kk: Array<F32>, vv: Array<F32>, xs: List<&1, FS>, r: A2) -> FL:
   match r:
     case A2{qq, q}:
-      fl2(t, w, kvw, r0, qq, vv, xs, q, rows_out(t, kvw, r0, kk))
+      fu2(t, hd, kvw, r0, kc, gw, qq, vv, xs, q, block_out(t, hd, kvw, r0, kc, kk))
 
-def fslice(+t: Nat, +w: Nat, +kvw: Nat, +bi: Nat, s: FL) -> FL:
+def funit(+t: Nat, +w: Nat, +kvw: Nat, +g: Nat, +hd: Nat, +bi: Nat, +j: Nat, s: FL) -> FL:
   match s:
     case FL{qq, kk, vv, xs}:
-      fl1(t, w, kvw, Nat.mul(bi, t), kk, vv, xs, rows_out(t, w, Nat.mul(bi, t), qq))
+      fu1(t, hd, kvw, Nat.mul(bi, t), Nat.mul(j, hd), Nat.mul(g, hd), kk, vv, xs, block_out(t, Nat.mul(g, hd), w, Nat.mul(bi, t), Nat.mul(Nat.mul(j, g), hd), qq))
 
-# every sequence's rows of Q, K and V, newest first
-def fslices(left: Nat, +bi: Nat, +t: Nat, +w: Nat, +kvw: Nat, s: FL) -> FL:
+def fgroups(left: Nat, +j: Nat, +bi: Nat, +t: Nat, +w: Nat, +kvw: Nat, +g: Nat, +hd: Nat, s: FL) -> FL:
   match left:
     case 0n:
       s
     case 1n+n:
-      fslices(n, 1n+bi, t, w, kvw, fslice(t, w, kvw, bi, s))
+      fgroups(n, 1n+j, bi, t, w, kvw, g, hd, funit(t, w, kvw, g, hd, bi, j, s))
+
+# every sequence's units, sequence by sequence and group by group, newest first
+def fslices(left: Nat, +bi: Nat, +t: Nat, +w: Nat, +kvw: Nat, +kv: Nat, +g: Nat, +hd: Nat, s: FL) -> FL:
+  match left:
+    case 0n:
+      s
+    case 1n+n:
+      fslices(n, 1n+bi, t, w, kvw, kv, g, hd, fgroups(kv, 0n, bi, t, w, kvw, g, hd, s))
 
 def fleaf(xs: List<&1, FS>, +h: Nat, +dm: Dm, acc: List<&1, Array<F32>>) -> List<&1, Array<F32>>:
   match xs:
@@ -2602,48 +2634,68 @@ def fpar(d: Nat, gs: Halves<FS>, +n: Nat, +h: Nat, +dm: Dm) -> List<&1, Array<F3
       a b = fpar(e, cut(FS, TA.half(TA.half(n)), l, Nil{}), TA.half(n), h, dm) fpar(e, cut(FS, TA.half(Nat.sub(n, TA.half(n))), r, Nil{}), Nat.sub(n, TA.half(n)), h, dm)
       List.append(&1, Array<F32>, a, b)
 
-# the blocks (t rows, c wide each) into o from row r0, in order
-def blocks_in(xs: List<&1, Array<F32>>, +t: Nat, +c: Nat, +r0: Nat, o: Array<F32>) -> Array<F32>:
-  match xs:
-    case Nil{}:
+type UO is Type:
+  UO{xs: List<&1, Array<F32>>, o: Array<F32>}
+
+# one sequence's units (t x gw each) into o's rows r0.. at columns 0, gw, 2·gw, ...
+def ub_row(left: Nat, +j: Nat, +t: Nat, +gw: Nat, +w: Nat, +r0: Nat, r: UO) -> UO:
+  match left r:
+    case 1n+n UO{Con{x, rest}, o}:
+      ub_row(n, 1n+j, t, gw, w, r0, UO{rest, block_in(t, gw, w, r0, Nat.mul(j, gw), x, o)})
+    case _ r:
+      r
+
+# the units' outputs into o (n x w), in the order fslices made them
+def blocks_in(left: Nat, +bi: Nat, +t: Nat, +gw: Nat, +w: Nat, +kv: Nat, r: UO) -> Array<F32>:
+  match left r:
+    case 0n UO{xs, o}:
       o
-    case Con{x, rest}:
-      blocks_in(rest, t, c, Nat.add(r0, t), rows_in(t, c, r0, x, o))
+    case 1n+n r:
+      blocks_in(n, 1n+bi, t, gw, w, kv, ub_row(kv, 0n, t, gw, w, Nat.mul(bi, t), r))
 
 type BL is Type:
   BL{q: Array<F32>, k: Array<F32>, v: Array<F32>, d: Array<F32>, xs: List<&1, BG>}
 
-def bl4(+t: Nat, +w: Nat, +kvw: Nat, qq: Array<F32>, kk: Array<F32>, vv: Array<F32>, xs: List<&1, BG>, q: Array<F32>, k: Array<F32>, v: Array<F32>, r: A2) -> BL:
+# the backward pass's unit: one sequence's group j, as fslices' (Q, K, V, and dO's columns of the g heads), with
+# dQ, dK and dV of its own
+def bu4(+t: Nat, +gw: Nat, +hd: Nat, qq: Array<F32>, kk: Array<F32>, vv: Array<F32>, xs: List<&1, BG>, q: Array<F32>, k: Array<F32>, v: Array<F32>, r: A2) -> BL:
   match r:
     case A2{dd, d}:
-      BL{qq, kk, vv, dd, BG{q, k, v, d, zeros_a(Nat.mul(t, w)), zeros_a(Nat.mul(t, kvw)), zeros_a(Nat.mul(t, kvw))} <> xs}
+      BL{qq, kk, vv, dd, BG{q, k, v, d, zeros_a(Nat.mul(t, gw)), zeros_a(Nat.mul(t, hd)), zeros_a(Nat.mul(t, hd))} <> xs}
 
-def bl3(+t: Nat, +w: Nat, +kvw: Nat, +r0: Nat, qq: Array<F32>, kk: Array<F32>, dd: Array<F32>, xs: List<&1, BG>, q: Array<F32>, k: Array<F32>, r: A2) -> BL:
+def bu3(+t: Nat, +w: Nat, +hd: Nat, +r0: Nat, +qc: Nat, +gw: Nat, qq: Array<F32>, kk: Array<F32>, dd: Array<F32>, xs: List<&1, BG>, q: Array<F32>, k: Array<F32>, r: A2) -> BL:
   match r:
     case A2{vv, v}:
-      bl4(t, w, kvw, qq, kk, vv, xs, q, k, v, rows_out(t, w, r0, dd))
+      bu4(t, gw, hd, qq, kk, vv, xs, q, k, v, block_out(t, gw, w, r0, qc, dd))
 
-def bl2(+t: Nat, +w: Nat, +kvw: Nat, +r0: Nat, qq: Array<F32>, vv: Array<F32>, dd: Array<F32>, xs: List<&1, BG>, q: Array<F32>, r: A2) -> BL:
+def bu2(+t: Nat, +w: Nat, +hd: Nat, +kvw: Nat, +r0: Nat, +qc: Nat, +kc: Nat, +gw: Nat, qq: Array<F32>, vv: Array<F32>, dd: Array<F32>, xs: List<&1, BG>, q: Array<F32>, r: A2) -> BL:
   match r:
     case A2{kk, k}:
-      bl3(t, w, kvw, r0, qq, kk, dd, xs, q, k, rows_out(t, kvw, r0, vv))
+      bu3(t, w, hd, r0, qc, gw, qq, kk, dd, xs, q, k, block_out(t, hd, kvw, r0, kc, vv))
 
-def bl1(+t: Nat, +w: Nat, +kvw: Nat, +r0: Nat, kk: Array<F32>, vv: Array<F32>, dd: Array<F32>, xs: List<&1, BG>, r: A2) -> BL:
+def bu1(+t: Nat, +w: Nat, +hd: Nat, +kvw: Nat, +r0: Nat, +qc: Nat, +kc: Nat, +gw: Nat, kk: Array<F32>, vv: Array<F32>, dd: Array<F32>, xs: List<&1, BG>, r: A2) -> BL:
   match r:
     case A2{qq, q}:
-      bl2(t, w, kvw, r0, qq, vv, dd, xs, q, rows_out(t, kvw, r0, kk))
+      bu2(t, w, hd, kvw, r0, qc, kc, gw, qq, vv, dd, xs, q, block_out(t, hd, kvw, r0, kc, kk))
 
-def bslice(+t: Nat, +w: Nat, +kvw: Nat, +bi: Nat, s: BL) -> BL:
+def bunit(+t: Nat, +w: Nat, +kvw: Nat, +g: Nat, +hd: Nat, +bi: Nat, +j: Nat, s: BL) -> BL:
   match s:
     case BL{qq, kk, vv, dd, xs}:
-      bl1(t, w, kvw, Nat.mul(bi, t), kk, vv, dd, xs, rows_out(t, w, Nat.mul(bi, t), qq))
+      bu1(t, w, hd, kvw, Nat.mul(bi, t), Nat.mul(Nat.mul(j, g), hd), Nat.mul(j, hd), Nat.mul(g, hd), kk, vv, dd, xs, block_out(t, Nat.mul(g, hd), w, Nat.mul(bi, t), Nat.mul(Nat.mul(j, g), hd), qq))
 
-def bslices(left: Nat, +bi: Nat, +t: Nat, +w: Nat, +kvw: Nat, s: BL) -> BL:
+def bgroups_u(left: Nat, +j: Nat, +bi: Nat, +t: Nat, +w: Nat, +kvw: Nat, +g: Nat, +hd: Nat, s: BL) -> BL:
   match left:
     case 0n:
       s
     case 1n+n:
-      bslices(n, 1n+bi, t, w, kvw, bslice(t, w, kvw, bi, s))
+      bgroups_u(n, 1n+j, bi, t, w, kvw, g, hd, bunit(t, w, kvw, g, hd, bi, j, s))
+
+def bslices(left: Nat, +bi: Nat, +t: Nat, +w: Nat, +kvw: Nat, +kv: Nat, +g: Nat, +hd: Nat, s: BL) -> BL:
+  match left:
+    case 0n:
+      s
+    case 1n+n:
+      bslices(n, 1n+bi, t, w, kvw, kv, g, hd, bgroups_u(kv, 0n, bi, t, w, kvw, g, hd, s))
 
 type DB is Type:
   DB{dq: Array<F32>, dk: Array<F32>, dv: Array<F32>}
@@ -2672,29 +2724,42 @@ def bpar(d: Nat, gs: Halves<BG>, +n: Nat, +kv: Nat, +dm: Dm) -> List<&1, DB>:
 type D3 is Type:
   D3{dq: Array<F32>, dk: Array<F32>, dv: Array<F32>}
 
-def dblocks_in(xs: List<&1, DB>, +t: Nat, +w: Nat, +kvw: Nat, +r0: Nat, o: D3) -> D3:
-  match xs o:
-    case Nil{} o:
+type UD is Type:
+  UD{xs: List<&1, DB>, o: D3}
+
+# one sequence's units into rows r0..: dQ at columns j·gw (w wide), dK and dV at j·hd (kvw wide)
+def ud_row(left: Nat, +j: Nat, +t: Nat, +gw: Nat, +hd: Nat, +w: Nat, +kvw: Nat, +r0: Nat, r: UD) -> UD:
+  match left r:
+    case 1n+n UD{Con{DB{bq, bk, bv}, rest}, D3{dq, dk, dv}}:
+      ud_row(n, 1n+j, t, gw, hd, w, kvw, r0, UD{rest, D3{block_in(t, gw, w, r0, Nat.mul(j, gw), bq, dq), block_in(t, hd, kvw, r0, Nat.mul(j, hd), bk, dk), block_in(t, hd, kvw, r0, Nat.mul(j, hd), bv, dv)}})
+    case _ r:
+      r
+
+def dblocks_in(left: Nat, +bi: Nat, +t: Nat, +gw: Nat, +hd: Nat, +w: Nat, +kvw: Nat, +kv: Nat, r: UD) -> D3:
+  match left r:
+    case 0n UD{xs, o}:
       o
-    case Con{DB{bq, bk, bv}, rest} D3{dq, dk, dv}:
-      dblocks_in(rest, t, w, kvw, Nat.add(r0, t), D3{rows_in(t, w, r0, bq, dq), rows_in(t, kvw, r0, bk, dk), rows_in(t, kvw, r0, bv, dv)})
+    case 1n+n r:
+      dblocks_in(n, 1n+bi, t, gw, hd, w, kvw, kv, ud_row(kv, 0n, t, gw, hd, w, kvw, Nat.mul(bi, t), r))
 
 # ---- the layer ----
 
 type AttnDims is Data:
   AttnDims{b: Nat, t: Nat, kv: Nat, g: Nat, hd: Nat, sc: F32}
 
-def dm_of(+w: Nat, +kvw: Nat, +dm: AttnDims) -> Dm:
+# a unit's dimensions: g query heads (g·hd columns) over one key/value head (hd columns)
+def dm_of(+dm: AttnDims) -> Dm:
   match dm:
     case AttnDims{+b, +t, +kv, +g, +hd, +sc}:
-      Dm{t, g, hd, w, kvw, sc}
+      Dm{t, g, hd, Nat.mul(g, hd), hd, sc}
 
-# whether the sequences run in the tree: from 8 sequences on, or from 2 when each sequence is big. With the tiny Llama's
-# sequences (t = 16, w = 32) the tree cost more than it gave at 2 sequences (0.48 against 0.37 ms on 16 threads) and
-# gained from 8 on (1.32 against 1.52 ms; 1.5x at 32, 1.7x at 128); with SmolLM2's (t = 128, w = 576, about half a
-# second of a step each) the two sequences one after another kept a single thread busy for a third of the step (NOTES,
-# 2026-10-21). t w counts in U32 (a Nat comparison walks its numbers one unit at a time). The answer never changes the
-# result: the laws attn_par_fwd and attn_par_bwd show the tree gives the sequences in order, as one after another.
+# whether the units (a sequence's key/value group each, fslices) run in the tree: from 8 units on, or from 2 when each is
+# big. With the tiny Llama's sequences (t = 16, w = 32) the tree cost more than it gave at 2 sequences (0.48 against
+# 0.37 ms on 16 threads) and gained from 8 on (1.32 against 1.52 ms; 1.5x at 32, 1.7x at 128); with SmolLM2's (t = 128,
+# w = 576, about half a second of a step each) the two sequences one after another kept a single thread busy for a
+# third of the step (NOTES, 2026-10-21), and its 2 sequences x 3 groups now give 6 units. t w counts in U32 (a Nat
+# comparison walks its numbers one unit at a time). The answer never changes the result: the laws attn_par_fwd and
+# attn_par_bwd show the tree gives the units in order, as one after another.
 def attn_tree(+b: Nat, +t: Nat, +w: Nat) -> Bool:
   Bool.or(Nat.is_le(8n, b), Bool.and(Nat.is_le(2n, b), U32.is_le(4096, (U32.from_nat(t) * U32.from_nat(w) : U32))))
 
@@ -2712,15 +2777,15 @@ def bgo(big: Bool, +b: Nat, +kv: Nat, +dm: Dm, xs: List<&1, BG>) -> List<&1, DB>
     case False{}:
       bleaf(xs, kv, dm, Nil{})
 
-def af2(-n: Nat, +w: Nat, +b: Nat, +h: Nat, +dm: Dm, s: FL) -> Fwd<Unit, TA.Mat<n, w>, AttnS>:
+def af2(-n: Nat, +w: Nat, +b: Nat, +kv: Nat, +dm: Dm, s: FL) -> Fwd<Unit, TA.Mat<n, w>, AttnS>:
   match dm s:
-    case Dm{+t, +g, +hd, +ww, +kvw, +sc} FL{q, k, v, xs}:
-      Fwd{Unit{}, TA.Mat{blocks_in(fgo(attn_tree(b, t, w), b, h, dm, List.reverse(&1, FS, xs)), t, w, 0n, zeros_a(Nat.mul(Nat.mul(b, t), w)))}, AttnS{q, k, v}}
+    case Dm{+t, +g, +hd, +gw, +kw, +sc} FL{q, k, v, xs}:
+      Fwd{Unit{}, TA.Mat{blocks_in(b, 0n, t, gw, w, kv, UO{fgo(attn_tree(Nat.mul(b, kv), t, gw), Nat.mul(b, kv), g, dm, List.reverse(&1, FS, xs)), zeros_a(Nat.mul(Nat.mul(b, t), w))})}, AttnS{q, k, v}}
 
 def attn_fwd(+n: Nat, +w: Nat, +kvw: Nat, +dm: AttnDims, x: Two<TA.Mat<n, w>, Two<TA.Mat<n, kvw>, TA.Mat<n, kvw>>>) -> Fwd<Unit, TA.Mat<n, w>, AttnS>:
   match dm x:
     case AttnDims{+b, +t, +kv, +g, +hd, +sc} Two{TA.Mat{q}, Two{TA.Mat{k}, TA.Mat{v}}}:
-      af2(n, w, b, Nat.mul(kv, g), dm_of(w, kvw, dm), fslices(b, 0n, t, w, kvw, FL{q, k, v, Nil{}}))
+      af2(n, w, b, kv, dm_of(dm), fslices(b, 0n, t, w, kvw, kv, g, hd, FL{q, k, v, Nil{}}))
 
 def ab3(-n: Nat, -w: Nat, -kvw: Nat, o: D3) -> Bwd<Unit, Two<TA.Mat<n, w>, Two<TA.Mat<n, kvw>, TA.Mat<n, kvw>>>>:
   match o:
@@ -2729,13 +2794,13 @@ def ab3(-n: Nat, -w: Nat, -kvw: Nat, o: D3) -> Bwd<Unit, Two<TA.Mat<n, w>, Two<T
 
 def ab2(+n: Nat, +w: Nat, +kvw: Nat, +b: Nat, +kv: Nat, +dm: Dm, s: BL) -> Bwd<Unit, Two<TA.Mat<n, w>, Two<TA.Mat<n, kvw>, TA.Mat<n, kvw>>>>:
   match dm s:
-    case Dm{+t, +g, +hd, +ww, +kw, +sc} BL{q, k, v, d, xs}:
-      ab3(n, w, kvw, dblocks_in(bgo(attn_tree(b, t, w), b, kv, dm, List.reverse(&1, BG, xs)), t, w, kvw, 0n, D3{zeros_a(Nat.mul(n, w)), zeros_a(Nat.mul(n, kvw)), zeros_a(Nat.mul(n, kvw))}))
+    case Dm{+t, +g, +hd, +gw, +kw, +sc} BL{q, k, v, d, xs}:
+      ab3(n, w, kvw, dblocks_in(b, 0n, t, gw, hd, w, kvw, kv, UD{bgo(attn_tree(Nat.mul(b, kv), t, gw), Nat.mul(b, kv), 1n, dm, List.reverse(&1, BG, xs)), D3{zeros_a(Nat.mul(n, w)), zeros_a(Nat.mul(n, kvw)), zeros_a(Nat.mul(n, kvw))}}))
 
 def attn_bwd(+n: Nat, +w: Nat, +kvw: Nat, +dm: AttnDims, s: AttnS, dy: TA.Mat<n, w>) -> Bwd<Unit, Two<TA.Mat<n, w>, Two<TA.Mat<n, kvw>, TA.Mat<n, kvw>>>>:
   match dm s dy:
     case AttnDims{+b, +t, +kv, +g, +hd, +sc} AttnS{q, k, v} TA.Mat{d}:
-      ab2(n, w, kvw, b, kv, dm_of(w, kvw, dm), bslices(b, 0n, t, w, kvw, BL{q, k, v, d, Nil{}}))
+      ab2(n, w, kvw, b, kv, dm_of(dm), bslices(b, 0n, t, w, kvw, kv, g, hd, BL{q, k, v, d, Nil{}}))
 
 # the core of attention, after the projections and RoPE; the erased arguments are the shape facts it relies on
 def Attention(+n: Nat, +w: Nat, +kvw: Nat, +b: Nat, +t: Nat, +kv: Nat, +g: Nat, +hd: Nat, +sc: F32, -e1: {n == Nat.mul(b, t) : Nat}, -e2: {w == Nat.mul(Nat.mul(kv, g), hd) : Nat}, -e3: {kvw == Nat.mul(kv, hd) : Nat}) -> Layer<Unit, Two<TA.Mat<n, w>, Two<TA.Mat<n, kvw>, TA.Mat<n, kvw>>>, TA.Mat<n, w>, AttnS>:

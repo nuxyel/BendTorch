@@ -142,6 +142,11 @@ after the other. With them in parallel (the same bits, by the laws already prove
 a step takes 4.0 s on 16 threads against PyTorch's 0.93 s (4.3x) and 13.8 s on one thread against 2.43 s (5.7x). On
 the GPU, with the embedding, the cross-entropy and a faster attention now on the device, it takes 7.0 s.
 
+On 2026-10-25 two more serial parts went parallel: attention now splits each sequence into its key/value groups (6
+parallel units at 135M instead of 2), and the training state's arrays are zeroed in a parallel let. Idle machine, 3
+alternated rounds: 3 steps take 10.95 s on 16 threads instead of 12.70 (-14%), and 41.6 s on one thread as before;
+the outputs are the same bits.
+
 SmolLM2-1.7B trains here too, from its real weights, with AdamW's moments packed in BF16 so that the step fits in 32 GB:
 on 2026-10-24, idle machine, 3 alternated rounds, a step takes 42.0 s on 16 threads against 13.3 s for PyTorch with the
 same BF16 moments (3.2x), at a peak of 24.1 GB (PyTorch 23.6 GB), and both losses are within the tolerance of
@@ -162,14 +167,14 @@ against PyTorch's.
 
 ## 05 · Use it
 
-Four packages on BendHub, all at version 1.1.0.0. Import the files you need in your own Bend program:
+Four packages on BendHub, all at version 1.1.1.0. Import the files you need in your own Bend program:
 
 ```python
-import bendtorch@1.1.0.0/main.bend as T          # layers, combinators, losses, optimizers, Train
-import bendtorch@1.1.0.0/tensor.bend as TT       # general tensors: any rank, broadcasting, their gradients
-import bendtorch-fast@1.1.0.0/main.bend as F     # the same layers and bits, in parallel on the CPU
-import bendtorch-gpu@1.1.0.0/main.bend as G      # the layers on one CUDA GPU (all but GELUErf)
-import bendtorch-load@1.1.0.0/main.bend as L     # weights from flat binary and safetensors files, checkpoints
+import bendtorch@1.1.1.0/main.bend as T          # layers, combinators, losses, optimizers, Train
+import bendtorch@1.1.1.0/tensor.bend as TT       # general tensors: any rank, broadcasting, their gradients
+import bendtorch-fast@1.1.1.0/main.bend as F     # the same layers and bits, in parallel on the CPU
+import bendtorch-gpu@1.1.1.0/main.bend as G      # the layers on one CUDA GPU (all but GELUErf)
+import bendtorch-load@1.1.1.0/main.bend as L     # weights from flat binary and safetensors files, checkpoints
 ```
 
 `bendtorch` holds the laws and their proofs. The other three are outside the proofs on purpose: `-fast` and `-gpu` share
