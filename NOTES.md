@@ -1421,3 +1421,105 @@ Six new laws and one rewritten, all by `--verdict`, about the code the demos exe
   On this repository: `fast_test`, `gpu_test` and `gpu_layers_test` refuse arguments (`gpu_layers_test` takes a case
   number and used to run every case on anything else, a bare `--threads 16` included); the probe runs `fast_test`,
   1.00 and 2.6-2.7 cores (it is short and has sequential parts, so its bar is 1.8).
+
+## Bend 2.0.39 (2026-10-24)
+
+- **Pin.** `scripts/setup.sh` (version and both SHA256 sums), the CI step, the README badge, line and setup command,
+  CONTRIBUTING, `torch/README.md`, `docs/design.md`, `docs/limitations.md` (Bend 2.0.39 still takes no compiler flags
+  and still reads files only as byte lists) and CLAUDE.md. Nothing in the code changed.
+- **`bend --publish` sends only files inside the entry's directory** (#1836): `build/packages/` holds plain files only,
+  and each companion imports the core from the hub (`bendtorch@<version>/main.bend`); the `../<core>/main.bend` imports
+  exist only in the local copies `make package` tests, which are never published. So publishing works as before.
+- With 2.0.39: `make check` (the probe: 1.00 and 2.72 cores), `make bits` (every output identical), `make check-js`,
+  `make gpu` ("the GPU builds' outputs are the CPU's"), `make package` (the four packages at a test version over local
+  copies, the tiny Llama with `bench/bits.txt`'s bits on 1 and 16 threads), `make smol` (135M's first loss 3.5882206 and
+  360M's 3.2626889, as before; 1 and 16 threads the same bits) and `make mutate` (98 of 98 as expected, the same two
+  survivors) all pass. The published packages need no new version: no source of `torch/` changed.
+
+
+## SmolLM2-1.7B: the night branches on devel, a loader piece by piece (2026-10-24)
+
+- **Merged here (branch `night/1b7`, not in devel yet):** `night/t12`, that is the 64-bit reader (T6), safetensors
+  loading (T8), packed BF16 moments (T10) and `scripts/smol.sh 1.7b`. Two conflicts (Makefile, `demo/smol.bend`'s header
+  and usage) and one bare `--threads` that had to go inside `+RTS ... -RTS`.
+- **The loader.** `L.safetensors` read every tensor into one array as large as the model before `Layer.load`: at 1.7B a
+  2^31-cell block (8 GiB) that the step never reuses, which is why a step from the real weights went past 29 GB on
+  2026-10-21. Now `L.header` parses the header once, `L.piece` fills one layer from its own tensors, and `L.two` fills a
+  pair one after the other. `demo/smol.bend`'s `load_st` fills the embedding, each block (`LStack`, written by
+  `scripts/smol.sh` next to the stack) and the final norm. `L.safetensors` is `header` then `piece`, the same bits.
+- **Checks.** On 135M, the loss from model.safetensors read piece by piece gives `bench/bits.txt`'s digest, and
+  `train 2 <model.safetensors>` gives the same output bits as `train 2` from init.bin (both in `make smol` now). Three
+  new mutants (a half of the stack reading the other half's blocks, a piece one cell off, the final norm read from
+  another tensor of its shape), all caught; they are skipped where model.safetensors is absent, as in CI. Gates: laws,
+  check, bits, check-js, corpus, gpu, smol, bits-smol, adamw16-long, mutate (117 of 117).
+- **1.7B, memory only** (busy machine, 16 threads, a 20 GB cap): the loss from the real weights is 1076417622
+  (2.6379600, as on 2026-10-21) and peaks at 10.1 GB instead of 18.1. A step from the real weights is not measured yet:
+  it needs about 23 GB, and the machine had 22 GB free.
+- `smol.sh 1.7b` now writes AdamW with m and v packed (`T.CAdamWBF16{..., True{}}`), and `torch/README.md` says it is an
+  opt-in with its measured drift (90.6% of v's updates lost over 2,000 steps of the tiny Llama).
+- **Still open:** the reader is the vendored copy (`vendor/binary-read/`), which `bend --publish` refuses since 2.0.39,
+  so `make package` cannot ship it. bend-ml's `binary-read` 0.2.0.0 has the same code; once it is on BendHub, the import
+  moves to it and `vendor/` goes.
+
+## SmolLM2-1.7B: two AdamW steps from the real weights (2026-10-24)
+
+- `smol_1b7 train 2 <model.safetensors>` (m and v packed, the loader piece by piece), 16 threads, idle machine with the
+  browser closed, 3 alternated rounds against a PyTorch twin with the same BF16 moments (m and v rounded after each
+  update, stored as bfloat16), each run in a 25 GB memory scope with no swap: BendTorch 84.1 s for 2 steps (42.0 s a
+  step), peak 24.1 GB; PyTorch 26.7 s (13.3 s a step), peak 23.6 GB. 3.2x slower, against 4.3x at 135M.
+- Losses, the same bits in every round: 2.6379600 then 2.5548434; PyTorch F32 2.6379418 then 2.5548196, within the
+  tolerance at 0.66x and 0.90x. The first is 1.0e-6 from float64 (PyTorch F32 1.7e-5); the second has no float64
+  reference, since a float64 run does not fit in memory.
+- One step alone peaks at 22.6 GB; the second step holds more (the moments now exist), and a 23.5 GB cap killed it.
+
+## The reader from BendHub, the 1.7B in the benchmark (2026-10-24)
+
+- `bend-ml-binary-read@0.2.0.0` is on BendHub (the vendored copy's code, with tests on both lanes in bend-ml).
+  `torch/load.bend` and `demo/reader_test.bend` import it from there, and `vendor/` is gone. `make package` builds and
+  checks the four packages with it, which `bend --publish` could not ship with a reader outside the entry's folder.
+  `make laws`, `reader`, `check` and `smol` pass on it.
+- The 1.7B step goes into `BENCHMARK.md` as W6 (BendTorch against PyTorch only, 16 threads) and into the README's speed
+  section; the README's limitations line no longer says it does not train in 32 GB.
+
+## test_mlp and BF16 rounding ties (2026-10-24)
+
+- CI failed `make check` on the merge: seed 8's `adamw16mv.w1[20]` was 28x the tolerance from the twin. Its first moment
+  after step 2 sits 17 F32 ulps above a BF16 rounding midpoint here (1 ulp in float64); the runner's torch sums the
+  gradient in another order, rounds that moment the other way, and the weight moves. Bend gives the same bits on both
+  machines and matches this machine's torch.
+- Now the twin marks every element whose moment came within 64 F32 ulps of a midpoint at some step, and those weights
+  are left out of the comparison: 19 of the 1,800 BF16-state weights over the 12 seeds. AdamW works element by element,
+  so a tie moves only its own weight, and the losses are still all compared. The 11 mutants gated on the MLP are caught.
+
+## Idle round on Bend 2.0.39 (2026-10-24)
+
+- **What.** The 2026-10-18 idle round again, on 2.0.39 and commit 92f0486: the same cases, 5 rounds (SmolLM2: 3) for
+  BendTorch against PyTorch and 3 for the eleven other systems, alternated, 3 h 13 min overnight with nothing else
+  running. `BENCHMARK.md` and the README's speed table now carry it.
+- **What changed for BendTorch.** MNIST 2.0 s to 1.7 s an epoch on one thread and 1.6 s to 1.3 s on 16 (0.1 s
+  resolution); the block on the GPU 234 to 205 ms a step; SmolLM2-135M on 16 threads 5.1 s to 4.3 s a step (attention's
+  two sequences in parallel, 2026-10-21); the tiny Llama on the GPU 82 to 84 ms. One thread on the block and on
+  SmolLM2 did not move (664 to 659 ms, 14.2 s). Code and Bend both changed between the two rounds, so these numbers do
+  not say which one gave what, except for the tiny Llama on the GPU: the same commit takes 16.29 s with Bend 2.0.37
+  and 16.71 s with 2.0.38 and 2.0.39 (idle, alternated rounds), so the 2.6% came with Bend 2.0.38.
+- **The other systems** gave the same times within a few percent and the same verdicts, except torch.compile on the GPU
+  in W2: 8.51x PyTorch F32's distance from float64 in one round (fail), 7.13-7.46x in the five others over both nights.
+  It sits near the line; the table says so.
+
+## add4 and mul_dist_l from nat-lemmas 0.1.2.0 (2026-10-24)
+
+- bend-ml's B6 moved my two general lemmas into `bend-ml-nat-lemmas@0.1.2.0` (published today). `PROOF.bend` now calls
+  `NL.add4` and `NL.mul_dist_l` and keeps no copies; `torch/main.bend` and `torch/tensor.bend` import the same version.
+  `make laws` (both checkers), `make check` and `make package` pass.
+
+## v1.1.0 on BendHub (2026-10-24)
+
+- Published from `build/packages/` (`make package CORE=bendtorch VERSION=1.1.0.0` at c23a361): `bendtorch@1.1.0.0`
+  `0x88d35bdf07184f57aa5174c6f06ab791`, `bendtorch-fast@1.1.0.0` `0x154ce8ea744f0491f3a42ae0881fc224`,
+  `bendtorch-gpu@1.1.0.0` `0xd450835bf87b8ebe49fc7baf18bdbc46`, `bendtorch-load@1.1.0.0`
+  `0x4922dce2dd59be0648ebd8f3643975ae`. The load package imports `bend-ml-binary-read@0.2.0.0` from the hub.
+- From a clean folder importing the published packages: the core checks and `--verdict` passes; the satellites check
+  with the same defs outside the proofs as `torch/` (58, 105, 22); `fast_test` and `gpu_test` print 0 on 1 and 16
+  threads; `test_infra` and `test_dtype` pass; the tiny Llama's `train 50` gives `bench/bits.txt`'s digest on 1 and 16
+  threads. Before publishing, at c23a361: `make mutate` 117 of 117 as expected (the same two survivors) and CI green.
+  The READMEs import 1.1.0.0.

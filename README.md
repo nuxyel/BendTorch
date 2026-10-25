@@ -5,7 +5,7 @@
 <p align="center">
   <a href="https://github.com/nuxyel/BendTorch/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/nuxyel/BendTorch/ci.yml?branch=main&style=flat-square&label=ci&labelColor=4d4a44&color=7e9a5e" alt="CI"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-8b83b5?style=flat-square&labelColor=4d4a44" alt="MIT license"></a>
-  <a href="https://bend-lang.com"><img src="https://img.shields.io/badge/Bend-2.0.38-8b83b5?style=flat-square&labelColor=4d4a44" alt="Bend 2.0.38"></a>
+  <a href="https://bend-lang.com"><img src="https://img.shields.io/badge/Bend-2.0.39-8b83b5?style=flat-square&labelColor=4d4a44" alt="Bend 2.0.39"></a>
   <img src="https://img.shields.io/badge/laws%20proved-22-7e9a5e?style=flat-square&labelColor=4d4a44" alt="22 laws proved">
   <img src="https://img.shields.io/badge/planted%20bugs-98%2F98%20as%20expected-7e9a5e?style=flat-square&labelColor=4d4a44" alt="98 planted bugs, 98 as expected">
 </p>
@@ -25,7 +25,7 @@ training against PyTorch, not llama.bend's model; the plan after v1 is for llama
 layers, so that one implementation serves both.
 
 Early research code: the CPU and one CUDA GPU, F32 training, matrices only (higher ranks are folded into rows and
-columns). Bend **2.0.38**, MIT. On BendHub as `bendtorch` and three companion packages ([05 · Use it](#05--use-it)).
+columns). Bend **2.0.39**, MIT. On BendHub as `bendtorch` and three companion packages ([05 · Use it](#05--use-it)).
 
 <p align="center"><img src="docs/media/learning.webp" alt="The two-layer Llama in Bend 2: what it writes after 0 to 2,000 AdamW steps, and its training loss falling from 4.228 to 2.359 (a mean of 50 steps) next to PyTorch's twin" width="90%"></p>
 
@@ -120,17 +120,17 @@ one or two F32 operations in PyTorch's order (relu, an embedding lookup, the MSE
 ## 04 · Speed
 
 On an Intel Core Ultra 7 155H and an RTX 4050 Laptop GPU, idle machine, medians of 5 alternated rounds (SmolLM2: 3),
-2026-10-18. One thread is pinned to a performance core:
+2026-10-24, Bend 2.0.39. One thread is pinned to a performance core:
 
 | | BendTorch, 1 thread | PyTorch, 1 thread | BendTorch, 16 threads | PyTorch, 16 threads | BendTorch, GPU |
 |---|---|---|---|---|---|
-| MNIST, one epoch of SGD | 2.0 s | 0.32 s | 1.6 s | 0.25-1.07 s | 8.7 s |
-| two-layer Llama, one AdamW step | ≤ 0.8 ms | 1.9-2.8 ms | ≤ 1.0 ms | 3.1-7.6 ms | ≤ 82 ms |
-| one decoder block at SmolLM2-135M's sizes (512 rows), one AdamW step | 664 ms | 108 ms | 139 ms | 51 ms | 234 ms |
-| SmolLM2-135M, one AdamW step on 2 x 128 tokens | 14.2 s | 2.46 s | 5.1 s | 0.97 s | - |
+| MNIST, one epoch of SGD | 1.7 s | 0.33 s | 1.3 s | 0.39-1.12 s | 8.6 s |
+| two-layer Llama, one AdamW step | ≤ 0.8 ms | 1.9-2.7 ms | ≤ 1.0 ms | 3.1-7.6 ms | ≤ 84 ms |
+| one decoder block at SmolLM2-135M's sizes (512 rows), one AdamW step | 659 ms | 108 ms | 140 ms | 50 ms | 205 ms |
+| SmolLM2-135M, one AdamW step on 2 x 128 tokens | 14.2 s | 2.48 s | 4.3 s | 0.98 s | - |
 
-BendTorch is about 6x slower than PyTorch on MNIST and on one thread of the SmolLM2-sized block and of SmolLM2-135M
-itself (on 16 threads 2.7x on the block and 5.3x on SmolLM2; 4.3x since attention's fix below), where the products dominate: bend-ml's products read cells of 8 numbers per array
+BendTorch is 5x to 6x slower than PyTorch on MNIST and on one thread of the SmolLM2-sized block and of SmolLM2-135M
+itself (on 16 threads 2.8x on the block and 4.4x on SmolLM2), where the products dominate: bend-ml's products read cells of 8 numbers per array
 access, but each sum is a chain of scalar F32 additions in a fixed order, far from a BLAS kernel. It is 2.4x to 3.5x
 faster on the small Llama on one thread, where PyTorch's per-operation overhead dominates a model 32 wide (its
 BendTorch cells are the whole program's wall time, start-up included, so they are upper bounds; PyTorch's range is
@@ -142,11 +142,16 @@ after the other. With them in parallel (the same bits, by the laws already prove
 a step takes 4.0 s on 16 threads against PyTorch's 0.93 s (4.3x) and 13.8 s on one thread against 2.43 s (5.7x). On
 the GPU, with the embedding, the cross-entropy and a faster attention now on the device, it takes 7.0 s.
 
+SmolLM2-1.7B trains here too, from its real weights, with AdamW's moments packed in BF16 so that the step fits in 32 GB:
+on 2026-10-24, idle machine, 3 alternated rounds, a step takes 42.0 s on 16 threads against 13.3 s for PyTorch with the
+same BF16 moments (3.2x), at a peak of 24.1 GB (PyTorch 23.6 GB), and both losses are within the tolerance of
+PyTorch's ([`BENCHMARK.md`](BENCHMARK.md), W6).
+
 The demos' linear layers, their optimizer step and the element-wise layers are the fast ones of
 [`torch/fast.bend`](torch/fast.bend), whose parallel blocks share their arrays instead of copying them (outside the
 proofs; tested bit for bit against the proved layers). The row-wise layers (attention, the norms, softmax, RoPE, the
 embedding and the losses) run over arrays a row at a time, with the bits of the list versions they replaced. 16
-threads do not help a step as small as the tiny Llama's; on the block they give 4.8x over one thread. On the GPU every
+threads do not help a step as small as the tiny Llama's; on the block they give 4.7x over one thread. On the GPU every
 size here is slower than 16 CPU threads: most of a GPU step is Bend's runtime, not the arithmetic
 ([`docs/limitations.md`](docs/limitations.md#speed)). PyTorch's 16-thread times swing from round to round on this
 machine, so those cells give the range of the rounds.
@@ -157,14 +162,14 @@ against PyTorch's.
 
 ## 05 · Use it
 
-Four packages on BendHub, all at version 1.0.1.0. Import the files you need in your own Bend program:
+Four packages on BendHub, all at version 1.1.0.0. Import the files you need in your own Bend program:
 
 ```python
-import bendtorch@1.0.1.0/main.bend as T          # layers, combinators, losses, optimizers, Train
-import bendtorch@1.0.1.0/tensor.bend as TT       # general tensors: any rank, broadcasting, their gradients
-import bendtorch-fast@1.0.1.0/main.bend as F     # the same layers and bits, in parallel on the CPU
-import bendtorch-gpu@1.0.1.0/main.bend as G      # the layers on one CUDA GPU (all but GELUErf)
-import bendtorch-load@1.0.1.0/main.bend as L     # weights and checkpoints read from flat binary files
+import bendtorch@1.1.0.0/main.bend as T          # layers, combinators, losses, optimizers, Train
+import bendtorch@1.1.0.0/tensor.bend as TT       # general tensors: any rank, broadcasting, their gradients
+import bendtorch-fast@1.1.0.0/main.bend as F     # the same layers and bits, in parallel on the CPU
+import bendtorch-gpu@1.1.0.0/main.bend as G      # the layers on one CUDA GPU (all but GELUErf)
+import bendtorch-load@1.1.0.0/main.bend as L     # weights from flat binary and safetensors files, checkpoints
 ```
 
 `bendtorch` holds the laws and their proofs. The other three are outside the proofs on purpose: `-fast` and `-gpu` share
@@ -177,7 +182,7 @@ some inputs differently ([`docs/limitations.md`](docs/limitations.md)). [`torch/
 Linux x86_64, clang, Python 3.14, `curl`. The Python venv with PyTorch takes about 1.2 GB.
 
 ```bash
-make setup   # Bend 2.0.38 (SHA256-checked), Lean 4.34.0, the Python venv of reference/; no sudo
+make setup   # Bend 2.0.39 (SHA256-checked), Lean 4.34.0, the Python venv of reference/; no sudo
 make data    # MNIST and Tiny Shakespeare into data/, the twins' initial weights and batches (seed 0)
 make check   # the laws (--verdict), the rejected programs, every layer, the MLP, MNIST, the Llama and a SmolLM2-sized block against PyTorch (~2 min)
 make mutate  # the 98 deliberate faults
@@ -209,7 +214,7 @@ The full list, each with its measurement or reason, is in [`docs/limitations.md`
   `@unsafe` `Array.fork`, and loading uses a temporary foreign reader; the tests check they give `main.bend`'s bits.
 - **Slower than PyTorch** wherever products dominate, and on the GPU slower than 16 CPU threads at these sizes: most of a
   GPU step is the runtime (filling new arrays on one lane, a fixed cost between kernels), not the work.
-- **Matrices only**, F32 training (BF16 storage, int8 inference), one CUDA GPU; SmolLM2-1.7B does not train in 32 GB.
+- **Matrices only**, F32 training (BF16 storage, int8 inference), one CUDA GPU; SmolLM2-1.7B trains in 32 GB only with AdamW's moments packed in BF16, at 24.1 GB of peak memory.
 
 ## Where things are
 

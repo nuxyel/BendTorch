@@ -268,6 +268,8 @@ def opt_mat(+r: Nat, +c: Nat, +o: T.Opt, w: TA.Mat<r, c>, g: TA.Mat<r, c>, st: T
       mom_fin(r, c, TG.run3(~EMOM, ~lf_mom, TG.depth(Nat.mul(r, c)), EMOM{U32.from_nat(Nat.mul(r, c)), lr, mu}, nn(Unit{}), nn(Unit{}), nn(Unit{}), nn(Unit{}), wa, ga, ma))
     case T.Adam{+lr, +b1, +b2, +eps, +wd, +dec, +step, +bc2, +c1, +c2} TA.Mat{wa} TA.Mat{ga} T.TwoMom{TA.Mat{ma}, TA.Mat{va}}:
       opt_fin(r, c, TG.run4(~EADAM, ~lf_adam, TG.depth(Nat.mul(r, c)), EADAM{U32.from_nat(Nat.mul(r, c)), lr, c1, b2, c2, eps, wd, dec, step, bc2}, nn(Unit{}), nn(Unit{}), nn(Unit{}), nn(Unit{}), wa, ga, ma, va))
+    # packed BF16 moments (CAdamWBF16): main.bend's step, in one block
+    case o w g T.Packed{t}: T.Opt.mat(r, c, o, w, g, T.Packed{t})
     case _ w g st: T.MatStep{w, g, st}
 
 def mat_step(+r: Nat, +c: Nat, +op: T.Opt, p: TA.Mat<r, c>, g: TA.Mat<r, c>, st: T.OptState<TA.Mat<r, c>>) -> T.Step<TA.Mat<r, c>>:

@@ -21,7 +21,7 @@ Numbers marked "busy machine" were taken with other jobs running and are a first
   parallel blocks through Base's `@unsafe` `Array.fork`/`Array.join`, which Bend's model does not describe. Nothing
   checks that two blocks never write the same cell; that is by construction, and the tests compare the bits with
   `main.bend`'s. No file with laws imports them; `make laws` pins the defs that reach `@unsafe` code.
-- Loading weights uses bend-ml-binary-read, foreign C and JavaScript, because Bend 2.0.38 reads files only as byte lists.
+- Loading weights uses bend-ml-binary-read, foreign C and JavaScript, because Bend 2.0.39 reads files only as byte lists.
   It is temporary, and only loading code imports it.
 
 ## Numerics: where the results differ from PyTorch
@@ -70,7 +70,7 @@ Numbers marked "busy machine" were taken with other jobs running and are a first
   step's products run on one thread each, except the output layer (one thread gives 7.9 s for 60 tokens, 16 give 5.6
   s). The tiny Llama's generation has none: its window slides from the first character, so nothing can be reused.
 - The CPU builds use SSE only (4 numbers an instruction): `bend -o` calls `clang -O3` without a target, and Bend
-  2.0.38 takes no compiler flags. Built for this machine (`-march=native`, with `bend X.bend -o x.c` and clang by hand),
+  2.0.39 takes no compiler flags. Built for this machine (`-march=native`, with `bend X.bend -o x.c` and clang by hand),
   a SmolLM2-135M step is 12.5% faster on one thread and 6.8% on 16, with the same bits (idle machine, 3 alternated
   rounds, 2026-10-20); I keep the default build so that the numbers are what anyone gets from `bend`.
 - On the GPU (RTX 4050 Laptop), BendTorch is slower than on 16 CPU threads at every size I train. A SmolLM2-135M-sized
@@ -100,13 +100,17 @@ Numbers marked "busy machine" were taken with other jobs running and are a first
 
 - An array is one block of a power of two cells, so a 2560 x 960 matrix takes a 4,194,304-cell block for 2,457,600
   numbers (1.71x); at whole-model sizes the overhead is 1.24x (135M) to 1.58x (360M).
-- SmolLM2-1.7B does not train on a 32 GB machine: AdamW's state is 26.0 GiB in F32, plus about 8 GiB of activations.
-  BF16 storage today gives BF16's numbers, not its memory (the values sit in F32 arrays); packed BF16 gradients and
-  moments would bring it to about 16 GiB of state, and that is left for after v1. Its F32 weights file is also past the
-  reader's 32-bit offsets. On a branch after v1 (packed BF16 moments, a 64-bit reader and safetensors loading), one
-  AdamW step with m and v packed fits in 22.6 GB, but only when the weights are not loaded first: the loader fills one
-  array of the whole model (8 GiB), whose memory the step does not reuse, so loading then training goes past 29 GB.
-- A 360M AdamW checkpoint is past the reader's 32-bit offsets too.
+- SmolLM2-1.7B trains on a 32 GB machine, with most of it. AdamW's state is 26.0 GiB in F32, plus about 8 GiB of
+  activations. BF16 storage gives BF16's numbers, not its memory (the values sit in F32 arrays), except for the
+  optimizer: `CAdamWBF16` packs m and v two a word, which brings the state to 19.5 GiB, at a measured cost in v's
+  accuracy (`torch/README.md`). One AdamW step with both packed fits in 22.6 GB (from zero weights, 2026-10-21). The
+  weights load from the BF16 `model.safetensors` piece by piece, a layer at a time, so no array of the whole model is
+  made: the loss from the real weights peaks at 10.1 GB, and two AdamW steps from the real weights at 24.1 GB, in
+  42 s a step on 16 threads against PyTorch's 13.3 s with the same BF16 moments (idle machine, 3 alternated rounds,
+  2026-10-24). Both losses are within the tolerance of that PyTorch twin's; the second step has no float64
+  reference, which does not fit in memory. So it trains here, but with most of the machine's memory.
+- Offsets and sizes are 64-bit (two U32s), so files past 4 GiB (1.7B's F32 weights, a 360M AdamW checkpoint) are read;
+  the reader takes up to 2^32 - 1 numbers a file.
 
 ## Features
 

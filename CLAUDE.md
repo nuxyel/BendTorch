@@ -38,7 +38,7 @@ one-thread timings with `taskset -c 3`), 32 GB RAM, RTX 4050 6 GB.
 
 ## Rules
 
-1. Bend is pinned to **2.0.38** (and Lean 4.34.0 for `--verdict`). Before writing code, read `bend guide`,
+1. Bend is pinned to **2.0.39** (and Lean 4.34.0 for `--verdict`). Before writing code, read `bend guide`,
    `bend base <name>` and the Base source (`~/.bend/bend2/base.bend`). A version bump goes in `NOTES.md`.
 2. Run the checker on every change; it takes a fraction of a second. `make check` before a commit that changes code.
 3. Every proof is real: no `@unsafe`, no `?TODO`, no axioms. A law that cannot be proved yet is recorded in `NOTES.md`
@@ -48,7 +48,7 @@ one-thread timings with `taskset -c 3`), 32 GB RAM, RTX 4050 6 GB.
    `par1`..`par4` blocks. No file with laws imports it, `make laws` pins its defs outside the proofs, and
    `demo/fast_test.bend` checks it gives `main.bend`'s bits. A second exception, temporary (Renan, 2026-10-17):
    `bend-ml-binary-read` (foreign C and JavaScript) to load weights, only in loading code and never in a file with laws,
-   because Bend 2.0.38 reads files only as byte lists; Taelin said native fast reads will come, and then it is replaced
+   because Bend 2.0.39 reads files only as byte lists; Taelin said native fast reads will come, and then it is replaced
    by 100% native Bend. A third exception (Renan, 2026-10-18, launch plan scope): `torch/gpu.bend`, the layers over
    bend-ml-tensor-gpu (its products and its `run1`..`run4` bangs, Base's `@unsafe` `Array.fork` inside the package, all
    Bend), which `make gpu` and the GPU demos use. Like `fast.bend`: no file with laws imports it, `make laws` pins its
@@ -66,7 +66,7 @@ one-thread timings with `taskset -c 3`), 32 GB RAM, RTX 4050 6 GB.
 8. Public text (READMEs, `NOTES.md`, `docs/`) is written in Renan's first person singular: "I measured", never "we".
    This file stays in the third person.
 
-## Bend 2.0.38 pitfalls (paid for in bend-ml and llama.bend)
+## Bend 2.0.39 pitfalls (paid for in bend-ml and llama.bend)
 
 - A compiled program's runtime options go between `+RTS` and `-RTS` (since 2.0.38): `./x +RTS --threads 16 -RTS`, or
   `BENDRTS="--threads 1"` in the environment. A bare `./x --threads 16` passes `--threads 16` to the program and runs on

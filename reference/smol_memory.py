@@ -47,6 +47,8 @@ def main():
         ("F32 everything (today): weights, gradient, two moments", 4 * f32),
         ("BF16 values in F32 arrays (tiny_mixed's CastP/CastOut): the same buffers", 4 * f32),
         ("F32 master weights and moments, packed BF16 gradient", 3 * f32 + bf16),
+        ("CAdamWBF16 (v16 false): F32 weights, gradient and v, packed BF16 m", 3 * f32 + bf16),
+        ("CAdamWBF16 (v16 true): F32 weights and gradient, packed BF16 m and v", 2 * f32 + 2 * bf16),
         ("F32 master weights, packed BF16 gradient and moments", f32 + 3 * bf16),
         ("packed BF16 weights, gradient and moments (no F32 master)", 4 * bf16),
     ]

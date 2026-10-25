@@ -316,6 +316,9 @@ def st_show(+r: Nat, +c: Nat, st: T.OptState<TA.Mat<r, c>>) -> IO(Unit):
       do IO<Unit>:
         T.Mat.print(r, c, "m", m)
         T.Mat.print(r, c, "v", v)
+    case T.Packed{t}:
+      # packed BF16 moments (T.CAdamWBF16) are not in the frozen corpus; st_new never makes them
+      IO.pure(Unit, Unit{})
 
 def mm2_then(-r: Nat, -c: Nat, ww: TA.MM2<r, c>, f: TA.Mat<r, c> -> TA.Mat<r, c> -> IO(Unit)) -> IO(Unit):
   match ww:

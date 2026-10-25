@@ -59,7 +59,7 @@ jobs:
             data/tiny/input.txt
           key: data-${{ hashFiles('scripts/mnist.sh', 'scripts/tiny.sh') }}
 
-      - name: Set up (Bend 2.0.38, Lean 4.34.0, Python venv)
+      - name: Set up (Bend 2.0.39, Lean 4.34.0, Python venv)
         run: make setup
 
       - name: Data

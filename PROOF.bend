@@ -6,30 +6,8 @@ import ./torch/main.bend as T
 import ./torch/spec.bend as Spec
 import ./torch/tensor.bend as TT
 import ./LAWS.bend as Laws
-import bend-ml-nat-lemmas@0.1.1.0/main.bend as NL
+import bend-ml-nat-lemmas@0.1.2.0/main.bend as NL
 import bend-ml-tensor-array@0.1.14.0/main.bend as TA
-
-# =====================================================================================================
-# Arithmetic
-# =====================================================================================================
-
-# (a + b) + (c + d) == (a + c) + (b + d)
-def add4(+a: Nat, +b: Nat, +c: Nat, +d: Nat) -> {Nat.add(Nat.add(a, b), Nat.add(c, d)) == Nat.add(Nat.add(a, c), Nat.add(b, d)) : Nat}:
-  Equal.trans(Nat, Nat.add(Nat.add(a, b), Nat.add(c, d)), Nat.add(a, Nat.add(b, Nat.add(c, d))), Nat.add(Nat.add(a, c), Nat.add(b, d)),
-    Equal.sym(Nat, Nat.add(a, Nat.add(b, Nat.add(c, d))), Nat.add(Nat.add(a, b), Nat.add(c, d)), NL.add_assoc(a, b, Nat.add(c, d))),
-    Equal.trans(Nat, Nat.add(a, Nat.add(b, Nat.add(c, d))), Nat.add(a, Nat.add(c, Nat.add(b, d))), Nat.add(Nat.add(a, c), Nat.add(b, d)),
-      Equal.cong(Nat, Nat, s => Nat.add(a, s), Nat.add(b, Nat.add(c, d)), Nat.add(c, Nat.add(b, d)), NL.add_swap(b, c, d)),
-      NL.add_assoc(a, c, Nat.add(b, d))))
-
-# k * (a + b) == k * a + k * b
-def mul_dist_l(+k: Nat, +a: Nat, +b: Nat) -> {Nat.mul(k, Nat.add(a, b)) == Nat.add(Nat.mul(k, a), Nat.mul(k, b)) : Nat}:
-  Equal.trans(Nat, Nat.mul(k, Nat.add(a, b)), Nat.mul(Nat.add(a, b), k), Nat.add(Nat.mul(k, a), Nat.mul(k, b)),
-    NL.mul_comm(k, Nat.add(a, b)),
-    Equal.trans(Nat, Nat.mul(Nat.add(a, b), k), Nat.add(Nat.mul(a, k), Nat.mul(b, k)), Nat.add(Nat.mul(k, a), Nat.mul(k, b)),
-      Equal.sym(Nat, Nat.add(Nat.mul(a, k), Nat.mul(b, k)), Nat.mul(Nat.add(a, b), k), NL.mul_dist(a, b, k)),
-      Equal.trans(Nat, Nat.add(Nat.mul(a, k), Nat.mul(b, k)), Nat.add(Nat.mul(k, a), Nat.mul(b, k)), Nat.add(Nat.mul(k, a), Nat.mul(k, b)),
-        Equal.cong(Nat, Nat, s => Nat.add(s, Nat.mul(b, k)), Nat.mul(a, k), Nat.mul(k, a), NL.mul_comm(a, k)),
-        Equal.cong(Nat, Nat, s => Nat.add(Nat.mul(k, a), s), Nat.mul(b, k), Nat.mul(k, b), NL.mul_comm(b, k)))))
 
 # =====================================================================================================
 # Dot products
@@ -54,7 +32,7 @@ def dot_vadd(a: List<&2, Nat>, b: List<&2, Nat>, v: List<&2, Nat>) -> {Spec.dotn
         Equal.cong(Nat, Nat, s => Nat.add(Nat.mul(Nat.add(x, y), z), s), Spec.dotn(Spec.vadd(xt, yt), zt), Nat.add(pa, pb), dot_vadd(xt, yt, zt)),
         Equal.trans(Nat, Nat.add(Nat.mul(Nat.add(x, y), z), Nat.add(pa, pb)), Nat.add(Nat.add(xz, yz), Nat.add(pa, pb)), Nat.add(Nat.add(xz, pa), Nat.add(yz, pb)),
           Equal.cong(Nat, Nat, s => Nat.add(s, Nat.add(pa, pb)), Nat.mul(Nat.add(x, y), z), Nat.add(xz, yz), Equal.sym(Nat, Nat.add(xz, yz), Nat.mul(Nat.add(x, y), z), NL.mul_dist(x, y, z))),
-          add4(xz, yz, pa, pb)))
+          NL.add4(xz, yz, pa, pb)))
 
 # dot(k·r, v) == k · dot(r, v): at each entry (k·x)·z == k·(x·z) (associativity), then k factors out of the sum
 def dot_scale(+k: Nat, r: List<&2, Nat>, v: List<&2, Nat>) -> {Spec.dotn(Spec.vscale(k, r), v) == Nat.mul(k, Spec.dotn(r, v)) : Nat}:
@@ -69,7 +47,7 @@ def dot_scale(+k: Nat, r: List<&2, Nat>, v: List<&2, Nat>) -> {Spec.dotn(Spec.vs
         Equal.cong(Nat, Nat, s => Nat.add(Nat.mul(Nat.mul(k, x), z), s), Spec.dotn(Spec.vscale(k, xt), zt), Nat.mul(k, d), dot_scale(k, xt, zt)),
         Equal.trans(Nat, Nat.add(Nat.mul(Nat.mul(k, x), z), Nat.mul(k, d)), Nat.add(Nat.mul(k, Nat.mul(x, z)), Nat.mul(k, d)), Nat.mul(k, Nat.add(Nat.mul(x, z), d)),
           Equal.cong(Nat, Nat, s => Nat.add(s, Nat.mul(k, d)), Nat.mul(Nat.mul(k, x), z), Nat.mul(k, Nat.mul(x, z)), Equal.sym(Nat, Nat.mul(k, Nat.mul(x, z)), Nat.mul(Nat.mul(k, x), z), NL.mul_assoc(k, x, z))),
-          Equal.sym(Nat, Nat.mul(k, Nat.add(Nat.mul(x, z), d)), Nat.add(Nat.mul(k, Nat.mul(x, z)), Nat.mul(k, d)), mul_dist_l(k, Nat.mul(x, z), d))))
+          Equal.sym(Nat, Nat.mul(k, Nat.add(Nat.mul(x, z), d)), Nat.add(Nat.mul(k, Nat.mul(x, z)), Nat.mul(k, d)), NL.mul_dist_l(k, Nat.mul(x, z), d))))
 
 # dot(a, b) == dot(b, a)
 def dot_comm(a: List<&2, Nat>, b: List<&2, Nat>) -> {Spec.dotn(a, b) == Spec.dotn(b, a) : Nat}:
@@ -761,7 +739,7 @@ def Laws.cat_numel(s, d, x, y, e):
     case Con{+h, +t} 1n+p:
       Equal.trans(Nat, Nat.mul(h, NL.product(TT.setd(t, p, Nat.add(x, y)))), Nat.mul(h, Nat.add(NL.product(TT.setd(t, p, x)), NL.product(TT.setd(t, p, y)))), Nat.add(Nat.mul(h, NL.product(TT.setd(t, p, x))), Nat.mul(h, NL.product(TT.setd(t, p, y)))),
         Equal.cong(Nat, Nat, v => Nat.mul(h, v), NL.product(TT.setd(t, p, Nat.add(x, y))), Nat.add(NL.product(TT.setd(t, p, x)), NL.product(TT.setd(t, p, y))), Laws.cat_numel(t, p, x, y, e)),
-        mul_dist_l(h, NL.product(TT.setd(t, p, x)), NL.product(TT.setd(t, p, y))))
+        NL.mul_dist_l(h, NL.product(TT.setd(t, p, x)), NL.product(TT.setd(t, p, y))))
 
 # r·(c·1) == r·c: c·1 == c
 def Laws.mat_numel(r, c):
@@ -799,7 +777,7 @@ def cnt2(+p: Nat, +k: Nat) -> {Nat.mul(Spec.pw(1n+p), k) == Nat.mul(Spec.pw(p), 
   +a = Spec.pw(p)
   Equal.trans(Nat, Nat.mul(Nat.add(a, a), k), Nat.add(Nat.mul(a, k), Nat.mul(a, k)), Nat.mul(a, Nat.add(k, k)),
     Equal.sym(Nat, Nat.add(Nat.mul(a, k), Nat.mul(a, k)), Nat.mul(Nat.add(a, a), k), NL.mul_dist(a, a, k)),
-    Equal.sym(Nat, Nat.mul(a, Nat.add(k, k)), Nat.add(Nat.mul(a, k), Nat.mul(a, k)), mul_dist_l(a, k, k)))
+    Equal.sym(Nat, Nat.mul(a, Nat.add(k, k)), Nat.add(Nat.mul(a, k), Nat.mul(a, k)), NL.mul_dist_l(a, k, k)))
 
 # the first p passes over a row of 2^p · k cells leave its k blocks, each summed as bal sums it. Induction on p: p
 # passes over 2^(p+1)·k cells (= 2^p·2k, cnt2) leave 2k blocks of 2^p, and one more pass pairs them (pass_pair)

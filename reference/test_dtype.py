@@ -97,6 +97,7 @@ def check_conv(binary: str, failures: list[str]) -> None:
     t = f32_words(xs)
     print(f"conv: {len(xs)} F32 words")
     same_bits("F32 -> BF16", np.concatenate(got["bf16"]), u16(t.to(torch.bfloat16)), failures)
+    same_bits("F32 -> BF16 (main.bend's packed AdamW moments)", np.concatenate(got["bf16t"]), u16(t.to(torch.bfloat16)), failures)
     same_bits("F32 -> F16", np.concatenate(got["f16"]), u16(t.to(torch.float16)), failures)
 
 
@@ -106,6 +107,8 @@ def check_halves(binary: str, failures: list[str]) -> None:
     for tag, dt in [("bf16", torch.bfloat16), ("f16", torch.float16)]:
         up = h.view(dt).to(torch.float32)
         same_bits(f"{tag.upper()} -> F32 (all 65536)", got[f"{tag}up"][0], up.numpy().view(np.uint32), failures)
+        if tag == "bf16":
+            same_bits("BF16 -> F32 (all 65536, main.bend's packed AdamW moments)", got["bf16tup"][0], up.numpy().view(np.uint32), failures)
         same_bits(f"{tag.upper()} -> F32 -> {tag.upper()} (all 65536)", got[f"{tag}rt"][0], u16(up.to(dt)), failures)
 
 

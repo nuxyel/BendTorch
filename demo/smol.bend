@@ -3,7 +3,9 @@
 #
 #   bend demo/smol.bend -o .scratch/smol
 #   .scratch/smol +RTS --threads 16 -RTS loss              # the loss on the first batch
+#   .scratch/smol +RTS --threads 16 -RTS loss <file>       # the same, the weights from Hugging Face's model.safetensors
 #   .scratch/smol +RTS --threads 16 -RTS train <steps>     # AdamW steps: the loss before each update; train_ms for the steps
+#   .scratch/smol +RTS --threads 16 -RTS train <steps> <file>  # the same from Hugging Face's model.safetensors
 #   .scratch/smol +RTS --threads 16 -RTS grads <file>      # the loss on the first batch; every gradient into <file>, dump order
 #   .scratch/smol +RTS --threads 16 -RTS finetune <k> <e>  # k steps on ft_train.bin; the held-out loss (ft_eval.bin) every e
 #   .scratch/smol +RTS --threads 16 -RTS finetune <k> <e> <out>  # the same, then the weights into <out> (init.bin's layout)
@@ -419,6 +421,20 @@ def kget(s: BS(1n), acc: List<&1, KV>) -> List<&1, KV>:
     case T.Two{T.Two{T.Two{u1, T.Two{xs, T.Two{qkvs, T.Two{ru, T.Two{T.AttnS{q, k, v}, os}}}}}, u2}, ms}:
       KV{k, v} <> acc
 
+# ---- the safetensors tensors of block i (model.layers.i), in Layer.dump order; LStack reads each block with these ----
+
+def st_layer(+i: Nat) -> List<&2, L.Entry>:
+  +pre = "model.layers." ++ Nat.show(i) ++ "."
+  +d = U32.from_nat(D())
+  +kv = U32.from_nat(KVW())
+  +ff = U32.from_nat(FF())
+  [L.Entry{pre ++ "input_layernorm.weight", [d]}, L.Entry{pre ++ "self_attn.q_proj.weight", [d, d]}, L.Entry{pre ++ "self_attn.k_proj.weight", [kv, d]}, L.Entry{pre ++ "self_attn.v_proj.weight", [kv, d]}, L.Entry{pre ++ "self_attn.o_proj.weight", [d, d]}, L.Entry{pre ++ "post_attention_layernorm.weight", [d]}, L.Entry{pre ++ "mlp.gate_proj.weight", [ff, d]}, L.Entry{pre ++ "mlp.up_proj.weight", [ff, d]}, L.Entry{pre ++ "mlp.down_proj.weight", [d, ff]}]
+
+def st_layers(k: Nat, +i: Nat) -> List<&2, L.Entry>:
+  match k:
+    case 0n: Nil{}
+    case 1n+q: List.append(&2, L.Entry, st_layer(i), st_layers(q, 1n+i))
+
 # ---- the stack of blocks: a balanced tree of Seq over LAYERS() blocks, read in order (block 0 first) ----
 
 # A template takes only arguments fixed when the program compiles, and Bend instantiates templates 64 levels deep at
@@ -440,6 +456,9 @@ def KStack1(p: StP1, +pos: Nat, s: KS) -> KR<StP1>:
 def KGet1(s: StS1(1n), acc: List<&1, KV>) -> List<&1, KV>:
   kget(Boxed.get(BS(1n), s), acc)
 
+def LStack1(+path: String, +h: L.Header, +i: Nat, p: StP1) -> IO(StP1):
+  L.piece(~StP1, ~A(2n, D()), ~A(2n, D()), ~StS1(2n), ~Stack1(~2n), path, h, st_layer(i), p)
+
 def StP2() -> Type:
   T.Two<StP1, StP1>
 
@@ -458,6 +477,9 @@ def KGet2(s: StS2(1n), acc: List<&1, KV>) -> List<&1, KV>:
   match s:
     case T.Two{a, c}:
       KGet1(c, KGet1(a, acc))
+
+def LStack2(+path: String, +h: L.Header, +i: Nat, p: StP2) -> IO(StP2):
+  L.two(StP1, StP1, p, x => LStack1(path, h, i, x), y => LStack1(path, h, Nat.add(i, 1n), y))
 
 def StP3() -> Type:
   T.Two<StP1, StP2>
@@ -478,6 +500,9 @@ def KGet3(s: StS3(1n), acc: List<&1, KV>) -> List<&1, KV>:
     case T.Two{a, c}:
       KGet2(c, KGet1(a, acc))
 
+def LStack3(+path: String, +h: L.Header, +i: Nat, p: StP3) -> IO(StP3):
+  L.two(StP1, StP2, p, x => LStack1(path, h, i, x), y => LStack2(path, h, Nat.add(i, 1n), y))
+
 def StP4() -> Type:
   T.Two<StP2, StP2>
 
@@ -496,6 +521,9 @@ def KGet4(s: StS4(1n), acc: List<&1, KV>) -> List<&1, KV>:
   match s:
     case T.Two{a, c}:
       KGet2(c, KGet2(a, acc))
+
+def LStack4(+path: String, +h: L.Header, +i: Nat, p: StP4) -> IO(StP4):
+  L.two(StP2, StP2, p, x => LStack2(path, h, i, x), y => LStack2(path, h, Nat.add(i, 2n), y))
 
 def StP7() -> Type:
   T.Two<StP3, StP4>
@@ -516,6 +544,9 @@ def KGet7(s: StS7(1n), acc: List<&1, KV>) -> List<&1, KV>:
     case T.Two{a, c}:
       KGet4(c, KGet3(a, acc))
 
+def LStack7(+path: String, +h: L.Header, +i: Nat, p: StP7) -> IO(StP7):
+  L.two(StP3, StP4, p, x => LStack3(path, h, i, x), y => LStack4(path, h, Nat.add(i, 3n), y))
+
 def StP8() -> Type:
   T.Two<StP4, StP4>
 
@@ -534,6 +565,9 @@ def KGet8(s: StS8(1n), acc: List<&1, KV>) -> List<&1, KV>:
   match s:
     case T.Two{a, c}:
       KGet4(c, KGet4(a, acc))
+
+def LStack8(+path: String, +h: L.Header, +i: Nat, p: StP8) -> IO(StP8):
+  L.two(StP4, StP4, p, x => LStack4(path, h, i, x), y => LStack4(path, h, Nat.add(i, 4n), y))
 
 def StP15() -> Type:
   T.Two<StP7, StP8>
@@ -554,6 +588,9 @@ def KGet15(s: StS15(1n), acc: List<&1, KV>) -> List<&1, KV>:
     case T.Two{a, c}:
       KGet8(c, KGet7(a, acc))
 
+def LStack15(+path: String, +h: L.Header, +i: Nat, p: StP15) -> IO(StP15):
+  L.two(StP7, StP8, p, x => LStack7(path, h, i, x), y => LStack8(path, h, Nat.add(i, 7n), y))
+
 def StP30() -> Type:
   T.Two<StP15, StP15>
 
@@ -573,6 +610,9 @@ def KGet30(s: StS30(1n), acc: List<&1, KV>) -> List<&1, KV>:
     case T.Two{a, c}:
       KGet15(c, KGet15(a, acc))
 
+def LStack30(+path: String, +h: L.Header, +i: Nat, p: StP30) -> IO(StP30):
+  L.two(StP15, StP15, p, x => LStack15(path, h, i, x), y => LStack15(path, h, Nat.add(i, 15n), y))
+
 def StackP() -> Type:
   StP30
 
@@ -587,6 +627,9 @@ def KStack(p: StackP, +pos: Nat, s: KS) -> KR<StackP>:
 
 def KGet(s: StackS(1n), acc: List<&1, KV>) -> List<&1, KV>:
   KGet30(s, acc)
+
+def LStack(+path: String, +h: L.Header, p: StackP) -> IO(StackP):
+  LStack30(path, h, 0n, p)
 # ---- stack: end ----
 
 # ---- the model: Tie(embedding, Seq(stack, final norm), head), the head sharing the embedding's matrix ----
@@ -662,6 +705,27 @@ def loss_with(p: P, +ids: List<&2, Nat>) -> IO(Unit):
 def loss() -> IO(Unit):
   do IO<Unit>:
     p : P <- load_params()
+    ids : List<&2, Nat> <- load_batch(0)
+    loss_with(p, ids)
+
+# ---- the same loss with the weights read from Hugging Face's model.safetensors (BF16, widened exactly: the numbers
+# init.bin holds) through the layout below, reference/smol_layout.txt's names and shapes ----
+
+# the embedding, LAYERS() blocks, the final norm; the output head is tied to the embedding and not in the file
+def st_layout() -> List<&2, L.Entry>:
+  Con{L.Entry{"model.embed_tokens.weight", [U32.from_nat(V()), U32.from_nat(D())]}, List.append(&2, L.Entry, st_layers(LAYERS(), 0n), [L.Entry{"model.norm.weight", [U32.from_nat(D())]}])}
+
+# The same parameters filled piece by piece from one parsed header: the embedding, each block (LStack, written with the
+# stack by scripts/smol.sh), the final norm. No array of the whole model is made, which is what lets SmolLM2-1.7B load
+# in 32 GB; the numbers are st_layout()'s, in the same order (make smol checks the loss against bench/bits.txt).
+def load_st(+path: String) -> IO(P):
+  do IO<P>:
+    +h : L.Header <- L.header(path)
+    L.two(M(V(), D()), BodyP, T.Layer.zeros(P, X, Y(2n), S(2n), Model(~2n)), e => L.piece(~M(V(), D()), ~X, ~A(2n, D()), ~List<&2, Nat>, ~F.Embedding(R(2n), V(), D()), path, h, [L.Entry{"model.embed_tokens.weight", [U32.from_nat(V()), U32.from_nat(D())]}], e), b => L.two(StackP, M(1n, D()), b, st => LStack(path, h, st), nm => L.piece(~M(1n, D()), ~A(2n, D()), ~A(2n, D()), ~A(2n, D()), ~F.RMSNorm(R(2n), D(), 0.00001), path, h, [L.Entry{"model.norm.weight", [U32.from_nat(D())]}], nm)))
+
+def loss_st(+path: String) -> IO(Unit):
+  do IO<Unit>:
+    p : P <- load_st(path)
     ids : List<&2, Nat> <- load_batch(0)
     loss_with(p, ids)
 
@@ -808,14 +872,24 @@ def finetune(+k: Nat, +every: U32, +out: String) -> IO(Unit):
     r : PE <- ev_loop(FT_EVAL(), 0, 0.0, p)
     ft_start(k, every, out, r)
 
-def train(+k: Nat) -> IO(Unit):
+def train_from(+k: Nat, p: P) -> IO(Unit):
   do IO<Unit>:
     T.OptCfg.check(cfg())
-    p : P <- load_params()
     t0 : Nat <- IO.now()
     tr : T.Train<P> <- tloop(k, 0, T.Train.new(~P, ~X, ~Y(2n), ~S(2n), ~Model(~2n), cfg(), p))
     t1 : Nat <- IO.now()
     IO.print("train_ms " ++ Nat.show(Nat.sub(t1, t0)))
+
+def train(+k: Nat) -> IO(Unit):
+  do IO<Unit>:
+    p : P <- load_params()
+    train_from(k, p)
+
+# the same steps from the weights in a Hugging Face model.safetensors (load_st)
+def train_st(+k: Nat, +path: String) -> IO(Unit):
+  do IO<Unit>:
+    p : P <- load_st(path)
+    train_from(k, p)
 
 # ---- generation: one sequence (b = 1) with the same parameters. The tokens so far sit at the start of the TT()
 # window and the rest is padding (token 0): the causal mask keeps the padding out of every written position, so the
@@ -1155,7 +1229,7 @@ def kvcheck(+n: Nat, +weights: String, +ids0: String) -> IO(Unit):
     IO.print(kc_go(Nat.min(n, Nat.sub(TT(), m)), m, ids, kprompt(m, ids, p)))
 
 def usage() -> IO(Unit):
-  IO.die(Unit, 2, "usage: smol loss | train <steps> | grads <file> | finetune <steps> <every> [<out>] | gen <n> <weights> <ids> | draw <n> <seed> <weights> <ids> | genkv <n> <weights> <ids> | drawkv <n> <seed> <weights> <ids> | kvcheck <n> <weights> <ids>")
+  IO.die(Unit, 2, "usage: smol loss [<model.safetensors>] | train <steps> [<model.safetensors>] | grads <file> | finetune <steps> <every> [<out>] | gen <n> <weights> <ids> | draw <n> <seed> <weights> <ids> | genkv <n> <weights> <ids> | drawkv <n> <seed> <weights> <ids> | kvcheck <n> <weights> <ids>")
 
 def train_m(mk: Maybe<&2, Nat>) -> IO(Unit):
   match mk:
@@ -1167,21 +1241,28 @@ def dispatch_l(is_loss: Bool) -> IO(Unit):
     case True{}: loss()
     case False{}: usage()
 
-def dispatch_t(is_train: Bool, is_grads: Bool, +arg: String) -> IO(Unit):
-  match is_train is_grads:
-    case True{} _: train_m(Nat.read(arg))
-    case _ True{}: grads(arg)
-    case _ _: usage()
+def dispatch_t(is_train: Bool, is_grads: Bool, is_loss: Bool, +arg: String) -> IO(Unit):
+  match is_train is_grads is_loss:
+    case True{} _ _: train_m(Nat.read(arg))
+    case _ True{} _: grads(arg)
+    case _ _ True{}: loss_st(arg)
+    case _ _ _: usage()
 
 def finetune_m(mk: Maybe<&2, Nat>, me: Maybe<&2, U32>, +out: String) -> IO(Unit):
   match mk me:
     case Some{k} Some{e}: finetune(k, e, out)
     case _ _: usage()
 
-def dispatch_f(is_ft: Bool, +k: String, +e: String) -> IO(Unit):
-  match is_ft:
-    case True{}: finetune_m(Nat.read(k), U32.read(e), "")
-    case False{}: usage()
+def train_st_m(mk: Maybe<&2, Nat>, +path: String) -> IO(Unit):
+  match mk:
+    case Some{k}: train_st(k, path)
+    case None{}: usage()
+
+def dispatch_f(is_ft: Bool, is_train: Bool, +k: String, +e: String) -> IO(Unit):
+  match is_ft is_train:
+    case True{} _: finetune_m(Nat.read(k), U32.read(e), "")
+    case _ True{}: train_st_m(Nat.read(k), e)
+    case _ _: usage()
 
 def gen_m(mn: Maybe<&2, Nat>, +weights: String, +ids: String) -> IO(Unit):
   match mn:
@@ -1233,11 +1314,11 @@ def dispatch(args: List<String>) -> IO(Unit):
     case Con{prog, Con{+mode, Con{a, Con{b, Con{c, Nil{}}}}}}:
       dispatch_5(String.eq(mode, "finetune"), String.eq(mode, "gen"), mode, a, b, c)
     case Con{prog, Con{mode, Con{k, Con{e, Nil{}}}}}:
-      dispatch_f(String.eq(mode, "finetune"), k, e)
+      dispatch_f(String.eq(mode, "finetune"), String.eq(mode, "train"), k, e)
     case Con{prog, Con{mode, Nil{}}}:
       dispatch_l(String.eq(mode, "loss"))
     case Con{prog, Con{+mode, Con{k, Nil{}}}}:
-      dispatch_t(String.eq(mode, "train"), String.eq(mode, "grads"), k)
+      dispatch_t(String.eq(mode, "train"), String.eq(mode, "grads"), String.eq(mode, "loss"), k)
     case _:
       usage()
 

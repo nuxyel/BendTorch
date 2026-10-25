@@ -37,6 +37,14 @@ def bf_l(xs: List<&2, F32>) -> List<&2, U32>:
     case Con{h, t}:
       D.BF16.of_f32(h) <> bf_l(t)
 
+# main.bend's own copy of the rounding, for AdamW's packed moments (T.CAdamWBF16)
+def bft_l(xs: List<&2, F32>) -> List<&2, U32>:
+  match xs:
+    case Nil{}:
+      Nil{}
+    case Con{h, t}:
+      T.ph_of(h) <> bft_l(t)
+
 def hf_l(xs: List<&2, F32>) -> List<&2, U32>:
   match xs:
     case Nil{}:
@@ -49,6 +57,7 @@ def hf_l(xs: List<&2, F32>) -> List<&2, U32>:
 def conv_chunk(+xs: List<&2, F32>) -> IO(Unit):
   do IO<Unit>:
     IO.print("bf16" ++ ws(bf_l(xs)))
+    IO.print("bf16t" ++ ws(bft_l(xs)))
     IO.print("f16" ++ ws(hf_l(xs)))
 
 def conv_loop(k: Nat, +path: String, +i: U32) -> IO(Unit):
@@ -77,6 +86,13 @@ def up_bf(xs: List<&2, U32>) -> List<&2, F32>:
     case Con{+h, t}:
       D.BF16.to_f32(h) <> up_bf(t)
 
+def up_bft(xs: List<&2, U32>) -> List<&2, F32>:
+  match xs:
+    case Nil{}:
+      Nil{}
+    case Con{+h, t}:
+      T.ph_to(h) <> up_bft(t)
+
 def up_hf(xs: List<&2, U32>) -> List<&2, F32>:
   match xs:
     case Nil{}:
@@ -87,6 +103,7 @@ def up_hf(xs: List<&2, U32>) -> List<&2, F32>:
 def halves() -> IO(Unit):
   do IO<Unit>:
     IO.print("bf16up" ++ fs(up_bf(hl(65536n, 0))))
+    IO.print("bf16tup" ++ fs(up_bft(hl(65536n, 0))))
     IO.print("f16up" ++ fs(up_hf(hl(65536n, 0))))
     IO.print("bf16rt" ++ ws(bf_l(up_bf(hl(65536n, 0)))))
     IO.print("f16rt" ++ ws(hf_l(up_hf(hl(65536n, 0)))))

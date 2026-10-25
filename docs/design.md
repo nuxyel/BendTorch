@@ -182,7 +182,7 @@ position too few).
   kernel by kernel, with its check moved from bits to the tolerance; a fixed split, the same at any thread count, keeps
   the rule.
 
-- **CPU first.** Native code from Bend 2.0.38, clang. Products run in `2^par` parallel blocks (`par` is an argument of
+- **CPU first.** Native code from Bend 2.0.39, clang. Products run in `2^par` parallel blocks (`par` is an argument of
   each linear layer; 8, 256 blocks, at SmolLM2's sizes, where 16 left the E-cores' blocks behind). In `torch/fast.bend`
   the optimizer step and the element-wise layers run in blocks of 16384 numbers from 131072 up, and the products pack
   their operands in blocks from 16384 cells up (bend-ml-tensor-fork); smaller work runs in one block, which is what the

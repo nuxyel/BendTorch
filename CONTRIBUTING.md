@@ -22,7 +22,7 @@ request myself. Bug reports, numbers from other machines, new layers, new laws a
 ## Setup and checks
 
 ```bash
-make setup   # the pinned Bend 2.0.38, Lean 4.34.0 and the Python venv of reference/
+make setup   # the pinned Bend 2.0.39, Lean 4.34.0 and the Python venv of reference/
 make data    # MNIST and Tiny Shakespeare (not committed), the twins' weights and batches
 make laws    # the proofs, by bend and again by --verdict; tests/bad_*.bend must be rejected with their expected error
 make check   # the laws, then every layer, the MLP, MNIST and the tiny Llama against PyTorch

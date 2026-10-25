@@ -22,7 +22,7 @@
 
 import Base
 import bend-ml-tensor-array@0.1.14.0/main.bend as TA
-import bend-ml-nat-lemmas@0.1.1.0/main.bend as NL
+import bend-ml-nat-lemmas@0.1.2.0/main.bend as NL
 
 # =====================================================================================================
 # The layer protocol
@@ -47,24 +47,44 @@ def Pair3(A: Type, B: Type, C: Type) -> Type:
 def ResidualType(A: Type) -> Type:
   Pair3(Unit, A, Unit)
 
-# Owned optimizer buffers: SGD has none, momentum one, Adam/AdamW two.
+# AdamW's moments stored as packed BF16 (CAdamWBF16): a tree that follows the parameters' pairs as the step walks them,
+# with the buffers of each matrix at its leaf. A packed buffer has half the words of its matrix (two BF16 values a
+# U32, element 2k in the low half of word k, torch/dtype.bend's layout), so it cannot be a value of the parameters'
+# type P: the tree holds the words itself. A leaf is allocated on the matrix's first step (PNew marks a part not yet
+# stepped, and stays at the parameter-free layers), so the full-size buffers never exist. v16 picks v packed as well;
+# otherwise v is F32 (PLeafV). A leaf keeps its matrix's count n, for checkpoints.
+type PTree is Type:
+  PNew{v16: Bool}
+  PLeaf{n: U32, m: Array<U32>, v: Array<U32>}
+  PLeafV{n: U32, m: Array<U32>, v: Array<F32>}
+  PNode{a: PTree, b: PTree}
+
+# Owned optimizer buffers: SGD has none, momentum one, Adam/AdamW two (Packed: two, in packed BF16, see PTree).
 type OptState<-P: Type> is Type:
   NoMom{}
   OneMom{m: P}
   TwoMom{m: P, v: P}
+  Packed{t: PTree}
 
-# Two affine maps are supplied separately: each is called at most once.
+# Two affine maps are supplied separately: each is called at most once. A packed tree is the same under any relabelling
+# of the parameters (Lin <-> Two), so it passes unchanged.
 def OptState.map(-P: Type, -Q: Type, st: OptState<P>, f: P -> Q, h: P -> Q) -> OptState<Q>:
   match st:
     case NoMom{}: NoMom{}
     case OneMom{m}: OneMom{f(m)}
     case TwoMom{m, v}: TwoMom{f(m), h(v)}
+    case Packed{t}: Packed{t}
 
+# A packed tree splits at its node; a part not yet stepped splits into two such parts. A leaf belongs to one matrix and
+# is never split (it goes to the left, the right side starts empty).
 def OptState.split(-A: Type, -B: Type, st: OptState<Two<A, B>>) -> Two<OptState<A>, OptState<B>>:
   match st:
     case NoMom{}: Two{NoMom{}, NoMom{}}
     case OneMom{Two{a, b}}: Two{OneMom{a}, OneMom{b}}
     case TwoMom{Two{a, b}, Two{c, d}}: Two{TwoMom{a, c}, TwoMom{b, d}}
+    case Packed{PNode{a, b}}: Two{Packed{a}, Packed{b}}
+    case Packed{PNew{+f}}: Two{Packed{PNew{f}}, Packed{PNew{f}}}
+    case Packed{t}: Two{Packed{t}, Packed{PNew{False{}}}}
 
 # Pair the buffers present on both sides. Internal callers split one state, then step both children with the same
 # optimizer, so the variants agree. No buffer is ever allocated to fill an absent side.
@@ -72,6 +92,7 @@ def OptState.join(-A: Type, -B: Type, a: OptState<A>, b: OptState<B>) -> OptStat
   match a b:
     case OneMom{x} OneMom{y}: OneMom{Two{x, y}}
     case TwoMom{x, u} TwoMom{y, v}: TwoMom{Two{x, y}, Two{u, v}}
+    case Packed{x} Packed{y}: Packed{PNode{x, y}}
     case _ _: NoMom{}
 
 # what an optimizer step returns: the new parameters, the zeroed gradient, the optimizer state
@@ -187,6 +208,20 @@ def Mat.add(+r: Nat, +c: Nat, a: TA.Mat<r, c>, b: TA.Mat<r, c>) -> TA.MPair<r, c
 def zero_of(+x: F32) -> F32:
   0.0
 
+# the smallest d with 2^d >= n (TA.cap_depth's answer), by doubling a U32: log2(n) cheap steps, where cap_depth
+# compares Nats one unit at a time at each doubling; f is fuel (32 doublings cover every U32)
+def depth_go(f: Nat, ok: Bool, +n: U32, +p: U32, d: Nat) -> Nat:
+  match f ok:
+    case _ True{}:
+      d
+    case 0n False{}:
+      d
+    case 1n+g False{}:
+      depth_go(g, U32.is_le(n, (p + p : U32)), n, (p + p : U32), 1n+d)
+
+def depth(+n: Nat) -> Nat:
+  depth_go(32n, U32.is_le(U32.from_nat(n), 1), U32.from_nat(n), 1, 0n)
+
 # =====================================================================================================
 # Optimizers: one pass over a parameter, its gradient and the two moment buffers; the gradient is zeroed
 # =====================================================================================================
@@ -259,6 +294,128 @@ def adam_l(nleft: Nat, +t: U32, +lr: F32, +c1: F32, +b2: F32, +c2: F32, +eps: F3
       +u = (t + 1 : U32)
       adam_l(p, u, lr, c1, b2, c2, eps, wd, dec, step, bc2, Array.get(F32, Array.set(F32, w, t, nw), u), Array.get(F32, Array.set(F32, g, t, 0.0), u), Array.get(F32, Array.set(F32, m, t, nm), u), Array.get(F32, Array.set(F32, v, t, nv), u))
 
+# ---- AdamW over packed BF16 moments (CAdamWBF16) ----
+# The same F32 arithmetic as adam_l, element by element: each moment is read from its half of a word (BF16 -> F32 is
+# exact), updated in F32, rounded to BF16 (to nearest, ties to even; a NaN becomes 0xFFFF, as torch/dtype.bend and
+# PyTorch's CPU kernel do) and written back into its half; the weight update reads the stored, rounded moments, as
+# PyTorch's AdamW does with BF16 state. The weights and the gradient stay F32.
+
+def ph_f2u(x: F32) -> U32:
+  match x:
+    case F32{w}:
+      U32{w}
+
+def ph_u2f(u: U32) -> F32:
+  match u:
+    case U32{w}:
+      F32{w}
+
+def ph_pick(b: Bool, +x: U32, +y: U32) -> U32:
+  match b:
+    case True{}:
+      x
+    case False{}:
+      y
+
+# F32 -> BF16 bits (dtype.bend's BF16.of_f32): add 0x7FFF plus the lowest kept bit, keep the top half; NaN -> 0xFFFF
+def ph_of_bits(+u: U32) -> U32:
+  ph_pick(U32.is_gt((u .&. 2147483647 : U32), 2139095040), 65535, U32.shrn(((u + 32767 : U32) + (U32.shrn(u, 16n) .&. 1 : U32) : U32), 16n))
+
+def ph_of(x: F32) -> U32:
+  ph_of_bits(ph_f2u(x))
+
+# BF16 bits -> F32, exact
+def ph_to(+h: U32) -> F32:
+  ph_u2f(U32.shln(h, 16n))
+
+# the half of word w that element t uses (odd t: the high half), and w with that half replaced by h
+def ph_half(odd: Bool, +w: U32) -> U32:
+  match odd:
+    case True{}:
+      U32.shrn(w, 16n)
+    case False{}:
+      (w .&. 65535 : U32)
+
+def ph_put(odd: Bool, +w: U32, +h: U32) -> U32:
+  match odd:
+    case True{}:
+      ((w .&. 65535 : U32) .|. U32.shln(h, 16n) : U32)
+    case False{}:
+      ((w .&. 4294901760 : U32) .|. h : U32)
+
+type PQ is Type:
+  PQ{w: Array<F32>, g: Array<F32>, m: Array<U32>, v: Array<U32>}
+
+type PQV is Type:
+  PQV{w: Array<F32>, g: Array<F32>, m: Array<U32>, v: Array<F32>}
+
+# m and v packed. rm and rv hold the word of element t (index t >> 1), read after the previous element's write.
+def adamh_l(nleft: Nat, +t: U32, +lr: F32, +c1: F32, +b2: F32, +c2: F32, +eps: F32, +wd: F32, +dec: Bool, +step: F32, +bc2: F32, rw: Array<F32> & F32, rg: Array<F32> & F32, rm: Array<U32> & U32, rv: Array<U32> & U32) -> PQ:
+  match nleft rw rg rm rv:
+    case 0n Tuple{w, x} Tuple{g, y} Tuple{m, a} Tuple{v, b}:
+      PQ{w, g, m, v}
+    case 1n+p Tuple{w, +x} Tuple{g, +y} Tuple{m, +a} Tuple{v, +b}:
+      +odd = U32.is_eq((t .&. 1 : U32), 1)
+      +gg = adam_grad(dec, wd, x, y)
+      +hm = ph_of(adam_m(c1, ph_to(ph_half(odd, a)), gg))
+      +hv = ph_of(adam_v(b2, c2, ph_to(ph_half(odd, b)), gg))
+      +nw = adam_w(step, bc2, eps, adam_decay(dec, lr, wd, x), ph_to(hm), ph_to(hv))
+      +u = (t + 1 : U32)
+      +k = U32.shrn(t, 1n)
+      +ku = U32.shrn(u, 1n)
+      adamh_l(p, u, lr, c1, b2, c2, eps, wd, dec, step, bc2, Array.get(F32, Array.set(F32, w, t, nw), u), Array.get(F32, Array.set(F32, g, t, 0.0), u), Array.get(U32, Array.set(U32, m, k, ph_put(odd, a, hm)), ku), Array.get(U32, Array.set(U32, v, k, ph_put(odd, b, hv)), ku))
+
+# m packed, v in F32 (one cell an element, as adam_l's)
+def adamhv_l(nleft: Nat, +t: U32, +lr: F32, +c1: F32, +b2: F32, +c2: F32, +eps: F32, +wd: F32, +dec: Bool, +step: F32, +bc2: F32, rw: Array<F32> & F32, rg: Array<F32> & F32, rm: Array<U32> & U32, rv: Array<F32> & F32) -> PQV:
+  match nleft rw rg rm rv:
+    case 0n Tuple{w, x} Tuple{g, y} Tuple{m, a} Tuple{v, b}:
+      PQV{w, g, m, v}
+    case 1n+p Tuple{w, +x} Tuple{g, +y} Tuple{m, +a} Tuple{v, +b}:
+      +odd = U32.is_eq((t .&. 1 : U32), 1)
+      +gg = adam_grad(dec, wd, x, y)
+      +hm = ph_of(adam_m(c1, ph_to(ph_half(odd, a)), gg))
+      +nv = adam_v(b2, c2, b, gg)
+      +nw = adam_w(step, bc2, eps, adam_decay(dec, lr, wd, x), ph_to(hm), nv)
+      +u = (t + 1 : U32)
+      adamhv_l(p, u, lr, c1, b2, c2, eps, wd, dec, step, bc2, Array.get(F32, Array.set(F32, w, t, nw), u), Array.get(F32, Array.set(F32, g, t, 0.0), u), Array.get(U32, Array.set(U32, m, U32.shrn(t, 1n), ph_put(odd, a, hm)), U32.shrn(u, 1n)), Array.get(F32, Array.set(F32, v, t, nv), u))
+
+# the words of n packed values: ceil(n / 2), in a block of the next power of two
+def ph_words(+n: Nat) -> Array<U32>:
+  Array.new(U32, depth(Nat.div(Nat.add(n, 1n), 2n)), 0)
+
+def ph_fin(-r: Nat, -c: Nat, +n: U32, q: PQ) -> MatStep<r, c>:
+  match q:
+    case PQ{w, g, m, v}: MatStep{TA.Mat{w}, TA.Mat{g}, Packed{PLeaf{n, m, v}}}
+
+def phv_fin(-r: Nat, -c: Nat, +n: U32, q: PQV) -> MatStep<r, c>:
+  match q:
+    case PQV{w, g, m, v}: MatStep{TA.Mat{w}, TA.Mat{g}, Packed{PLeafV{n, m, v}}}
+
+# one matrix's step on its leaf; anything else leaves the values untouched, as Opt.mat's fallback
+def adamh_leaf(+r: Nat, +c: Nat, +o: Opt, wa: Array<F32>, ga: Array<F32>, t: PTree) -> MatStep<r, c>:
+  match o t:
+    case Adam{lr, b1, b2, eps, wd, dec, step, bc2, c1, c2} PLeaf{+n, ma, va}:
+      ph_fin(r, c, n, adamh_l(Nat.mul(r, c), 0, lr, c1, b2, c2, eps, wd, dec, step, bc2, Array.get(F32, wa, 0), Array.get(F32, ga, 0), Array.get(U32, ma, 0), Array.get(U32, va, 0)))
+    case Adam{lr, b1, b2, eps, wd, dec, step, bc2, c1, c2} PLeafV{+n, ma, va}:
+      phv_fin(r, c, n, adamhv_l(Nat.mul(r, c), 0, lr, c1, b2, c2, eps, wd, dec, step, bc2, Array.get(F32, wa, 0), Array.get(F32, ga, 0), Array.get(U32, ma, 0), Array.get(F32, va, 0)))
+    case _ t:
+      MatStep{TA.Mat{wa}, TA.Mat{ga}, Packed{t}}
+
+# the leaf of a matrix on its first step: zeros (BF16 0x0000 is +0.0)
+def ph_new(+n: Nat, v16: Bool) -> PTree:
+  match v16:
+    case True{}:
+      PLeaf{U32.from_nat(n), ph_words(n), ph_words(n)}
+    case False{}:
+      PLeafV{U32.from_nat(n), ph_words(n), Array.new(F32, depth(n), 0.0)}
+
+def adamh_mat(+r: Nat, +c: Nat, +o: Opt, wa: Array<F32>, ga: Array<F32>, t: PTree) -> MatStep<r, c>:
+  match t:
+    case PNew{v16}:
+      adamh_leaf(r, c, o, wa, ga, ph_new(Nat.mul(r, c), v16))
+    case t:
+      adamh_leaf(r, c, o, wa, ga, t)
+
 # One matrix step, with only the buffers this optimizer reads.
 def Opt.sgd_fin(-r: Nat, -c: Nat, q: TA.P2) -> MatStep<r, c>:
   match q:
@@ -282,16 +439,20 @@ def Opt.mat(+r: Nat, +c: Nat, +o: Opt, w: TA.Mat<r, c>, g: TA.Mat<r, c>, st: Opt
       Opt.mom_fin(r, c, mom_l(Nat.mul(r, c), 0, lr, mu, Array.get(F32, wd, 0), Array.get(F32, gd, 0), Array.get(F32, md, 0)))
     case Adam{lr, b1, b2, eps, wd2, dec, step, bc2, c1, c2} TA.Mat{wd} TA.Mat{gd} TwoMom{TA.Mat{md}, TA.Mat{vd}}:
       Opt.fin(r, c, adam_l(Nat.mul(r, c), 0, lr, c1, b2, c2, eps, wd2, dec, step, bc2, Array.get(F32, wd, 0), Array.get(F32, gd, 0), Array.get(F32, md, 0), Array.get(F32, vd, 0)))
+    case Adam{lr, b1, b2, eps, wd2, dec, step, bc2, c1, c2} TA.Mat{wd} TA.Mat{gd} Packed{t}:
+      adamh_mat(r, c, o, wd, gd, t)
     case _ w g st:
       MatStep{w, g, st}
 
 # What the user picks; `Opt.at` turns it into the step's `Opt` from q1 = 1 - b1^t and q2 = 1 - b2^t (t = 1 on the
-# first step). Adam's c1 and c2 are 1 - b1 and 1 - b2, written as their own constants (adam_m above).
+# first step). Adam's c1 and c2 are 1 - b1 and 1 - b2, written as their own constants (adam_m above). CAdamWBF16 is
+# AdamW with its first moment (and its second, when v16) stored as packed BF16 (PTree); weights and gradient stay F32.
 type OptCfg is Data:
   CSGD{lr: F32}
   CMomentum{lr: F32, mu: F32}
   CAdam{lr: F32, b1: F32, b2: F32, eps: F32, wd: F32, c1: F32, c2: F32}
   CAdamW{lr: F32, b1: F32, b2: F32, eps: F32, wd: F32, c1: F32, c2: F32}
+  CAdamWBF16{lr: F32, b1: F32, b2: F32, eps: F32, wd: F32, c1: F32, c2: F32, v16: Bool}
 
 def Opt.at(+cfg: OptCfg, +q1: F32, +q2: F32) -> Opt:
   match cfg:
@@ -303,12 +464,16 @@ def Opt.at(+cfg: OptCfg, +q1: F32, +q2: F32) -> Opt:
       Adam{lr, b1, b2, eps, wd, False{}, (lr / q1 : F32), F32.sqrt(q2), c1, c2}
     case CAdamW{lr, b1, b2, eps, wd, c1, c2}:
       Adam{lr, b1, b2, eps, wd, True{}, (lr / q1 : F32), F32.sqrt(q2), c1, c2}
+    case CAdamWBF16{lr, b1, b2, eps, wd, c1, c2, v16}:
+      Adam{lr, b1, b2, eps, wd, True{}, (lr / q1 : F32), F32.sqrt(q2), c1, c2}
 
 def OptCfg.b1(+cfg: OptCfg) -> F32:
   match cfg:
     case CAdam{lr, b1, b2, eps, wd, c1, c2}:
       b1
     case CAdamW{lr, b1, b2, eps, wd, c1, c2}:
+      b1
+    case CAdamWBF16{lr, b1, b2, eps, wd, c1, c2, v16}:
       b1
     case _:
       0.0
@@ -319,6 +484,8 @@ def OptCfg.b2(+cfg: OptCfg) -> F32:
       b2
     case CAdamW{lr, b1, b2, eps, wd, c1, c2}:
       b2
+    case CAdamWBF16{lr, b1, b2, eps, wd, c1, c2, v16}:
+      b2
     case _:
       0.0
 
@@ -328,6 +495,8 @@ def OptCfg.c1(+cfg: OptCfg) -> F32:
       c1
     case CAdamW{lr, b1, b2, eps, wd, c1, c2}:
       c1
+    case CAdamWBF16{lr, b1, b2, eps, wd, c1, c2, v16}:
+      c1
     case _:
       0.0
 
@@ -336,6 +505,8 @@ def OptCfg.c2(+cfg: OptCfg) -> F32:
     case CAdam{lr, b1, b2, eps, wd, c1, c2}:
       c2
     case CAdamW{lr, b1, b2, eps, wd, c1, c2}:
+      c2
+    case CAdamWBF16{lr, b1, b2, eps, wd, c1, c2, v16}:
       c2
     case _:
       0.0
@@ -354,6 +525,8 @@ def OptCfg.ok(+cfg: OptCfg) -> Bool:
     case CAdam{lr, b1, b2, eps, wd, c1, c2}:
       Bool.and(beta_ok(b1, c1), beta_ok(b2, c2))
     case CAdamW{lr, b1, b2, eps, wd, c1, c2}:
+      Bool.and(beta_ok(b1, c1), beta_ok(b2, c2))
+    case CAdamWBF16{lr, b1, b2, eps, wd, c1, c2, v16}:
       Bool.and(beta_ok(b1, c1), beta_ok(b2, c2))
     case _:
       True{}
@@ -726,6 +899,7 @@ def OptState.new(~P: Type, ~X: Type, ~Y: Type, ~S: Type, ~m: Layer<P, X, Y, S>, 
   match cfg:
     case CSGD{lr}: NoMom{}
     case CMomentum{lr, mu}: OneMom{Layer.zeros(P, X, Y, S, m)}
+    case CAdamWBF16{lr, b1, b2, eps, wd, c1, c2, v16}: Packed{PNew{v16}}
     case _: TwoMom{Layer.zeros(P, X, Y, S, m), Layer.zeros(P, X, Y, S, m)}
 
 # 1 - b^t starts at 0; a configuration OptCfg.ok rejects starts at NaN, so every loss after the first is NaN.
@@ -860,20 +1034,6 @@ def Mat.print(+r: Nat, +c: Nat, +name: String, m: TA.Mat<r, c>) -> IO(Unit):
 
 def F32.print(+name: String, x: F32) -> IO(Unit):
   IO.print(name ++ " " ++ U32.show(bits(x)))
-
-# the smallest d with 2^d >= n (TA.cap_depth's answer), by doubling a U32: log2(n) cheap steps, where cap_depth
-# compares Nats one unit at a time at each doubling; f is fuel (32 doublings cover every U32)
-def depth_go(f: Nat, ok: Bool, +n: U32, +p: U32, d: Nat) -> Nat:
-  match f ok:
-    case _ True{}:
-      d
-    case 0n False{}:
-      d
-    case 1n+g False{}:
-      depth_go(g, U32.is_le(n, (p + p : U32)), n, (p + p : U32), 1n+d)
-
-def depth(+n: Nat) -> Nat:
-  depth_go(32n, U32.is_le(U32.from_nat(n), 1), U32.from_nat(n), 1, 0n)
 
 # n zeros, in an array with room for them
 def zeros_a(+n: Nat) -> Array<F32>:
@@ -2810,6 +2970,149 @@ def read_all(+path: String) -> IO(List<&2, U32>):
     m : File & Result<&1, &1, U32 & String, List<&2, U32>> <- File.read_bytes(f, 2000000000)
     rd_done(m)
 
+# ---- packed BF16 moments in a checkpoint (CAdamWBF16) ----
+# A PTree is written as F32 cells holding U32 bits, before 1 - b1^t and 1 - b2^t, in the order the step walks it:
+# PNew: 0, v16 (1 or 0); PNode: 1, its left part, its right part; PLeaf: 2, n, m's ceil(n / 2) words, v's; PLeafV: 3, n,
+# m's words, v's n F32 numbers. The tree carries its own shape and sizes, so a fresh state (all PNew) reads it back.
+
+def ph_hw(+n: U32) -> U32:
+  U32.shrn((n + 1 : U32), 1n)
+
+def ph_bool(b: Bool) -> U32:
+  match b:
+    case True{}: 1
+    case False{}: 0
+
+type PTU is Type:
+  PTU{t: PTree, n: U32}
+
+def ptu_node(ra: PTU, rb: PTU) -> PTU:
+  match ra rb:
+    case PTU{a, na} PTU{b, nb}: PTU{PNode{a, b}, ((1 + na : U32) + nb : U32)}
+
+# the number of cells a tree takes (the tree comes back)
+def pt_cells(t: PTree) -> PTU:
+  match t:
+    case PNew{v16}: PTU{PNew{v16}, 2}
+    case PLeaf{+n, m, v}: PTU{PLeaf{n, m, v}, (2 + (2 * ph_hw(n) : U32) : U32)}
+    case PLeafV{+n, m, v}: PTU{PLeafV{n, m, v}, ((2 + ph_hw(n) : U32) + n : U32)}
+    case PNode{a, b}: ptu_node(pt_cells(a), pt_cells(b))
+
+type PTA is Type:
+  PTA{t: PTree, xs: Array<F32>, off: U32}
+
+type UA is Type:
+  UA{a: Array<U32>, xs: Array<F32>}
+
+# words i.. of a packed buffer into xs from off, as F32 cells with their bits (both arrays come back)
+def words_out(left: Nat, +i: U32, +off: U32, ra: Array<U32> & U32, xs: Array<F32>) -> UA:
+  match left ra:
+    case 0n Tuple{a, w}: UA{a, xs}
+    case 1n+q Tuple{a, +w}:
+      words_out(q, (i + 1 : U32), (off + 1 : U32), Array.get(U32, a, (i + 1 : U32)), Array.set(F32, xs, off, ph_u2f(w)))
+
+def words_in(left: Nat, +i: U32, +off: U32, rx: Array<F32> & F32, a: Array<U32>) -> UA:
+  match left rx:
+    case 0n Tuple{xs, x}: UA{a, xs}
+    case 1n+q Tuple{xs, x}:
+      words_in(q, (i + 1 : U32), (off + 1 : U32), Array.get(F32, xs, (off + 1 : U32)), Array.set(U32, a, i, ph_f2u(x)))
+
+def pta_then(r: PTA, k: PTree -> Array<F32> -> U32 -> PTA) -> PTA:
+  match r:
+    case PTA{t, xs, off}: k(t, xs, off)
+
+def pta_node(a: PTree, r: PTA) -> PTA:
+  match r:
+    case PTA{b, xs, off}: PTA{PNode{a, b}, xs, off}
+
+def pts_v(+n: U32, m: Array<U32>, +off: U32, r: UA) -> PTA:
+  match r:
+    case UA{v, xs}: PTA{PLeaf{n, m, v}, xs, (off + ph_hw(n) : U32)}
+
+def pts_m(+n: U32, v: Array<U32>, +off: U32, r: UA) -> PTA:
+  match r:
+    case UA{m, xs}: pts_v(n, m, (off + ph_hw(n) : U32), words_out(U32.to_nat(ph_hw(n)), 0, (off + ph_hw(n) : U32), Array.get(U32, v, 0), xs))
+
+def ptsv_v(+n: U32, m: Array<U32>, +off: U32, r: TA.P2) -> PTA:
+  match r:
+    case TA.P2{v, xs}: PTA{PLeafV{n, m, v}, xs, (off + n : U32)}
+
+def ptsv_m(+n: U32, v: Array<F32>, +off: U32, r: UA) -> PTA:
+  match r:
+    case UA{m, xs}: ptsv_v(n, m, (off + ph_hw(n) : U32), store_cells(U32.to_nat(n), 0, (off + ph_hw(n) : U32), Array.get(F32, v, 0), xs))
+
+# the tree's cells into xs from off
+def pt_store(t: PTree, xs: Array<F32>, +off: U32) -> PTA:
+  match t:
+    case PNew{+v16}:
+      PTA{PNew{v16}, Array.set(F32, Array.set(F32, xs, off, ph_u2f(0)), (off + 1 : U32), ph_u2f(ph_bool(v16))), (off + 2 : U32)}
+    case PLeaf{+n, m, v}:
+      pts_m(n, v, (off + 2 : U32), words_out(U32.to_nat(ph_hw(n)), 0, (off + 2 : U32), Array.get(U32, m, 0), Array.set(F32, Array.set(F32, xs, off, ph_u2f(2)), (off + 1 : U32), ph_u2f(n))))
+    case PLeafV{+n, m, v}:
+      ptsv_m(n, v, (off + 2 : U32), words_out(U32.to_nat(ph_hw(n)), 0, (off + 2 : U32), Array.get(U32, m, 0), Array.set(F32, Array.set(F32, xs, off, ph_u2f(3)), (off + 1 : U32), ph_u2f(n))))
+    case PNode{a, b}:
+      pta_then(pt_store(a, Array.set(F32, xs, off, ph_u2f(1)), (off + 1 : U32)), ta => xs2 => off2 => pta_node(ta, pt_store(b, xs2, off2)))
+
+# reading a leaf back: fresh buffers filled from xs
+def ptl_v(+n: U32, m: Array<U32>, +off: U32, r: UA) -> PTA:
+  match r:
+    case UA{v, xs}: PTA{PLeaf{n, m, v}, xs, (off + ph_hw(n) : U32)}
+
+def ptl_m(+n: U32, +off: U32, r: UA) -> PTA:
+  match r:
+    case UA{m, xs}: ptl_v(n, m, (off + ph_hw(n) : U32), words_in(U32.to_nat(ph_hw(n)), 0, (off + ph_hw(n) : U32), Array.get(F32, xs, (off + ph_hw(n) : U32)), ph_words(U32.to_nat(n))))
+
+def ptlv_v(+n: U32, m: Array<U32>, +off: U32, r: TA.P2) -> PTA:
+  match r:
+    case TA.P2{xs, v}: PTA{PLeafV{n, m, v}, xs, (off + n : U32)}
+
+def ptlv_m(+n: U32, +off: U32, r: UA) -> PTA:
+  match r:
+    case UA{m, xs}: ptlv_v(n, m, (off + ph_hw(n) : U32), load_cells(U32.to_nat(n), 0, (off + ph_hw(n) : U32), Array.get(F32, xs, (off + ph_hw(n) : U32)), Array.new(F32, depth(U32.to_nat(n)), 0.0)))
+
+# what a tag says
+type PK is Data:
+  KNew{}
+  KNode{}
+  KLeaf{}
+  KLeafV{}
+
+def pt_kind2(z: Bool, o: Bool, l: Bool) -> PK:
+  match z o l:
+    case True{} _ _: KNew{}
+    case False{} True{} _: KNode{}
+    case False{} False{} True{}: KLeaf{}
+    case False{} False{} False{}: KLeafV{}
+
+def pt_kind(+tag: U32) -> PK:
+  pt_kind2(U32.is_eq(tag, 0), U32.is_eq(tag, 1), U32.is_eq(tag, 2))
+
+# the tag at off and the cell after it, to a continuation
+def pt_next(+off: U32, r: Array<F32> & F32, k: PK -> (Array<F32> & F32) -> PTA) -> PTA:
+  match r:
+    case Tuple{xs, x}: k(pt_kind(ph_f2u(x)), Array.get(F32, xs, (off + 1 : U32)))
+
+# the part at off, of kind k, with its second cell rn already read; fuel bounds the depth (a model's pairs nest far
+# less than 1000 deep)
+def pt_read(fuel: Nat, k: PK, +off: U32, rn: Array<F32> & F32) -> PTA:
+  match fuel k rn:
+    case 0n _ Tuple{xs, x}:
+      PTA{PNew{False{}}, xs, off}
+    case 1n+f KNew{} Tuple{xs, x}:
+      PTA{PNew{U32.is_eq(ph_f2u(x), 1)}, xs, (off + 2 : U32)}
+    case 1n++f KNode{} Tuple{xs, x}:
+      pta_then(pt_read(f, pt_kind(ph_f2u(x)), (off + 1 : U32), Array.get(F32, xs, (off + 2 : U32))), ta => xs2 => +off2 => pta_node(ta, pt_next(off2, Array.get(F32, xs2, off2), kb => rb => pt_read(f, kb, off2, rb))))
+    case 1n+f KLeaf{} Tuple{xs, x}:
+      +n = ph_f2u(x)
+      ptl_m(n, (off + 2 : U32), words_in(U32.to_nat(ph_hw(n)), 0, (off + 2 : U32), Array.get(F32, xs, (off + 2 : U32)), ph_words(U32.to_nat(n))))
+    case 1n+f KLeafV{} Tuple{xs, x}:
+      +n = ph_f2u(x)
+      ptlv_m(n, (off + 2 : U32), words_in(U32.to_nat(ph_hw(n)), 0, (off + 2 : U32), Array.get(F32, xs, (off + 2 : U32)), ph_words(U32.to_nat(n))))
+
+# a tree from xs at off
+def pt_load(xs: Array<F32>, +off: U32) -> PTA:
+  pt_next(off, Array.get(F32, xs, off), k => rn => pt_read(1000n, k, off, rn))
+
 type TrainPL<-P: Type> is Type:
   TrainPL{tr: Train<P>, xs: List<&2, F32>}
 
@@ -2826,7 +3129,26 @@ def td3(-P: Type, g: P, +p1: F32, +p2: F32, +l: F32, rp: PL<P>, rm: PL<P>, rv: P
     case PL{p, xp} PL{m, xm} PL{v, xv}:
       TrainPL{Train{p, g, TwoMom{m, v}, p1, p2, l}, List.append(&2, F32, xp, List.append(&2, F32, xm, List.append(&2, F32, xv, [p1, p2])))}
 
-# every number of a training state: the parameters, then the first moments, the second moments, b1^t and b2^t
+# the first k cells of an array, in order
+def cells_l(k: Nat, +i: U32, acc: List<&2, F32>, ra: Array<F32> & F32) -> List<&2, F32>:
+  match k ra:
+    case 0n Tuple{a, v}:
+      List.reverse(&2, F32, acc)
+    case 1n+q Tuple{a, +v}:
+      cells_l(q, (i + 1 : U32), v <> acc, Array.get(F32, a, (i + 1 : U32)))
+
+def tdp2(-P: Type, p: P, g: P, +p1: F32, +p2: F32, +l: F32, xp: List<&2, F32>, r: PTA) -> TrainPL<P>:
+  match r:
+    case PTA{t, xs, +off}:
+      TrainPL{Train{p, g, Packed{t}, p1, p2, l}, List.append(&2, F32, xp, List.append(&2, F32, cells_l(U32.to_nat(off), 0, [], Array.get(F32, xs, 0)), [p1, p2]))}
+
+def tdp(-P: Type, g: P, +p1: F32, +p2: F32, +l: F32, rp: PL<P>, rt: PTU) -> TrainPL<P>:
+  match rp rt:
+    case PL{p, xp} PTU{t, +n}:
+      tdp2(P, p, g, p1, p2, l, xp, pt_store(t, Array.new(F32, depth(U32.to_nat(n)), 0.0), 0))
+
+# every number of a training state: the parameters, then the first moments, the second moments, b1^t and b2^t (packed
+# moments: their tree's cells, pt_store's layout, in place of the two moments)
 def Train.dump(~P: Type, ~X: Type, ~Y: Type, ~S: Type, ~m: Layer<P, X, Y, S>, tr: Train<P>) -> TrainPL<P>:
   match tr:
     case Train{p, g, NoMom{}, +p1, +p2, +l}:
@@ -2835,6 +3157,8 @@ def Train.dump(~P: Type, ~X: Type, ~Y: Type, ~S: Type, ~m: Layer<P, X, Y, S>, tr
       td1(P, g, p1, p2, l, Layer.dump(P, X, Y, S, m, p), Layer.dump(P, X, Y, S, m, mm))
     case Train{p, g, TwoMom{mm, vv}, +p1, +p2, +l}:
       td3(P, g, p1, p2, l, Layer.dump(P, X, Y, S, m, p), Layer.dump(P, X, Y, S, m, mm), Layer.dump(P, X, Y, S, m, vv))
+    case Train{p, g, Packed{t}, +p1, +p2, +l}:
+      tdp(P, g, p1, p2, l, Layer.dump(P, X, Y, S, m, p), pt_cells(t))
 
 def f32_at(xs: List<&2, F32>, n: Nat) -> F32:
   match xs n:
@@ -2879,7 +3203,24 @@ def tr1(~P: Type, ~X: Type, ~Y: Type, ~S: Type, ~m: Layer<P, X, Y, S>, mm: P, vv
     case PA{p, xs, off}:
       tr2(~P, ~X, ~Y, ~S, ~m, p, vv, g, Layer.load(P, X, Y, S, m, mm, xs, off))
 
-# a training state filled from the numbers Train.dump wrote (its buffers are overwritten in place)
+def trp4(-P: Type, p: P, g: P, t: PTree, +p1: F32, r: Array<F32> & F32) -> Train<P>:
+  match r:
+    case Tuple{xs, p2}: Train{p, g, Packed{t}, p1, p2, 0.0}
+
+def trp3(-P: Type, p: P, g: P, t: PTree, r: Array<F32> & F32, +off: U32) -> Train<P>:
+  match r:
+    case Tuple{xs, p1}: trp4(P, p, g, t, p1, Array.get(F32, xs, off))
+
+def trp2(-P: Type, p: P, g: P, r: PTA) -> Train<P>:
+  match r:
+    case PTA{t, xs, +off}: trp3(P, p, g, t, Array.get(F32, xs, off), (off + 1 : U32))
+
+def trp(-P: Type, g: P, r: PA<P>) -> Train<P>:
+  match r:
+    case PA{p, xs, +off}: trp2(P, p, g, pt_load(xs, off))
+
+# a training state filled from the numbers Train.dump wrote (its buffers are overwritten in place; packed moments are
+# built again from the tree's cells)
 def Train.restore(~P: Type, ~X: Type, ~Y: Type, ~S: Type, ~m: Layer<P, X, Y, S>, tr: Train<P>, xs: Array<F32>) -> Train<P>:
   match tr:
     case Train{p, g, NoMom{}, p1, p2, l}:
@@ -2888,6 +3229,8 @@ def Train.restore(~P: Type, ~X: Type, ~Y: Type, ~S: Type, ~m: Layer<P, X, Y, S>,
       tr_m1(~P, ~X, ~Y, ~S, ~m, mm, g, Layer.load(P, X, Y, S, m, p, xs, 0))
     case Train{p, g, TwoMom{mm, vv}, p1, p2, l}:
       tr1(~P, ~X, ~Y, ~S, ~m, mm, vv, g, Layer.load(P, X, Y, S, m, p, xs, 0))
+    case Train{p, g, Packed{t}, p1, p2, l}:
+      trp(P, g, Layer.load(P, X, Y, S, m, p, xs, 0))
 
 # ---- writing numbers straight from an array, a chunk at a time ----
 # File.write_bytes takes a list with one cell per byte; one list for a whole model would take several GB at SmolLM2's
@@ -2983,6 +3326,20 @@ def tsa_mv(~P: Type, ~X: Type, ~Y: Type, ~S: Type, ~m: Layer<P, X, Y, S>, +path:
   match r:
     case PA{p, xs, off}: tsa_v(~P, ~X, ~Y, ~S, ~m, path, p, vv, g, p1, p2, l, Layer.store(P, X, Y, S, m, mm, xs, off))
 
+def tsp3(-P: Type, +path: String, p: P, g: P, +p1: F32, +p2: F32, +l: F32, r: PTA) -> IO(Train<P>):
+  match r:
+    case PTA{t, xs, +off}:
+      tsa_fin(P, path, g, Packed{t}, p1, p2, l, PA{p, Array.set(F32, Array.set(F32, xs, off, p1), (off + 1 : U32), p2), (off + 2 : U32)})
+
+def tsp2(-P: Type, +path: String, g: P, +p1: F32, +p2: F32, +l: F32, t: PTree, r: PA<P>) -> IO(Train<P>):
+  match r:
+    case PA{p, xs, +off}: tsp3(P, path, p, g, p1, p2, l, pt_store(t, xs, off))
+
+def tsp(~P: Type, ~X: Type, ~Y: Type, ~S: Type, ~m: Layer<P, X, Y, S>, +path: String, p: P, g: P, +p1: F32, +p2: F32, +l: F32, rt: PTU) -> IO(Train<P>):
+  match rt:
+    case PTU{t, +n}:
+      tsp2(P, path, g, p1, p2, l, t, Layer.store(P, X, Y, S, m, p, Array.new(F32, depth(U32.to_nat(((Layer.count(P, X, Y, S, m) + n : U32) + 2 : U32))), 0.0), 0))
+
 # the layout Train.dump gives, written from one array instead of a list (the same bytes)
 def Train.save(~P: Type, ~X: Type, ~Y: Type, ~S: Type, ~m: Layer<P, X, Y, S>, +path: String, tr: Train<P>) -> IO(Train<P>):
   match tr:
@@ -2992,3 +3349,5 @@ def Train.save(~P: Type, ~X: Type, ~Y: Type, ~S: Type, ~m: Layer<P, X, Y, S>, +p
       tsa_mm(~P, ~X, ~Y, ~S, ~m, path, mm, g, p1, p2, l, Layer.store(P, X, Y, S, m, p, Array.new(F32, depth(U32.to_nat((2 * Layer.count(P, X, Y, S, m) : U32))), 0.0), 0))
     case Train{p, g, TwoMom{mm, vv}, +p1, +p2, +l}:
       tsa_mv(~P, ~X, ~Y, ~S, ~m, path, mm, vv, g, p1, p2, l, Layer.store(P, X, Y, S, m, p, Array.new(F32, depth(U32.to_nat(((3 * Layer.count(P, X, Y, S, m) : U32) + 2 : U32))), 0.0), 0))
+    case Train{p, g, Packed{t}, +p1, +p2, +l}:
+      tsp(~P, ~X, ~Y, ~S, ~m, path, p, g, p1, p2, l, pt_cells(t))
