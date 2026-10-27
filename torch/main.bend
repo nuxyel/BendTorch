@@ -2120,8 +2120,13 @@ def Mul2(+n: Nat, +c: Nat) -> Layer<Unit, Two<TA.Mat<n, c>, TA.Mat<n, c>>, TA.Ma
 
 # ---- Residual: y = x + f(x), for any layer f from n x c to n x c ----
 
+# over any X with a copy (dup), an addition (add) and a layer that adds a pair (join): Seq(Fork(Id, f), join). Residual
+# is this over matrices; the law residual runs it over the exact model of torch/spec.bend
+def ResidualOf(~X: Type, ~P: Type, ~S: Type, ~dup: X -> Two<X, X>, ~add: X -> X -> X, ~join: Layer<Unit, Two<X, X>, X, Unit>, ~f: Layer<P, X, X, S>) -> Layer<Two<Two<Unit, P>, Unit>, X, X, Two<Two<Unit, S>, Unit>>:
+  Seq(~Two<Unit, P>, ~Unit, ~X, ~Two<X, X>, ~X, ~Two<Unit, S>, ~Unit, ~Fork(~Unit, ~P, ~X, ~X, ~X, ~Unit, ~S, ~dup, ~add, ~Id(~X), ~f), ~join)
+
 def Residual(~n: Nat, ~c: Nat, ~P: Type, ~S: Type, ~f: Layer<P, TA.Mat<n, c>, TA.Mat<n, c>, S>) -> Layer<Two<Two<Unit, P>, Unit>, TA.Mat<n, c>, TA.Mat<n, c>, Two<Two<Unit, S>, Unit>>:
-  Seq(~Two<Unit, P>, ~Unit, ~TA.Mat<n, c>, ~Two<TA.Mat<n, c>, TA.Mat<n, c>>, ~TA.Mat<n, c>, ~Two<Unit, S>, ~Unit, ~Fork(~Unit, ~P, ~TA.Mat<n, c>, ~TA.Mat<n, c>, ~TA.Mat<n, c>, ~Unit, ~S, ~(m => Mat.dup(n, c, m)), ~(a => b => Mat.sum2(n, c, a, b)), ~Id(~TA.Mat<n, c>), ~f), ~Add2(n, c))
+  ResidualOf(~TA.Mat<n, c>, ~P, ~S, ~(m => Mat.dup(n, c, m)), ~(a => b => Mat.sum2(n, c, a, b)), ~Add2(n, c), ~f)
 
 # =====================================================================================================
 # RoPE (the rotate-half form of Llama and `transformers`): rows are positions (row r is position r mod t), each row

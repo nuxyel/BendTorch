@@ -713,7 +713,7 @@ Six new laws and one rewritten, all by `--verdict`, about the code the demos exe
   fused multiply-add. Bend's build has none (clang gets no `-march`, and the emitted C puns each F32 through a word
   between the multiply and the add, so even `-march=native` fuses nothing); built with `-march=native
   -ffp-contract=fast`, the hot product loop fuses and the gradients' error is unchanged. The missing FMA stays a
-  language item (an upstream draft is in bend-ml's `docs/upstream/fma-codegen.md`); the cause of the 1.8x is not found.
+  language item (an upstream report is drafted, not posted); the cause of the 1.8x is not found.
 - Training, 3 AdamW steps (lr 1e-4): at 360M every loss is within the tolerance of PyTorch's (0.47, 0.58, 0.16). At 135M
   the third is 1.38 of it off PyTorch and 1.84 off float64 (PyTorch float32: 0.46): AdamW's first update moves each
   weight by about lr times the sign of its gradient, so where a gradient is near zero its rounding flips the step.
@@ -792,7 +792,7 @@ Six new laws and one rewritten, all by `--verdict`, about the code the demos exe
   CPU: nsys counted about 13,000 CPU page faults a step of the block. The products alone win from SmolLM2's sizes up
   (bend-ml-tensor-gpu: 1.6-2.8x), not inside this training step.
 - What would change it: the whole step on the device (the element-wise layers and the optimizer as bangs too, so the
-  arrays stay there), and the upstream fixes drafted in bend-ml's `docs/upstream/` (the error poll, the leaf order).
+  arrays stay there), and the upstream fixes for the error poll (bendlang/bend#1776) and the leaf order (#1780).
 - bend-ml-tensor-gpu 0.1.0.0 is on BendHub (2026-10-18): `torch/gpu.bend` imports it from there, `vendor/` is gone,
   and so are the three mutants that changed the local copy (tensor-gpu's bits are bend-ml's test; 61 mutants now).
 
@@ -1168,7 +1168,7 @@ Six new laws and one rewritten, all by `--verdict`, about the code the demos exe
   instead of 2 (12% fewer instructions than AVX2), likely the tuning, not a new instruction set.
 - Not adopted, as decided: the speed has to be what anyone gets from `bend`. Upstream declined `$CFLAGS` for `bend -o`
   (PR #1461, 2026-10-14) in favour of `bend X.bend -o x.c` and clang by hand. The one thing left, that a `$CC` with flags
-  is dropped silently, is an issue draft in bend-ml's `docs/upstream/cc-silent-fallback.md`. `docs/limitations.md` has a
+  is dropped silently, is bendlang/bend#1802. `docs/limitations.md` has a
   line on it.
 - CPU against GPU, alternated: 3 steps take 15.13 s on 16 CPU threads (14.97-15.26) and 27.59 s on the GPU
   (27.56-27.64), 1.82x, 3 rounds; yesterday's single runs gave 1.85x on 3 steps and 1.90x over the 400-step fine-tuning.
@@ -1367,7 +1367,7 @@ Six new laws and one rewritten, all by `--verdict`, about the code the demos exe
   round, with the same loss bits. By the program's own clock (`train_ms`, the three steps only, as every GPU number
   above was measured), one run each: 20.99 s against 20.76 s. #1447 (GPU bangs chain their rounds on the device) and
   #1602 (L1 kept in `bend_dev`) change little here, where most of a step is the host's work between bangs. Samples in
-  bend2-lab `results/2026-10-23-b38/`.
+  my private notes.
 - I first read 22.5 s as slower than the README's 7.0 s a step (20.9 s on 2026-10-21): it was the other clock. The
   difference is loading the weights, 1.3-3.4 s depending on the page cache. Checked on the way: the 2026-10-21 GPU binary
   runs at today's speed (22.2-22.4 s, 3 alternated rounds against today's 2.0.37 build), and nsys gives the same device
@@ -1536,7 +1536,7 @@ Six new laws and one rewritten, all by `--verdict`, about the code the demos exe
   their arithmetic (dK and dV summed over the group's heads in order), so the bits are the same, and `fpar`/`bpar` are
   unchanged, so the laws `attn_par_fwd` and `attn_par_bwd` still cover the tree. Five new mutants (a unit's K and V
   columns, a block's rows, the output's, dO's and dK's columns), caught by `test_ops` (2 sequences x 2 groups).
-- Idle machine, 3 alternated rounds, `train 3` (bend2-lab's 2026-10-25 window): 12.70 s -> 10.95 s on 16 threads
+- Idle machine, 3 alternated rounds, `train 3` (the 2026-10-25 window): 12.70 s -> 10.95 s on 16 threads
   (-13.7%), 41.7 s on one thread either way; every output is `bench/bits.txt`'s. Gates: laws, check, bits, check-js,
   corpus, gpu, bits-smol, smol, mutate (122 of 122 as expected).
 
@@ -1550,3 +1550,93 @@ Six new laws and one rewritten, all by `--verdict`, about the code the demos exe
   with the same defs outside the proofs as `torch/` (58, 105, 22); `fast_test` and `gpu_test` print 0 on 1 and 16
   threads; `test_infra` and `test_dtype` pass; the tiny Llama's `train 50` gives `bench/bits.txt`'s digest on 1 and 16
   threads. The READMEs import 1.1.1.0.
+
+## Two laws: both_sum and residual (2026-10-25)
+
+- `Both` and `Residual` were the two combinators of the Llama block with no law. `both_sum` runs `T.Both`'s own code on
+  two linear layers of the exact model (`spec.bend`'s `BothL`): `dy1·y1 + dy2·y2 = dx1·x1 + dx2·x2`, each layer's
+  `adjoint` on its own side. `residual` needed the composition written once over any type: `T.ResidualOf(X, dup, add,
+  join, f)` is `Seq(Fork(Id, f), join)`, and both `Residual`s (`main.bend` and `fast.bend`, the one the demos use) are
+  it over matrices with `Add2`. The law runs it over vectors with a linear `f` and `Add2`'s twin (`spec.bend`'s `AddL`):
+  `dy·(x + W·x) = (dy + Wᵀ·dy)·x`. 24 laws in all (23 in `LAWS.bend` and `unpair_pair`).
+- The emitted C of `tiny_llama`, `ops_test`, `fast_test` and `smol` is the same as before, apart from constructor ids and
+  the template's name, and `make bits` gives every output of `bench/bits.txt`.
+- Two new mutants, `ResidualOf`'s backward pass dropping the skip connection's gradient or the layer's, are rejected at
+  `Laws.residual`. No mutant of `Both` that still type-checks changes the input gradient (its sides have their own
+  types), so `both_sum` adds no mutant; it says the sides never mix.
+- Dropped from the plan: the BF16 pack and unpack round trip (the checker cannot compute F32, and the U32 bit operations
+  would need lemmas it cannot prove generally) and `L.piece` filling the layout (it lives in `load.bend`, which imports
+  foreign code, so no file with laws can import it).
+- Gates: `make laws` (both checkers), `make check`, `make bits`, the two new mutants.
+
+## AdamW on 16 threads where it still ran on one (2026-10-26)
+
+- Timed alone, `Opt.mat` runs at 1.0x on 16 threads. With F32 moments the demos' `fast.bend` layers already split it
+  (`opt_mat`, `par4`); two paths still took main.bend's one loop: `fast.bend`'s `Embedding` was `T.Embedding`, whose step
+  is `T.mat_step` (SmolLM2's 49152 x 576 table, tied to the head), and packed BF16 moments (`CAdamWBF16`, the 1.7B's),
+  which `opt_mat` handed to `T.Opt.mat`.
+- Now `fast.bend`'s `Embedding` is main.bend's with its step through `mat_step`, and packed moments run in blocks of
+  whole words: two moments share a word, so a block of words i0 .. i0 + cnt - 1 runs main.bend's `adamh_l` (or
+  `adamhv_l`) over elements 2·i0 .. 2·(i0 + cnt) - 1, the last block stopping at n. No word is written by two blocks and
+  each element's arithmetic is main.bend's.
+- `demo/fast_test.bend` adds both packed layouts (two steps from new, a 1537x577 matrix so the last word holds one
+  moment, 64 blocks) and the Embedding's step: 0 differing words on 1 and 16 threads. A mutant that starts a block at
+  element i0 instead of 2·i0 is caught (1,959,690 words); one that lets the last block run past n survives, as it must
+  (the cells past n are zeros, and AdamW keeps zero at zero). Gates: check, bits, bits-smol, mutate (126 of 126 as
+  expected, after pointing the mutant that drops fast.bend's packed step at the new case).
+- RMSNorm is left as it is: in the idle timeline of `train 3` (2026-10-25) it takes 0.02 s of a 4.00 s step, on 3.3
+  threads. Timing the AdamW change waits for the next idle window.
+- Found on the way: `scripts/mutate.py`'s fast gate expected 13 zeros from a program that printed 12, from 2026-10-21
+  (272a256) on, so its 7 mutants counted as caught without being tested. Run again with the right count, all 7 are
+  caught. The gate now expects 15, and `mutate.py` first runs every gate on the unmutated code and stops if one fails.
+
+## SmolLM2-1.7B's memory: the allocator, not the activations (2026-10-26)
+
+- The plan was to free activations earlier in the backward pass so AdamW's v can stay F32 at 1.7B. Measured first on
+  1.7B's shapes cut to 2 and 4 blocks (`train 2`, F32 moments, peak RSS): at one thread a block adds 1,078 MB, its state
+  alone (4 x 268 MB); the activations it saves (about 56 MB) do not show. At 16 threads a block adds about 0.4 GB more:
+  Bend's allocator parks, per thread and size class, one freed generation (COLD), and for blocks of 32,768 words or more
+  one block is a generation, so each thread keeps a big block no other thread can take.
+- With big blocks sent straight to the shared bank (a patch to the emitted C, in my
+  private notes), the 4-block model peaks at 7.18 GB on 16 threads instead of 7.87-8.43, the
+  one-thread level, with the same bits. At 24 blocks that is about 2.5 GB of the 1.7B step's 24.1 GB.
+- Estimated from the one-thread numbers: v in F32 (m packed) needs about 25.1 GB with the fix and 27.6 GB without. Reported
+  upstream as bendlang/bend#1856; `V16=0 scripts/smol.sh 1.7b` writes the
+  1.7B with v in F32 for the run that measures it.
+- Idle window (2026-10-26 00:05-00:12): `train 3` on 135M, 16 threads, 3 alternated rounds, 10,977 ms before the
+  packed and embedding blocks against 10,719 after (-2.3%), the same bits. The full 1.7B (m and v packed) with the
+  allocator patch: two steps peak at 22.6 GB (KB / 10^6) against 24.1 GB on 2026-10-24, in 59.7 s against 84.1 s (both
+  changes), the same two losses. v in F32 (`V16=0`), with the patch and 27 GB free: 26.0 GB, 59.6 s for two steps,
+  losses 2.6379600 and 2.5548436 (1 ulp above the packed run's second). So v stays F32 at 1.7B once the allocator stops
+  parking big blocks (bendlang/bend#1856); without it, about 27.6 GB.
+
+## SmolLM2-1.7B fine-tuned on Tiny Shakespeare (2026-10-27)
+
+- `demo/smol.bend finetunest <k> <e> <model.safetensors>`: `finetune` from Hugging Face's weights (at 135M, 2 steps:
+  the same bits as `finetune` from `init.bin`). The 1.7B (`scripts/smol.sh 1.7b`, m and v packed) with the allocator
+  patch (bendlang/bend#1856), 100 steps, the held-out loss on `ft_eval.bin` every 25, 16 threads, idle machine, against
+  a PyTorch twin with the same BF16 moments.
+- At `cfg()`'s lr 1e-4 (the 135M's) the held-out loss rises, 2.0389 -> 2.4924, in both systems to 5 digits: too hot
+  for the 1.7B with two sequences a batch and no warmup. At lr 1e-5 it falls, 2.0389 -> 1.8708 at step 75 and 1.8743
+  at 100, every evaluation within the tolerance of the twin (0.67x-0.80x).
+- 3,331 s for the 100 steps and 4 evaluations against PyTorch's 1,336 s (2.5x); peak 22.6 GB against 24.5 GB.
+- `make mutate` at bfc6082 (devel with PR #9 and `finetunest`): 126 mutants, 126 as expected. 123 caught; the 3 that
+  survive are the known equivalent ones (the GPU cross-entropy's block size, the packed AdamW's last block past n, the
+  whole-tensor sum's 1-cell wrap, which its bounds mutant catches), each with its reason in `scripts/mutate.py`.
+
+## v1.2.0: the gates (2026-10-27)
+
+- In since v1.1.1: PR #9 (adeerkhan: reusing parameters in a loop, `demo/loop_test.bend` in the build), PR #11
+  (adeerkhan, fixes #10: the toolkit found through the same `nvrtc.h` candidates in the Makefile, `gpu_expcr.sh` and
+  `mutate.py`, `lib64` or `lib`, one `cuda-toolkit` guard for `gpu` and `smol-gpu`, the first GPU build checked to link
+  libnvrtc), PR #14 (adeerkhan, fixes #13: `Linear`, `LinearFirst` and `LinearNB` in `fast.bend` and `gpu.bend`, the
+  demos calling them), `finetunest`, the laws `both_sum` and `residual`, AdamW's embedding and packed paths on 16
+  threads, and the package and CI fixes. A minor release: #14 adds names to the published `-fast` and `-gpu`.
+- `scripts/smol.sh 1.7b` now writes lr 1e-5 into the 1.7B's `cfg()` (`LR=` sets another; `LR=1e-4` rebuilds
+  `BENCHMARK.md`'s W6), so the converging fine-tune above builds from the repository; the 135M's `cfg()` keeps 1e-4.
+- Found on the way: `scripts/check_js.sh` still expected 12 zeros from the JavaScript `fast_test`, which prints 15 since
+  705fb39, so `make check-js` failed (CI runs it only on pull requests and the schedule). It expects 15 now.
+- One new mutant from #14: `fast.bend`'s `Linear` delegating to `LinearFirstF` (the same type, no input gradient), caught
+  by the MNIST test, whose output layer is `F.Linear`.
+- Gates at 580fa84 (the code of the release): laws, check, bits, corpus, gpu, bits-smol, smol, `make package
+  CORE=bendtorch VERSION=1.2.0.0`, mutate (126 of 126 as expected); check-js after the fix; the new mutant caught.

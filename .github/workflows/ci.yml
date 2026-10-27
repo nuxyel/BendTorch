@@ -32,6 +32,7 @@ jobs:
           ref: ${{ github.event_name == 'schedule' && 'devel' || '' }}
 
       - uses: actions/setup-python@v7
+        id: py
         with:
           python-version: "3.14"
 
@@ -47,8 +48,9 @@ jobs:
         uses: actions/cache@v6
         with:
           path: reference/.venv
-          # a venv holds its absolute path, which has the repository's name in it (the rename to BendTorch broke it)
-          key: venv-${{ runner.os }}-py3.14-${{ github.event.repository.name }}-${{ hashFiles('reference/requirements.txt') }}
+          # a venv holds its absolute path, which has the repository's name in it (the rename to BendTorch broke it),
+          # and links the exact Python it was made with (3.14.9 on the runner broke a 3.14 key)
+          key: venv-${{ runner.os }}-py${{ steps.py.outputs.python-version }}-${{ github.event.repository.name }}-${{ hashFiles('reference/requirements.txt') }}
 
       # only the downloads are cached; the initial weights and batches are written again on every run
       - name: Cache the datasets

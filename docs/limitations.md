@@ -78,8 +78,8 @@ Numbers marked "busy machine" were taken with other jobs running and are a first
   step profiled with nsys on a busy machine (about 460 ms in all, so not the idle average above): about 160 ms filling
   new arrays (Bend's `Array.new` on the device fills its block in one loop on one lane, ~4.6 ns a cell), about 140 ms of
   the work itself, and about 140 ms between bangs (62 gaps of 2.3 ms each there, 0.55 ms on a quieter machine). The work
-  alone is already below the CPU's step; the rest is the runtime. Issue drafts with the measurements are in
-  bend-ml's `docs/upstream/`.
+  alone is already below the CPU's step; the rest is the runtime. The measurements are in
+  bendlang/bend#1776 (the error poll) and #1780 (the leaf order).
 - SmolLM2-135M itself trains on the GPU (`make smol-gpu` passes, 3.3 GB of the 6 GB), and is slower there too: 400
   fine-tuning steps with the held-out evaluations took 68 min on the GPU against 36 min on 16 CPU threads (one run each,
   2026-10-20); both pass the fine-tuning check against PyTorch. Alternated on an idle machine, 3 steps take 27.6 s on the

@@ -126,6 +126,30 @@ def Laws.fork_sum(w1, w2, x, dy1, dy2, g1, g2):
       Equal.cong(Nat, Nat, z => Nat.add(Spec.dotn(Spec.mtv(w1, dy1), x), z), Spec.dotn(dy2, Spec.mv(w2, x)), Spec.dotn(Spec.mtv(w2, dy2), x), Laws.adjoint(w2, dy2, x))),
     Equal.sym(Nat, Spec.dotn(Spec.vadd(Spec.mtv(w1, dy1), Spec.mtv(w2, dy2)), x), Nat.add(Spec.dotn(Spec.mtv(w1, dy1), x), Spec.dotn(Spec.mtv(w2, dy2), x)), dot_vadd(Spec.mtv(w1, dy1), Spec.mtv(w2, dy2), x)))
 
+# PROOF (both_sum): Both runs each layer on its own side, so both sides are pairs of linear passes; each half of the sum
+# is its layer's adjoint law.
+def Laws.both_sum(w1, w2, x1, x2, dy1, dy2, g1, g2):
+  Equal.trans(Nat, Nat.add(Spec.dotn(dy1, Spec.mv(w1, x1)), Spec.dotn(dy2, Spec.mv(w2, x2))), Nat.add(Spec.dotn(Spec.mtv(w1, dy1), x1), Spec.dotn(dy2, Spec.mv(w2, x2))), Nat.add(Spec.dotn(Spec.mtv(w1, dy1), x1), Spec.dotn(Spec.mtv(w2, dy2), x2)),
+    Equal.cong(Nat, Nat, z => Nat.add(z, Spec.dotn(dy2, Spec.mv(w2, x2))), Spec.dotn(dy1, Spec.mv(w1, x1)), Spec.dotn(Spec.mtv(w1, dy1), x1), Laws.adjoint(w1, dy1, x1)),
+    Equal.cong(Nat, Nat, z => Nat.add(Spec.dotn(Spec.mtv(w1, dy1), x1), z), Spec.dotn(dy2, Spec.mv(w2, x2)), Spec.dotn(Spec.mtv(w2, dy2), x2), Laws.adjoint(w2, dy2, x2)))
+
+# PROOF (residual): the forward pass gives x + W·x and the backward pass dy + Wᵀ·dy (Id hands dy back, the linear layer
+# Wᵀ·dy, Fork adds them). Then dy·(x + W·x) = x·dy + (W·x)·dy (dot_comm, dot_vadd) = dy·x + dy·(W·x) (dot_comm twice)
+# = dy·x + (Wᵀ·dy)·x (adjoint) = (dy + Wᵀ·dy)·x (dot_vadd).
+def Laws.residual(w, x, dy, g):
+  +wx = Spec.mv(w, x)
+  +wd = Spec.mtv(w, dy)
+  Equal.trans(Nat, Spec.dotn(dy, Spec.vadd(x, wx)), Spec.dotn(Spec.vadd(x, wx), dy), Spec.dotn(Spec.vadd(dy, wd), x),
+    dot_comm(dy, Spec.vadd(x, wx)),
+    Equal.trans(Nat, Spec.dotn(Spec.vadd(x, wx), dy), Nat.add(Spec.dotn(x, dy), Spec.dotn(wx, dy)), Spec.dotn(Spec.vadd(dy, wd), x),
+      dot_vadd(x, wx, dy),
+      Equal.trans(Nat, Nat.add(Spec.dotn(x, dy), Spec.dotn(wx, dy)), Nat.add(Spec.dotn(dy, x), Spec.dotn(wx, dy)), Spec.dotn(Spec.vadd(dy, wd), x),
+        Equal.cong(Nat, Nat, z => Nat.add(z, Spec.dotn(wx, dy)), Spec.dotn(x, dy), Spec.dotn(dy, x), dot_comm(x, dy)),
+        Equal.trans(Nat, Nat.add(Spec.dotn(dy, x), Spec.dotn(wx, dy)), Nat.add(Spec.dotn(dy, x), Spec.dotn(wd, x)), Spec.dotn(Spec.vadd(dy, wd), x),
+          Equal.cong(Nat, Nat, z => Nat.add(Spec.dotn(dy, x), z), Spec.dotn(wx, dy), Spec.dotn(wd, x),
+            Equal.trans(Nat, Spec.dotn(wx, dy), Spec.dotn(dy, wx), Spec.dotn(wd, x), dot_comm(wx, dy), Laws.adjoint(w, dy, x))),
+          Equal.sym(Nat, Spec.dotn(Spec.vadd(dy, wd), x), Nat.add(Spec.dotn(dy, x), Spec.dotn(wd, x)), dot_vadd(dy, wd, x))))))
+
 def disc(b: Bool) -> Type:
   match b:
     case True{}:

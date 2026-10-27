@@ -56,6 +56,8 @@ lean --version
 
 # --- 3. Python environment --------------------------------------------------------------
 say "Python environment"
+# a venv whose Python is gone (a newer interpreter, a cache from another runner) is made again
+[ -d reference/.venv ] && ! reference/.venv/bin/python -c '' 2>/dev/null && rm -rf reference/.venv
 [ -d reference/.venv ] || python3 -m venv reference/.venv
 reference/.venv/bin/pip install -q --upgrade pip
 reference/.venv/bin/pip install -q -r reference/requirements.txt

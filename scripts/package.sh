@@ -125,7 +125,7 @@ over() {  # demo/$1.bend with its torch/ imports pointed at the local packages
 }
 for d in fast_test gpu_test infra_test dtype_test tiny_llama; do over $d; done
 for t in 1 16; do
-  test "$("$T/fast_test" +RTS --threads $t -RTS | tr '\n' ' ')" = "0 0 0 0 0 0 0 0 0 0 0 0 " || fail "fast_test differs ($t threads)"
+  test "$("$T/fast_test" +RTS --threads $t -RTS | tr '\n' ' ')" = "0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 " || fail "fast_test differs ($t threads)"
   test "$("$T/gpu_test" +RTS --threads $t -RTS | tr '\n' ' ')" = "0 0 0 0 0 0 0 0 " || fail "gpu_test differs ($t CPU threads)"
 done
 echo "package: $CORE-fast's and $CORE-gpu's layers give the core's bits (1 and 16 threads)"

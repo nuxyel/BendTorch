@@ -6,7 +6,7 @@
   <a href="https://github.com/nuxyel/BendTorch/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/nuxyel/BendTorch/ci.yml?branch=main&style=flat-square&label=ci&labelColor=4d4a44&color=7e9a5e" alt="CI"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-8b83b5?style=flat-square&labelColor=4d4a44" alt="MIT license"></a>
   <a href="https://bend-lang.com"><img src="https://img.shields.io/badge/Bend-2.0.39-8b83b5?style=flat-square&labelColor=4d4a44" alt="Bend 2.0.39"></a>
-  <img src="https://img.shields.io/badge/laws%20proved-22-7e9a5e?style=flat-square&labelColor=4d4a44" alt="22 laws proved">
+  <img src="https://img.shields.io/badge/laws%20proved-24-7e9a5e?style=flat-square&labelColor=4d4a44" alt="24 laws proved">
   <img src="https://img.shields.io/badge/planted%20bugs-98%2F98%20as%20expected-7e9a5e?style=flat-square&labelColor=4d4a44" alt="98 planted bugs, 98 as expected">
 </p>
 
@@ -70,7 +70,7 @@ $ bend tests/bad_seq.bend      # Linear(784, 128) followed by Linear(64, 10)
 | `causal_grad` | the backward pass sends no gradient to a key or value after the query's position: row i of the scores' gradient is computed over exactly i + 1 positions |
 | `kv_of_group`, `gqa_head`, `kv_cols` | with `g` query heads per key/value head, query head `j·g + i` reads key/value head `j`; `kv_cols` says it of the columns both passes of attention read, which come from one function |
 | `attn_par_fwd`, `attn_par_bwd` | attention's tree of parallel sequences gives exactly what running them one after another gives, at every depth and however the sequences are split: the parallel passes are the sequential ones |
-| `seq_chain`, `fork_sum` | the `Seq` and `Fork` combinators' own code, run on linear layers, gives a backward pass that is the adjoint of the forward pass: the chain rule through `Seq`, the sum of the input gradients through `Fork` |
+| `seq_chain`, `fork_sum`, `both_sum`, `residual` | the `Seq`, `Fork`, `Both` and `Residual` combinators' own code, run on linear layers, gives a backward pass that is the adjoint of the forward pass: the chain rule through `Seq`, the sum of the input gradients through `Fork`, each side on its own through `Both`, and through `Residual` the gradient of the skip connection plus the layer's |
 | `bc_sym` | broadcasting does not depend on the order of the operands: `x + y` and `y + x` accept the same shapes |
 | `sum_numel`, `cat_numel`, `mat_numel` | summing over an axis, joining two tensors and viewing a matrix as a tensor keep the count of numbers right, for every shape |
 | `narrow_rest`, `narrow_axis`, `permute_rank` | narrowing an axis changes that axis only, to exactly the length asked for; a permutation of the axes keeps the rank |
@@ -152,6 +152,14 @@ on 2026-10-24, idle machine, 3 alternated rounds, a step takes 42.0 s on 16 thre
 same BF16 moments (3.2x), at a peak of 24.1 GB (PyTorch 23.6 GB), and both losses are within the tolerance of
 PyTorch's ([`BENCHMARK.md`](BENCHMARK.md), W6).
 
+On 2026-10-27 I fine-tuned the 1.7B from its real weights on Tiny Shakespeare (`demo/smol.bend finetunest`, built by
+`scripts/smol.sh 1.7b`), 100 steps with the held-out loss every 25, against a PyTorch twin with the same BF16 moments.
+The learning rate decides it. At 1e-4, the 135M's rate and `cfg()`'s default, the held-out loss rises from 2.039 to
+2.492, in BendTorch and in PyTorch alike: too high for the 1.7B with two sequences a batch and no warmup. At 1e-5 (the
+rate `scripts/smol.sh 1.7b` writes into the 1.7B's `cfg()`, `LR=` to set another, and the same rate in the twin) it
+falls from 2.039 to 1.874, and every evaluation is within the tolerance of the twin's. One run, idle machine: 2.5x
+PyTorch's time, at 0.92x its peak memory (22.6 GB against 24.5 GB).
+
 The demos' linear layers, their optimizer step and the element-wise layers are the fast ones of
 [`torch/fast.bend`](torch/fast.bend), whose parallel blocks share their arrays instead of copying them (outside the
 proofs; tested bit for bit against the proved layers). The row-wise layers (attention, the norms, softmax, RoPE, the
@@ -167,14 +175,14 @@ against PyTorch's.
 
 ## 05 · Use it
 
-Four packages on BendHub, all at version 1.1.1.0. Import the files you need in your own Bend program:
+Four packages on BendHub, all at version 1.2.0.0. Import the files you need in your own Bend program:
 
 ```python
-import bendtorch@1.1.1.0/main.bend as T          # layers, combinators, losses, optimizers, Train
-import bendtorch@1.1.1.0/tensor.bend as TT       # general tensors: any rank, broadcasting, their gradients
-import bendtorch-fast@1.1.1.0/main.bend as F     # the same layers and bits, in parallel on the CPU
-import bendtorch-gpu@1.1.1.0/main.bend as G      # the layers on one CUDA GPU (all but GELUErf)
-import bendtorch-load@1.1.1.0/main.bend as L     # weights from flat binary and safetensors files, checkpoints
+import bendtorch@1.2.0.0/main.bend as T          # layers, combinators, losses, optimizers, Train
+import bendtorch@1.2.0.0/tensor.bend as TT       # general tensors: any rank, broadcasting, their gradients
+import bendtorch-fast@1.2.0.0/main.bend as F     # the same layers and bits, in parallel on the CPU
+import bendtorch-gpu@1.2.0.0/main.bend as G      # the layers on one CUDA GPU (all but GELUErf)
+import bendtorch-load@1.2.0.0/main.bend as L     # weights from flat binary and safetensors files, checkpoints
 ```
 
 `bendtorch` holds the laws and their proofs. The other three are outside the proofs on purpose: `-fast` and `-gpu` share

@@ -84,6 +84,77 @@ def opt_fin(-r: Nat, -c: Nat, q: TF.B4<F32, F32, F32, F32>) -> T.MatStep<r, c>:
   match q:
     case TF.B4{w, g, m, v}: T.MatStep{TA.Mat{w}, TA.Mat{g}, T.TwoMom{TA.Mat{m}, TA.Mat{v}}}
 
+# ---- AdamW over packed BF16 moments (CAdamWBF16), in blocks of whole words ----
+# Two moments share a word, so the blocks split the words, not the elements: a block of words i0 .. i0 + cnt - 1 runs
+# main.bend's own loop (adamh_l, or adamhv_l when v stays F32) over elements 2·i0 .. 2·(i0 + cnt) - 1, the last block
+# stopping at the matrix's n. No word is written by two blocks, and each element's arithmetic is main.bend's.
+
+type PE is Data:
+  PE{o: T.Opt, n: U32}
+
+# the elements of a block of cnt words from element e0, the last block stopping at n
+def ph_cnt(+n: U32, +e0: U32, +cnt: Nat) -> Nat:
+  +k = U32.from_nat(Nat.add(cnt, cnt))
+  U32.to_nat(T.ph_pick(U32.is_lt(k, (n - e0 : U32)), k, (n - e0 : U32)))
+
+def pq_b(q: T.PQ) -> TF.B4<F32, F32, U32, U32>:
+  match q:
+    case T.PQ{w, g, m, v}: TF.B4{w, g, m, v}
+
+def pqv_b(q: T.PQV) -> TF.B4<F32, F32, U32, F32>:
+  match q:
+    case T.PQV{w, g, m, v}: TF.B4{w, g, m, v}
+
+def ph_go(+o: T.Opt, +n: U32, +i0: U32, +cnt: Nat, r: TF.B4<F32, F32, U32, U32>) -> TF.B4<F32, F32, U32, U32>:
+  match o r:
+    case T.Adam{+lr, +b1, +b2, +eps, +wd, +dec, +step, +bc2, +c1, +c2} TF.B4{w, g, m, v}:
+      +e0 = (i0 + i0 : U32)
+      pq_b(T.adamh_l(ph_cnt(n, e0, cnt), e0, lr, c1, b2, c2, eps, wd, dec, step, bc2, Array.get(F32, w, e0), Array.get(F32, g, e0), Array.get(U32, m, i0), Array.get(U32, v, i0)))
+    case _ r: r
+
+def ph_leaf(+e: PE, +i0: U32, +cnt: Nat, r: TF.B4<F32, F32, U32, U32>) -> TF.B4<F32, F32, U32, U32>:
+  match e:
+    case PE{+o, +n}: ph_go(o, n, i0, cnt, r)
+
+def phv_go(+o: T.Opt, +n: U32, +i0: U32, +cnt: Nat, r: TF.B4<F32, F32, U32, F32>) -> TF.B4<F32, F32, U32, F32>:
+  match o r:
+    case T.Adam{+lr, +b1, +b2, +eps, +wd, +dec, +step, +bc2, +c1, +c2} TF.B4{w, g, m, v}:
+      +e0 = (i0 + i0 : U32)
+      pqv_b(T.adamhv_l(ph_cnt(n, e0, cnt), e0, lr, c1, b2, c2, eps, wd, dec, step, bc2, Array.get(F32, w, e0), Array.get(F32, g, e0), Array.get(U32, m, i0), Array.get(F32, v, e0)))
+    case _ r: r
+
+def phv_leaf(+e: PE, +i0: U32, +cnt: Nat, r: TF.B4<F32, F32, U32, F32>) -> TF.B4<F32, F32, U32, F32>:
+  match e:
+    case PE{+o, +n}: phv_go(o, n, i0, cnt, r)
+
+def ph_fin(-r: Nat, -c: Nat, +n: U32, q: TF.B4<F32, F32, U32, U32>) -> T.MatStep<r, c>:
+  match q:
+    case TF.B4{w, g, m, v}: T.MatStep{TA.Mat{w}, TA.Mat{g}, T.Packed{T.PLeaf{n, m, v}}}
+
+def phv_fin(-r: Nat, -c: Nat, +n: U32, q: TF.B4<F32, F32, U32, F32>) -> T.MatStep<r, c>:
+  match q:
+    case TF.B4{w, g, m, v}: T.MatStep{TA.Mat{w}, TA.Mat{g}, T.Packed{T.PLeafV{n, m, v}}}
+
+# the words of r·c elements, ceil(r·c / 2)
+def ph_nw(+r: Nat, +c: Nat) -> Nat:
+  Nat.div(Nat.add(Nat.mul(r, c), 1n), 2n)
+
+def ph_leafs(+r: Nat, +c: Nat, +o: T.Opt, wa: Array<F32>, ga: Array<F32>, t: T.PTree) -> T.MatStep<r, c>:
+  match o t:
+    case T.Adam{lr, b1, b2, eps, wd, dec, step, bc2, c1, c2} T.PLeaf{+n, ma, va}:
+      ph_fin(r, c, n, TF.par4(~PE, ~F32, ~F32, ~U32, ~U32, ~ph_leaf, PE{o, n}, ew_depth(Nat.mul(r, c)), ph_nw(r, c), wa, ga, ma, va))
+    case T.Adam{lr, b1, b2, eps, wd, dec, step, bc2, c1, c2} T.PLeafV{+n, ma, va}:
+      phv_fin(r, c, n, TF.par4(~PE, ~F32, ~F32, ~U32, ~F32, ~phv_leaf, PE{o, n}, ew_depth(Nat.mul(r, c)), ph_nw(r, c), wa, ga, ma, va))
+    case _ t:
+      T.MatStep{TA.Mat{wa}, TA.Mat{ga}, T.Packed{t}}
+
+def ph_mat(+r: Nat, +c: Nat, +o: T.Opt, wa: Array<F32>, ga: Array<F32>, t: T.PTree) -> T.MatStep<r, c>:
+  match t:
+    case T.PNew{v16}:
+      ph_leafs(r, c, o, wa, ga, T.ph_new(Nat.mul(r, c), v16))
+    case t:
+      ph_leafs(r, c, o, wa, ga, t)
+
 # SGD splits two arrays, momentum three, Adam four. No unused parameter-sized buffers.
 def opt_mat(+r: Nat, +c: Nat, +o: T.Opt, w: TA.Mat<r, c>, g: TA.Mat<r, c>, st: T.OptState<TA.Mat<r, c>>) -> T.MatStep<r, c>:
   match o w g st:
@@ -93,8 +164,9 @@ def opt_mat(+r: Nat, +c: Nat, +o: T.Opt, w: TA.Mat<r, c>, g: TA.Mat<r, c>, st: T
       mom_fin(r, c, TF.par3(~T.Opt, ~F32, ~F32, ~F32, ~mom_leaf, o, ew_depth(Nat.mul(r, c)), Nat.mul(r, c), wd, gd, md))
     case T.Adam{lr, b1, b2, eps, wd, dec, step, bc2, c1, c2} TA.Mat{wa} TA.Mat{ga} T.TwoMom{TA.Mat{ma}, TA.Mat{va}}:
       opt_fin(r, c, TF.par4(~T.Opt, ~F32, ~F32, ~F32, ~F32, ~opt_leaf, o, ew_depth(Nat.mul(r, c)), Nat.mul(r, c), wa, ga, ma, va))
-    # packed BF16 moments (CAdamWBF16): main.bend's step, in one block
-    case o w g T.Packed{t}: T.Opt.mat(r, c, o, w, g, T.Packed{t})
+    # packed BF16 moments (CAdamWBF16): blocks of whole words
+    case T.Adam{lr, b1, b2, eps, wd, dec, step, bc2, c1, c2} TA.Mat{wa} TA.Mat{ga} T.Packed{t}:
+      ph_mat(r, c, o, wa, ga, t)
     case _ w g st: T.MatStep{w, g, st}
 
 def mat_step(+r: Nat, +c: Nat, +op: T.Opt, p: TA.Mat<r, c>, g: TA.Mat<r, c>, st: T.OptState<TA.Mat<r, c>>) -> T.Step<TA.Mat<r, c>>:
@@ -248,13 +320,13 @@ def mul2_b2(+n: Nat, +c: Nat, s: T.Two<TA.Mat<n, c>, TA.Mat<n, c>>, d: T.Two<TA.
 def Mul2(+n: Nat, +c: Nat) -> T.Layer<Unit, T.Two<TA.Mat<n, c>, TA.Mat<n, c>>, TA.Mat<n, c>, T.Two<TA.Mat<n, c>, TA.Mat<n, c>>>:
   T.Layer{p => x => mul2_f(n, c, x), p => s => dy => g => mul2_b2(n, c, s, Mat.dup(n, c, dy)), op => p => g => st => T.no_step(Unit, op, p, g, st), u => Unit{}, p => T.PL{p, Nil{}}, p => xs => off => T.PA{p, xs, off}, p => xs => off => T.PA{p, xs, off}, u => 0}
 
-# T.Residual with these copies and sums
+# T.Residual with these copies and sums (T.ResidualOf, the composition the law residual is about)
 def Residual(~n: Nat, ~c: Nat, ~P: Type, ~S: Type, ~f: T.Layer<P, TA.Mat<n, c>, TA.Mat<n, c>, S>) -> T.Layer<T.Two<T.Two<Unit, P>, Unit>, TA.Mat<n, c>, TA.Mat<n, c>, T.Two<T.Two<Unit, S>, Unit>>:
-  T.Seq(~T.Two<Unit, P>, ~Unit, ~TA.Mat<n, c>, ~T.Two<TA.Mat<n, c>, TA.Mat<n, c>>, ~TA.Mat<n, c>, ~T.Two<Unit, S>, ~Unit, ~T.Fork(~Unit, ~P, ~TA.Mat<n, c>, ~TA.Mat<n, c>, ~TA.Mat<n, c>, ~Unit, ~S, ~(m => Mat.dup(n, c, m)), ~(a => b => Mat.sum2(n, c, a, b)), ~T.Id(~TA.Mat<n, c>), ~f), ~Add2(n, c))
+  T.ResidualOf(~TA.Mat<n, c>, ~P, ~S, ~(m => Mat.dup(n, c, m)), ~(a => b => Mat.sum2(n, c, a, b)), ~Add2(n, c), ~f)
 
-# main.bend's RMSNorm, RoPE, Attention, MSE, Embedding and CrossEntropy under their own names, so that a program that
-# takes its layers from here can take device versions of the same names from another file by its import line alone
-# (they run as in main.bend)
+# main.bend's RMSNorm, RoPE, Attention, MSE and CrossEntropy under their own names (Embedding below, with its step in
+# blocks), so that a program that takes its layers from here can take device versions of the same names from another
+# file by its import line alone (they run as in main.bend)
 def RMSNorm(+n: Nat, +d: Nat, +eps: F32) -> T.Layer<TA.Mat<1n, d>, TA.Mat<n, d>, TA.Mat<n, d>, TA.Mat<n, d>>:
   T.RMSNorm(n, d, eps)
 
@@ -267,8 +339,24 @@ def Attention(+n: Nat, +w: Nat, +kvw: Nat, +b: Nat, +t: Nat, +kv: Nat, +g: Nat, 
 def MSE(+n: Nat, +c: Nat, y: TA.Mat<n, c>, t: TA.Mat<n, c>) -> T.LossOut<TA.Mat<n, c>>:
   T.MSE(n, c, y, t)
 
+# main.bend's Embedding with its optimizer step in blocks (mat_step): the table is SmolLM2's largest matrix (49152 x 576,
+# tied to the output head), and main.bend's step updates it on one thread
 def Embedding(+n: Nat, +v: Nat, +d: Nat) -> T.Layer<TA.Mat<v, d>, List<&2, Nat>, TA.Mat<n, d>, List<&2, Nat>>:
-  T.Embedding(n, v, d)
+  T.Layer{p => x => T.emb_f(n, v, d, x, p), p => s => dy => g => T.emb_bwd(n, v, d, p, s, dy, g), op => p => g => st => mat_step(v, d, op, p, g, st), u => TA.Mat.zeros(v, d), p => T.Mat.dump(v, d, p), p => xs => off => T.Mat.restore(v, d, p, xs, off), p => xs => off => T.Mat.store(v, d, p, xs, off), u => U32.from_nat(Nat.mul(v, d))}
 
 def CrossEntropy(+n: Nat, +c: Nat, z: TA.Mat<n, c>, +labels: List<&2, Nat>) -> T.LossOut<TA.Mat<n, c>>:
   T.CrossEntropy(n, c, z, labels)
+
+# ---- main.bend's names for the same layers (#13) ----
+#
+# A program written against torch/main.bend switches to this lane by its import line alone:
+# `import ../torch/fast.bend as F` and F.Linear / F.LinearFirst / F.LinearNB, no renames.
+
+def Linear(+n: Nat, +i: Nat, +o: Nat, +par: Nat) -> T.Layer<T.Lin<i, o>, TA.Mat<n, i>, TA.Mat<n, o>, TA.Mat<n, i>>:
+  LinearF(n, i, o, par)
+
+def LinearFirst(+n: Nat, +i: Nat, +o: Nat, +par: Nat) -> T.Layer<T.Lin<i, o>, TA.Mat<n, i>, TA.Mat<n, o>, TA.Mat<n, i>>:
+  LinearFirstF(n, i, o, par)
+
+def LinearNB(+n: Nat, +i: Nat, +o: Nat, +par: Nat) -> T.Layer<TA.Mat<o, i>, TA.Mat<n, i>, TA.Mat<n, o>, TA.Mat<n, i>>:
+  LinearNBF(n, i, o, par)

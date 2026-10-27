@@ -19,8 +19,8 @@
 # a tree of leaves, every node sharing the arrays. The code of a leaf is below, in plain Bend, and computes each number
 # with main.bend's own expression or row code (rmsf_row, ssq, rmsb_dot, rope_one, dot0, psmc, g_set2, adam_m..), so the bits
 # are main.bend's, except where an exponential is taken on the device (SiLU, attention's softmax, cross-entropy): CUDA
-# takes the float overload of exp there and its last bit can differ from the host's (bend-ml
-# docs/upstream/gpu-math-overloads.md); 1 ulp is accepted there, my decision of 2026-10-18 (tests: demo/gpu_test.bend
+# takes the float overload of exp there and its last bit can differ from the host's (the known
+# limit of bendlang/bend#1305); 1 ulp is accepted there, my decision of 2026-10-18 (tests: demo/gpu_test.bend
 # and demo/gpu_layers_test.bend). Sizes, depths and capacities are
 # computed on the host and passed in. The arrays stay on the device from one bang to the next as long as the host only
 # passes their handles; a bang that follows the host's parallel lets in one evaluation runs on the CPU threads.
@@ -1258,3 +1258,17 @@ def cx_1(+n: Nat, +c: Nat, +labels: List<&2, Nat>, z: Array<F32>, r: IA) -> T.Lo
 def CrossEntropy(+n: Nat, +c: Nat, z: TA.Mat<n, c>, +labels: List<&2, Nat>) -> T.LossOut<TA.Mat<n, c>>:
   match z:
     case TA.Mat{d}: cx_1(n, c, labels, d, ids_arr(n, labels))
+
+# ---- main.bend's names for the same layers (#13) ----
+#
+# A program written against torch/main.bend switches to this lane by its import line alone:
+# `import ../torch/gpu.bend as F` and F.Linear / F.LinearFirst / F.LinearNB, no renames.
+
+def Linear(+n: Nat, +i: Nat, +o: Nat, +par: Nat) -> T.Layer<T.Lin<i, o>, TA.Mat<n, i>, TA.Mat<n, o>, TA.Mat<n, i>>:
+  LinearF(n, i, o, par)
+
+def LinearFirst(+n: Nat, +i: Nat, +o: Nat, +par: Nat) -> T.Layer<T.Lin<i, o>, TA.Mat<n, i>, TA.Mat<n, o>, TA.Mat<n, i>>:
+  LinearFirstF(n, i, o, par)
+
+def LinearNB(+n: Nat, +i: Nat, +o: Nat, +par: Nat) -> T.Layer<TA.Mat<o, i>, TA.Mat<n, i>, TA.Mat<n, o>, TA.Mat<n, i>>:
+  LinearNBF(n, i, o, par)

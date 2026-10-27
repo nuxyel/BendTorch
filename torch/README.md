@@ -34,8 +34,8 @@ cost at run time.
   `bend-ml-nat-lemmas@0.1.2.0`.
 - `bend PROOF.bend --verdict` (from the repository's root) → `ALL PROOFS CHECK`, with no `@unsafe`, no `?TODO` and no
   axioms.
-- On BendHub as `bendtorch@1.1.1.0`: `import bendtorch@1.1.1.0/main.bend as T`, and
-  `import bendtorch@1.1.1.0/tensor.bend as TT` for the general tensors (below); `fast.bend`, `gpu.bend` and `load.bend`
+- On BendHub as `bendtorch@1.2.0.0`: `import bendtorch@1.2.0.0/main.bend as T`, and
+  `import bendtorch@1.2.0.0/tensor.bend as TT` for the general tensors (below); `fast.bend`, `gpu.bend` and `load.bend`
   are the packages `bendtorch-fast`, `bendtorch-gpu` and `bendtorch-load`. The programs in `demo/` import the local copy
   (`import ../torch/main.bend as T`).
 
@@ -101,6 +101,14 @@ RoPE, Attention, Embedding and CrossEntropy under the same names), so a program 
 ```python
 import ../torch/main.bend as T
 import ../torch/gpu.bend as F          # instead of ../torch/fast.bend
+```
+
+Both lanes also carry `main.bend`'s names for the three linear layers: `Linear`, `LinearFirst` and `LinearNB` delegate
+to the F-suffixed ones. A program written against `main.bend` therefore switches lanes by changing one import line:
+
+```python
+import ../torch/main.bend as T
+import ../torch/main.bend as F   # change this line to ../torch/fast.bend or ../torch/gpu.bend
 ```
 
 The layers other than the products are tensor-gpu's `run1`..`run4` (bangs over any leaf code) with leaves written here
@@ -235,10 +243,40 @@ def Hidden() -> T.Layer<T.Two<T.Lin<784n, 128n>, Unit>, TA.Mat<100n, 784n>, TA.M
 also the documentation of the model: `T.Two<T.Lin<784n, 128n>, Unit>` is the parameters of a linear layer next to a
 ReLU's (none). Training is `T.Train.step(~P, ~X, ~Y, ~S, ~T, ~Model(), ~loss, cfg, state, x, targets)`.
 
+## Reusing parameters in a loop
+
+A parameter tree holds arrays, and an `Array` is affine: it is not `Data`, so a value of type `P` cannot be used twice
+and cannot be marked `+`. That is why `Layer.fwd` returns the parameters in `Fwd{p, y, s}`: each forward pass hands `p`
+back. An inference loop that calls `fwd` more than once threads `p` through a record:
+
+```python
+type R is Type:
+  R{p: P, x: X}
+
+# fwd's result is a computed value: match it here, then continue the loop
+def R.then(r: T.Fwd<P, X, X>, k: P -> X -> R) -> R:
+  match r:
+    case T.Fwd{p, y, s}:
+      k(p, y)
+
+def loop(k: Nat, r: R) -> R:
+  match k:
+    case 0n:
+      r
+    case 1n+q:
+      match r:
+        case R{p, x}:
+          R.then(T.Layer.fwd(P, X, X, X, Model(), p, x), p2 => y => loop(q, R{p2, y}))
+```
+
+Each step consumes the record, runs `fwd` with the `p` it holds, and builds the next record from the `p` that `fwd`
+returned. The same shape evaluates a model on batches or draws one token at a time; `demo/smol.bend`'s `ev_loop` does
+it over a whole held-out set. [`demo/loop_test.bend`](../demo/loop_test.bend) is this program, built by `make check`.
+
 ## The laws, in plain language
 
 The laws are in [`LAWS.bend`](../LAWS.bend) at the repository's root, the proofs in [`PROOF.bend`](../PROOF.bend). The
-five about linear maps (`seq_chain` and `fork_sum` through the package's own combinators) speak about
+seven about linear maps (`seq_chain`, `fork_sum`, `both_sum` and `residual` through the package's own combinators) speak about
 [`spec.bend`](spec.bend), a model of vectors and matrices as lists of `Nat`, where arithmetic is exact; `block_sum` speaks
 about another model there, a sum as the tree of additions it makes. They say that the formulas of the backward pass are the right ones; whether the F32 code computes
 them to F32's precision is tested against PyTorch, not proved.
@@ -257,6 +295,8 @@ them to F32's precision is tested against PyTorch, not proved.
 | `attn_par_bwd` | The same for the backward pass: `bpar`'s tree gives each sequence's `dQ`, `dK` and `dV` exactly as `bleaf`, one sequence after another. |
 | `seq_chain` | `Seq`'s own code, run on two linear layers of the exact model (`spec.bend`'s `LinL`, a `Layer` like any other), gives a backward pass that is the adjoint of its forward pass: `dy·y = dx·x`, for the `y` its forward pass returns and the `dx` its backward pass returns from the state the forward pass saved. `adjoint_seq` says this of the formulas; this law says it of the combinator: `Seq` hands the second layer's input gradient to the first, the chain rule. Every step of the combinator reduces, so the proof is `adjoint_seq`. |
 | `fork_sum` | `Fork`'s own code, giving one input to two linear layers, returns as input gradient the sum of the two layers' input gradients, and that sum is the adjoint of the pair of outputs: `dy1·y1 + dy2·y2 = dx·x`. A residual block and attention's q, k, v projections are `Fork`s. The proof: the dot of a sum is the sum of the dots, and each is its layer's `adjoint`. A `Fork` that dropped one gradient is caught by it. |
+| `both_sum` | `Both`'s own code, running two linear layers side by side on the two inputs of a pair, gives a backward pass that is the adjoint of its forward pass: `dy1·y1 + dy2·y2 = dx1·x1 + dx2·x2`. Each layer gets its own side's gradient and nothing crosses between the sides. Attention applies RoPE to q and k this way (`Both(RoPE, Both(RoPE, Id))`). The proof: each half of the sum is its layer's `adjoint`. |
+| `residual` | `Residual`'s own code (`ResidualOf`, which `Residual` in `main.bend` and `fast.bend` both are: `Seq(Fork(Id, f), Add2)`), with a linear layer as `f`, gives a backward pass that is the adjoint of its forward pass: for `y = x + W·x`, `dy·y = dx·x`, with `dx = dy + Wᵀ·dy`. The gradient goes through the skip connection untouched and through the layer, and the two are added: the rule every block of the Llama models relies on twice. Over matrices the pair is added by `Add2`; the law runs its twin over vectors (`a + b` forward, `dy` to both backward). The proof: `dy·(x + W·x)` splits into `dy·x + dy·(W·x)`, the second is `(Wᵀ·dy)·x` by `adjoint`, and the two join into `(dy + Wᵀ·dy)·x`. A `Residual` that dropped either gradient is caught by it. |
 | `bc_sym` | Broadcasting does not depend on the order of the operands: shapes `a` and `b` broadcast to `o` exactly when `b` and `a` do, so `x + y` and `y + x` accept the same shapes. The rule on one axis ("the sizes are equal, or one of them is 1") is written as "one way round, or the other", so swapping the operands only swaps the two halves of an "or"; the proof goes axis by axis. |
 | `sum_numel` | Summing over axis `k` partitions the numbers: a tensor of shape `s` holds exactly `size(k)` times as many numbers as its sum over `k`, for every shape and every axis. The proof goes axis by axis and moves `size(k)` to the front with the rules `a·(b·c) = (a·b)·c` and `a·b = b·a`. |
 | `narrow_rest` | Narrowing axis `d` (or giving it any size) changes only that axis: with axis `d` taken out, the shape is what it was. |

@@ -6,6 +6,8 @@
 # demo/smol.bend in place (the committed file); 360m writes .scratch/smol_360m.bend.
 #
 #   scripts/smol.sh 135m | 360m | 1.7b   (1.7b: .scratch/smol_1b7.bend; `train <steps> <model.safetensors>` loads it)
+#   V16=0 scripts/smol.sh 1.7b            (1.7b with AdamW's v in F32, m still packed)
+#   LR=1e-4 scripts/smol.sh 1.7b          (1.7b's AdamW learning rate, 1e-5 by default; 135m and 360m keep cfg()'s 1e-4)
 set -euo pipefail
 cd "$(dirname "$0")/.."
 case "${1:-}" in
@@ -60,8 +62,15 @@ print(out)
 PY
 # SmolLM2-1.7B's RoPE base is 130000 (config.json's rope_theta); 135M's and 360M's are 100000. Its AdamW keeps m and v
 # packed as BF16 (T.CAdamWBF16 with v16): the state is 19.5 GiB instead of 26.0, and a step fits in 32 GB only so.
+# V16=0 keeps v in F32 (22.9 GiB): about 25 GB a step once Bend's allocator stops parking a big block per thread
+# (measured 2026-10-26, NOTES), about 27.6 GB before.
+# Its learning rate is 1e-5: at cfg()'s 1e-4 (the 135M's) the 1.7B's fine-tune on Tiny Shakespeare diverges, in BendTorch
+# and in PyTorch alike, while 1e-5 converges (measured 2026-10-27, NOTES). LR= sets another, written as a decimal literal;
+# BENCHMARK.md's W6 (2026-10-24) ran at 1e-4, so LR=1e-4 rebuilds it.
 if [ "$1" = 1.7b ]; then
+  v16=True; [ "${V16:-1}" = 0 ] && v16=False
+  lr=$(python3 -c 'import sys; s = f"{float(sys.argv[1]):.12f}".rstrip("0"); assert float(s) > 0, s; print(s + "0" * s.endswith("."))' "${LR:-1e-5}")
   sed -i 's/, 100000\.0, {==})/, 130000.0, {==})/g' .scratch/smol_1b7.bend
-  sed -i 's/^  T\.CAdamW{0\.0001, 0\.9, 0\.999, 0\.00000001, 0\.01, 0\.1, 0\.001}$/  T.CAdamWBF16{0.0001, 0.9, 0.999, 0.00000001, 0.01, 0.1, 0.001, True{}}/' .scratch/smol_1b7.bend
-  grep -q 'T.CAdamWBF16{' .scratch/smol_1b7.bend
+  sed -i "s/^  T\.CAdamW{0\.0001, 0\.9, 0\.999, 0\.00000001, 0\.01, 0\.1, 0\.001}\$/  T.CAdamWBF16{$lr, 0.9, 0.999, 0.00000001, 0.01, 0.1, 0.001, $v16{}}/" .scratch/smol_1b7.bend
+  grep -q "T.CAdamWBF16{$lr, " .scratch/smol_1b7.bend
 fi

@@ -106,6 +106,23 @@ def dupv(+x: List<&2, Nat>) -> T.Two<List<&2, Nat>, List<&2, Nat>>:
 def ForkL() -> T.Layer<T.Two<List<&2, List<&2, Nat>>, List<&2, List<&2, Nat>>>, List<&2, Nat>, T.Two<List<&2, Nat>, List<&2, Nat>>, T.Two<List<&2, Nat>, List<&2, Nat>>>:
   T.Fork(~List<&2, List<&2, Nat>>, ~List<&2, List<&2, Nat>>, ~List<&2, Nat>, ~List<&2, Nat>, ~List<&2, Nat>, ~List<&2, Nat>, ~List<&2, Nat>, ~(x => dupv(x)), ~(a => b => vadd(a, b)), ~LinL(), ~LinL())
 
+# two linear layers on the two vectors of a pair, through T.Both
+def BothL() -> T.Layer<T.Two<List<&2, List<&2, Nat>>, List<&2, List<&2, Nat>>>, T.Two<List<&2, Nat>, List<&2, Nat>>, T.Two<List<&2, Nat>, List<&2, Nat>>, T.Two<List<&2, Nat>, List<&2, Nat>>>:
+  T.Both(~List<&2, List<&2, Nat>>, ~List<&2, List<&2, Nat>>, ~List<&2, Nat>, ~List<&2, Nat>, ~List<&2, Nat>, ~List<&2, Nat>, ~List<&2, Nat>, ~List<&2, Nat>, ~LinL(), ~LinL())
+
+# a + b for a pair of vectors; the backward pass hands dy to both (T.Add2 over vectors)
+def add_fwd(+p: Unit, x: T.Two<List<&2, Nat>, List<&2, Nat>>) -> T.Fwd<Unit, List<&2, Nat>, Unit>:
+  match x:
+    case T.Two{a, b}:
+      T.Fwd{p, vadd(a, b), Unit{}}
+
+def AddL() -> T.Layer<Unit, T.Two<List<&2, Nat>, List<&2, Nat>>, List<&2, Nat>, Unit>:
+  T.Layer{p => x => add_fwd(p, x), p => s => dy => g => T.Bwd{p, dupv(dy), g}, op => p => g => st => T.no_step(Unit, op, p, g, st), u => Unit{}, p => T.PL{p, Nil{}}, p => xs => off => T.PA{p, xs, off}, p => xs => off => T.PA{p, xs, off}, u => 0}
+
+# x + W·x through T.ResidualOf, the code of T.Residual: Seq(Fork(Id, linear), AddL)
+def ResL() -> T.Layer<T.Two<T.Two<Unit, List<&2, List<&2, Nat>>>, Unit>, List<&2, Nat>, List<&2, Nat>, T.Two<T.Two<Unit, List<&2, Nat>>, Unit>>:
+  T.ResidualOf(~List<&2, Nat>, ~List<&2, List<&2, Nat>>, ~List<&2, Nat>, ~(x => dupv(x)), ~(a => b => vadd(a, b)), ~AddL(), ~LinL())
+
 def fy(-P: Type, -Y: Type, -S: Type, r: T.Fwd<P, Y, S>) -> Y:
   match r:
     case T.Fwd{p, y, s}:

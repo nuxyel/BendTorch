@@ -5,7 +5,9 @@
 #   Linear 128x576x1536 par 4, LinearNB 32x32x64 par 0 (the tiny Llama), LinearNB 128x576x1536 par 3;
 #   then the optimizer step (SGD, momentum, AdamW) on a 1536x576 matrix and AdamW on a 576 -> 1536 Linear (weights and
 #   bias), the parameter, gradient and both moments after it; SiLU and Mul2 on 512x1536 and SiLU on 32x64, forward and
-#   backward; Residual(SiLU) on 512x576, forward and backward (its copies and sums).
+#   backward; Residual(SiLU) on 512x576, forward and backward (its copies and sums); AdamW with packed BF16 moments
+#   (m and v packed, then m packed and v in F32) on a 1537x577 matrix, two steps from new, odd so the last word holds one
+#   moment, in 64 blocks; the Embedding's AdamW step on a 1537x577 table.
 import Base
 import ../torch/main.bend as T
 import ../torch/fast.bend as F
@@ -36,6 +38,15 @@ def cmp(k: Nat, +i: U32, acc: U32, ra: Array<F32> & F32, rb: Array<F32> & F32) -
 
 def diff(+cnt: Nat, x: Array<F32>, y: Array<F32>) -> U32:
   cmp(cnt, 0, 0, Array.get(F32, x, 0), Array.get(F32, y, 0))
+
+def cmpu(k: Nat, +i: U32, acc: U32, ra: Array<U32> & U32, rb: Array<U32> & U32) -> U32:
+  match k ra rb:
+    case 0n Tuple{a, x} Tuple{b, y}: acc
+    case 1n+p Tuple{a, +x} Tuple{b, +y}:
+      cmpu(p, (i + 1 : U32), (acc + Bool.pick(U32, U32.is_eq(x, y), 0, 1) : U32), Array.get(U32, a, (i + 1 : U32)), Array.get(U32, b, (i + 1 : U32)))
+
+def diffu(+cnt: Nat, x: Array<U32>, y: Array<U32>) -> U32:
+  cmpu(cnt, 0, 0, Array.get(U32, x, 0), Array.get(U32, y, 0))
 
 # one forward and one backward of a layer: its output, its dX and its gradient
 type R<-P: Type, -n: Nat, -i: Nat, -o: Nat> is Type:
@@ -91,6 +102,10 @@ def d_mstate(+r: Nat, +c: Nat, a: T.OptState<TA.Mat<r, c>>, b: T.OptState<TA.Mat
     case T.OneMom{TA.Mat{x}} T.OneMom{TA.Mat{y}}: diff(Nat.mul(r, c), x, y)
     case T.TwoMom{TA.Mat{x}, TA.Mat{u}} T.TwoMom{TA.Mat{y}, TA.Mat{v}}:
       (diff(Nat.mul(r, c), x, y) + diff(Nat.mul(r, c), u, v) : U32)
+    case T.Packed{T.PLeaf{+n1, x, u}} T.Packed{T.PLeaf{+n2, y, v}}:
+      ((Bool.pick(U32, U32.is_eq(n1, n2), 0, 1) + diffu(Nat.div(Nat.add(Nat.mul(r, c), 1n), 2n), x, y) : U32) + diffu(Nat.div(Nat.add(Nat.mul(r, c), 1n), 2n), u, v) : U32)
+    case T.Packed{T.PLeafV{+n1, x, u}} T.Packed{T.PLeafV{+n2, y, v}}:
+      ((Bool.pick(U32, U32.is_eq(n1, n2), 0, 1) + diffu(Nat.div(Nat.add(Nat.mul(r, c), 1n), 2n), x, y) : U32) + diff(Nat.mul(r, c), u, v) : U32)
     case _ _: 1
 
 def d_step(+r: Nat, +c: Nat, a: T.Step<TA.Mat<r, c>>, b: T.Step<TA.Mat<r, c>>) -> U32:
@@ -127,6 +142,22 @@ def opt_steps() -> U32:
 
 def lin_adamw() -> U32:
   d_lstep(576n, 1536n, T.lin_step(576n, 1536n, adamw(), lp(576n, 1536n, 71), lp(576n, 1536n, 73), T.TwoMom{lp(576n, 1536n, 75), lp(576n, 1536n, 77)}), F.lin_step(576n, 1536n, adamw(), lp(576n, 1536n, 71), lp(576n, 1536n, 73), T.TwoMom{lp(576n, 1536n, 75), lp(576n, 1536n, 77)}))
+
+# ---- AdamW over packed BF16 moments, two steps from new, and the Embedding's step ----
+
+def pk_t2(+op: T.Opt, r: T.Step<TA.Mat<1537n, 577n>>) -> T.Step<TA.Mat<1537n, 577n>>:
+  match r:
+    case T.Step{w, g, st}: T.mat_step(1537n, 577n, op, w, mat(1537n, 577n, 103), st)
+
+def pk_f2(+op: T.Opt, r: T.Step<TA.Mat<1537n, 577n>>) -> T.Step<TA.Mat<1537n, 577n>>:
+  match r:
+    case T.Step{w, g, st}: F.mat_step(1537n, 577n, op, w, mat(1537n, 577n, 103), st)
+
+def packed(+v16: Bool) -> U32:
+  d_step(1537n, 577n, pk_t2(adamw(), T.mat_step(1537n, 577n, adamw(), mat(1537n, 577n, 101), mat(1537n, 577n, 102), T.Packed{T.PNew{v16}})), pk_f2(adamw(), F.mat_step(1537n, 577n, adamw(), mat(1537n, 577n, 101), mat(1537n, 577n, 102), T.Packed{T.PNew{v16}})))
+
+def emb_step() -> U32:
+  d_step(1537n, 577n, T.Layer.step(TA.Mat<1537n, 577n>, List<&2, Nat>, TA.Mat<4n, 577n>, List<&2, Nat>, T.Embedding(4n, 1537n, 577n), adamw(), mat(1537n, 577n, 105), mat(1537n, 577n, 106), T.TwoMom{mat(1537n, 577n, 107), mat(1537n, 577n, 108)}), T.Layer.step(TA.Mat<1537n, 577n>, List<&2, Nat>, TA.Mat<4n, 577n>, List<&2, Nat>, F.Embedding(4n, 1537n, 577n), adamw(), mat(1537n, 577n, 105), mat(1537n, 577n, 106), T.TwoMom{mat(1537n, 577n, 107), mat(1537n, 577n, 108)}))
 
 # ---- layers without parameters: output, then dX ----
 
@@ -184,6 +215,7 @@ def test_main() -> IO(Unit):
   do IO<Unit>:
     IO.print(U32.show(first3()) ++ " " ++ U32.show(first4()) ++ " " ++ U32.show(second()) ++ " " ++ U32.show(big_lin()) ++ " " ++ U32.show(tiny_nb()) ++ " " ++ U32.show(big_nb()))
     IO.print(U32.show(opt_steps()) ++ " " ++ U32.show(lin_adamw()) ++ " " ++ U32.show(silu(~512n, ~1536n, 85)) ++ " " ++ U32.show(mul2()) ++ " " ++ U32.show(silu(~32n, ~64n, 87)) ++ " " ++ U32.show(residual()))
+    IO.print(U32.show(packed(True{})) ++ " " ++ U32.show(packed(False{})) ++ " " ++ U32.show(emb_step()))
 
 # This program takes no arguments. Since Bend 2.0.38 a runtime option goes between +RTS and -RTS, and one written
 # without them arrives here as an argument while the program runs on the default thread count, so a check of 1 and 16

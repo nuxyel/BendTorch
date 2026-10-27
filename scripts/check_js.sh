@@ -29,7 +29,7 @@ $PY reference/check_imap.py .scratch/js/imap_check
 $PY reference/test_mlp.py .scratch/js/mlp_test
 $PY reference/test_mnist.py .scratch/js/mnist
 $PY reference/test_tiny.py .scratch/js/tiny_llama 20
-test "$(.scratch/js/fast_test | tr '\n' ' ')" = "0 0 0 0 0 0 0 0 0 0 0 0 " && echo "fast: torch/fast.bend's layers and optimizer step give main.bend's bits (JavaScript)" || { echo "fast: the bits differ (JavaScript)"; exit 1; }
+test "$(.scratch/js/fast_test | tr '\n' ' ')" = "0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 " && echo "fast: torch/fast.bend's layers and optimizer step give main.bend's bits (JavaScript)" || { echo "fast: the bits differ (JavaScript)"; exit 1; }
 # the exact tier, on the whole programs: the JavaScript build must give the native build's bits (bench/bits.txt)
 digest() { sed -E 's/ train_seconds=[0-9.]+//' | sha256sum | cut -c1-16; }
 P=$'ROMEO:\nBut soft, wh'

@@ -60,11 +60,11 @@ SMOLST = smol_st
 
 
 def fast():
-    # torch/fast.bend's layers and optimizer step must keep main.bend's bits (demo/fast_test.bend prints 12 zeros)
+    # torch/fast.bend's layers and optimizer step must keep main.bend's bits (demo/fast_test.bend prints 15 zeros)
     b = subprocess.run(["bend", "demo/fast_test.bend", "-o", ".scratch/mut_fast_test"], capture_output=True, env=ENV)
     if b.returncode != 0:
         return False
-    return subprocess.run([".scratch/mut_fast_test", "+RTS", "--threads", "16", "-RTS"], capture_output=True, text=True).stdout.split() == ["0"] * 13
+    return subprocess.run([".scratch/mut_fast_test", "+RTS", "--threads", "16", "-RTS"], capture_output=True, text=True).stdout.split() == ["0"] * 15
 
 
 FAST = fast
@@ -106,9 +106,21 @@ EXPCR = gpu_expcr
 
 def has_cuda():
     # gpu_expcr needs a CUDA toolkit and a device; on a machine without them (CI's runners) its mutant is skipped and
-    # said so, since there the check would build for the CPU, where the host's exp is the device's
-    home = os.environ.get("CUDA_HOME", os.path.expanduser("~/.local/cuda12"))
-    if not Path(home, "include", "cuda.h").exists() or shutil.which("nvidia-smi") is None:
+    # said so, since there the check would build for the CPU, where the host's exp is the device's.
+    # Find the toolkit exactly as the Makefile and scripts/gpu_expcr.sh do: CUDA_HOME wins, else the first candidate
+    # with include/nvrtc.h; the two ~/.local paths are ours, the rest are cli_build's.
+    home = os.environ.get("CUDA_HOME")
+    if home is None:
+        for cand in (os.path.expanduser("~/.local/cuda12"), os.path.expanduser("~/.local/cuda-nvrtc"),
+                     os.environ.get("CUDA_PATH", ""), "/usr/local/cuda", "/opt/cuda"):
+            if cand and Path(cand, "include", "nvrtc.h").exists():
+                home = cand
+                break
+    if home is None or not Path(home, "include", "nvrtc.h").exists():
+        return False
+    if not (Path(home, "lib64").is_dir() or Path(home, "lib").is_dir()):
+        return False
+    if shutil.which("nvidia-smi") is None:
         return False
     return subprocess.run(["nvidia-smi"], capture_output=True).returncode == 0
 INFRA = numeric("infra_test", "test_infra.py")
@@ -190,6 +202,8 @@ MUTANTS = [
      "T.linf_b3(n, i, o, w, b, gb, TF.matmul_tn_acc(o, n, i, par, dy, x, gw))", "T.linf_b3(n, i, o, w, b, gb, TF.matmul_tn(o, n, i, par, dy, x))", FAST, "caught"),
     ("fast linear without bias: the weight gradient is not accumulated", "torch/fast.bend",
      "T.lnb_b3(n, i, o, w, dx, TF.matmul_tn_acc(o, n, i, par, dy, x, g))", "T.lnb_b3(n, i, o, w, dx, TF.matmul_tn(o, n, i, par, dy, x))", FAST, "caught"),
+    ("fast Linear (main.bend's name): delegates to LinearFirstF, which passes no gradient back", "torch/fast.bend",
+     "LinearF(n, i, o, par)\n\ndef LinearFirst(", "LinearFirstF(n, i, o, par)\n\ndef LinearFirst(", MNIST, "caught"),
     ("gpu linear: the weight gradient is not accumulated", "torch/gpu.bend",
      "T.lin_b3(n, i, o, w, b, dx, gb, TG.matmul_tn_acc(o, n, i, 0n, dy, x, gw))", "T.lin_b3(n, i, o, w, b, dx, gb, TG.matmul_tn(o, n, i, 0n, dy, x))", GPU, "caught"),
     ("gpu element-wise: each leaf skips its last cell", "torch/gpu.bend",
@@ -273,6 +287,14 @@ MUTANTS = [
      "block_in(t, hd, kvw, r0, Nat.mul(j, hd), bk, dk)", "block_in(t, hd, kvw, r0, 0n, bk, dk)", OPS, "caught"),
     ("Fork: the backward pass drops the second layer's input gradient", "torch/main.bend",
      "      Bwd{Two{p1, p2}, add(dx1, dx2), Two{g1, g2}}", "      Bwd{Two{p1, p2}, dx1, Two{g1, g2}}", laws, "caught"),
+    ("packed AdamW: a block of words starts at element i0 instead of 2·i0", "torch/fast.bend",
+     "      +e0 = (i0 + i0 : U32)\n      pq_b(", "      +e0 = i0\n      pq_b(", FAST, "caught"),
+    ("packed AdamW: the last block runs past n (an odd matrix's last word gets a second moment)", "torch/fast.bend",
+     "T.ph_pick(U32.is_lt(k, (n - e0 : U32)), k, (n - e0 : U32))", "k", FAST, "survives: the cells past n are zeros, and AdamW keeps a zero weight with a zero gradient and zero moments at zero, so the extra moment written into the last word's spare half is 0x0000 too"),
+    ("Residual: the backward pass drops the skip connection's gradient", "torch/main.bend",
+     "~dup, ~add, ~Id(~X), ~f), ~join)", "~dup, ~(a => b => b), ~Id(~X), ~f), ~join)", laws, "caught"),
+    ("Residual: the backward pass drops the layer's input gradient", "torch/main.bend",
+     "~dup, ~add, ~Id(~X), ~f), ~join)", "~dup, ~(a => b => a), ~Id(~X), ~f), ~join)", laws, "caught"),
     ("attention: the backward pass forgets the scale", "torch/main.bend",
      "gfix(Nat.sub(t, 1n), off, s, sc,", "gfix(Nat.sub(t, 1n), off, s, 1.0,", OPS, "caught"),
     ("attention: a query reads one key past its position", "torch/main.bend",
@@ -368,7 +390,7 @@ MUTANTS = [
     ("adamw16: a checkpoint does not write a leaf's v", "torch/main.bend",
      "pts_v(n, m, (off + ph_hw(n) : U32), words_out(U32.to_nat(ph_hw(n)),", "pts_v(n, m, (off + ph_hw(n) : U32), words_out(0n,", TINY16, "caught"),
     ("adamw16: fast.bend leaves a packed state without its step", "torch/fast.bend",
-     "    case o w g T.Packed{t}: T.Opt.mat(r, c, o, w, g, T.Packed{t})\n", "", TINY16, "caught"),
+     "    case T.Adam{lr, b1, b2, eps, wd, dec, step, bc2, c1, c2} TA.Mat{wa} TA.Mat{ga} T.Packed{t}:\n      ph_mat(r, c, o, wa, ga, t)\n", "", TINY16, "caught"),
     ("tensor: div's gradient for the divisor loses its sign", "torch/tensor.bend",
      "(0.0 - (d * ((p / q : F32) / q : F32) : F32) : F32)", "(d * ((p / q : F32) / q : F32) : F32)", TEN, "caught"),
     ("tensor: narrow starts its window on the wrong axis", "torch/tensor.bend",
@@ -389,6 +411,14 @@ MUTANTS = [
 def main():
     escaped, skipped = [], []
     cuda = has_cuda()
+    # every gate must pass on the code as it is, or each of its mutants would count as caught without being tested
+    # (the fast gate expected 13 zeros from a program that printed 12, from 2026-10-21 to 2026-10-25)
+    for gate in dict.fromkeys(g for _, _, _, _, g, _ in MUTANTS):
+        if (gate is EXPCR and not cuda) or (gate is SMOLST and not ST135.exists()):
+            continue
+        if not gate():
+            print(f"mutate: the gate {gate.__name__} fails on the unmutated code")
+            sys.exit(1)
     for name, path, before, after, gate, expected in MUTANTS:
         if gate is EXPCR and not cuda:
             print(f"skip {'':8} {name}  [needs a CUDA device]")

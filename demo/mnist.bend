@@ -27,10 +27,10 @@ def S(n: Nat) -> Type:
   T.Two<T.Two<X(n), TA.Mat<n, 128n>>, TA.Mat<n, 128n>>
 
 def Hidden(+n: Nat) -> T.Layer<T.Two<T.Lin<784n, 128n>, Unit>, X(n), TA.Mat<n, 128n>, T.Two<X(n), TA.Mat<n, 128n>>>:
-  T.Seq.at(T.Lin<784n, 128n>, Unit, X(n), TA.Mat<n, 128n>, TA.Mat<n, 128n>, X(n), TA.Mat<n, 128n>, F.LinearFirstF(n, 784n, 128n, 4n), T.ReLU(n, 128n))
+  T.Seq.at(T.Lin<784n, 128n>, Unit, X(n), TA.Mat<n, 128n>, TA.Mat<n, 128n>, X(n), TA.Mat<n, 128n>, F.LinearFirst(n, 784n, 128n, 4n), T.ReLU(n, 128n))
 
 def Model(+n: Nat) -> T.Layer<P, X(n), Y(n), S(n)>:
-  T.Seq.at(T.Two<T.Lin<784n, 128n>, Unit>, T.Lin<128n, 10n>, X(n), TA.Mat<n, 128n>, Y(n), T.Two<X(n), TA.Mat<n, 128n>>, TA.Mat<n, 128n>, Hidden(n), F.LinearF(n, 128n, 10n, 0n))
+  T.Seq.at(T.Two<T.Lin<784n, 128n>, Unit>, T.Lin<128n, 10n>, X(n), TA.Mat<n, 128n>, Y(n), T.Two<X(n), TA.Mat<n, 128n>>, TA.Mat<n, 128n>, Hidden(n), F.Linear(n, 128n, 10n, 0n))
 
 # ---- data ----
 

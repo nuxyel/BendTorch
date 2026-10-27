@@ -127,7 +127,7 @@ general here is Bend's **templates**: a `Layer` record passed as `~l` is substit
 | The backward pass sends no gradient to a key or value after the query's position: row i of G is computed over i + 1 positions | **law** about the package's own `grow` | `causal_grad` |
 | Query head `j·g + i` belongs to key/value head `j`, through the function both passes of attention call and the columns both read | **law** about the package's `kv_of`, `head_cols` (and `Nat.div`) | `kv_of_group`, `gqa_head`, `kv_cols` |
 | Attention's tree of sequences gives the sequential result at every depth and split | **law** about the package's `fpar`/`bpar` against `fleaf`/`bleaf` | `attn_par_fwd`, `attn_par_bwd` |
-| `Seq` and `Fork` compose backward passes correctly (chain rule, sum of input gradients) | **law** about the combinators' own code, on the `Nat` model's linear layers | `seq_chain`, `fork_sum` |
+| `Seq`, `Fork`, `Both` and `Residual` compose backward passes correctly (chain rule, sum of input gradients, sides kept apart, skip connection plus layer) | **law** about the combinators' own code, on the `Nat` model's linear layers | `seq_chain`, `fork_sum`, `both_sum`, `residual` |
 | Each layer's output and gradients equal PyTorch's within the tolerance | **tested**, 10 seeds, with IEEE edge cases for the activations | `reference/test_ops.py` |
 | The optimizers equal `torch.optim` step by step | **tested** | `reference/test_mlp.py` |
 | An Adam configuration's `c1`, `c2` agree with its `b1`, `b2` (`OptCfg.ok`); a program stops on one that does not (`OptCfg.check`), and without the check its state starts at NaN | **tested** at run time (F32 is opaque to the checker, so it cannot be a law): 5,486 configurations, 5 mutants | `reference/test_infra.py` |

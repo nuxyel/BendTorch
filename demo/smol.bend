@@ -9,6 +9,7 @@
 #   .scratch/smol +RTS --threads 16 -RTS grads <file>      # the loss on the first batch; every gradient into <file>, dump order
 #   .scratch/smol +RTS --threads 16 -RTS finetune <k> <e>  # k steps on ft_train.bin; the held-out loss (ft_eval.bin) every e
 #   .scratch/smol +RTS --threads 16 -RTS finetune <k> <e> <out>  # the same, then the weights into <out> (init.bin's layout)
+#   .scratch/smol +RTS --threads 16 -RTS finetunest <k> <e> <file>  # finetune from Hugging Face's model.safetensors
 #   .scratch/smol +RTS --threads 16 -RTS gen <n> <weights> <ids>  # n tokens after the prompt <ids> (comma-separated), greedy
 #   .scratch/smol +RTS --threads 16 -RTS draw <n> <seed> <weights> <ids>  # the same, each token drawn at temperature 0.8
 #   .scratch/smol +RTS --threads 16 -RTS genkv <n> <weights> <ids>        # gen with a key/value cache: one position a token
@@ -18,8 +19,8 @@
 # The model: the token embedding, LAYERS() decoder blocks (smol_block.bend's: Residual(Seq(RMSNorm, attention)) then
 # Residual(Seq(RMSNorm, SwiGLU))), the final RMSNorm, and the output head, which shares the embedding's matrix (Tie,
 # as SmolLM2 ties them). Batches of 2 sequences of TT() = 128 positions (256 rows). The layers and the loss are
-# torch/fast.bend's (its RMSNorm, RoPE, Attention, Embedding and CrossEntropy are main.bend's), so the import line alone
-# switches them to torch/gpu.bend's (make smol-gpu). Weights are in Layer.dump order (reference/smol_layout.txt names each tensor).
+# torch/fast.bend's (its RMSNorm, RoPE, Attention and CrossEntropy are main.bend's, its Embedding main.bend's with the
+# step in blocks), so the import line alone switches them to torch/gpu.bend's (make smol-gpu). Weights are in Layer.dump order (reference/smol_layout.txt names each tensor).
 
 import Base
 import ../torch/main.bend as T
@@ -872,6 +873,13 @@ def finetune(+k: Nat, +every: U32, +out: String) -> IO(Unit):
     r : PE <- ev_loop(FT_EVAL(), 0, 0.0, p)
     ft_start(k, every, out, r)
 
+# the same from the weights in a Hugging Face model.safetensors (load_st), with nothing saved
+def finetune_st(+k: Nat, +every: U32, +path: String) -> IO(Unit):
+  do IO<Unit>:
+    p : P <- load_st(path)
+    r : PE <- ev_loop(FT_EVAL(), 0, 0.0, p)
+    ft_start(k, every, "", r)
+
 def train_from(+k: Nat, p: P) -> IO(Unit):
   do IO<Unit>:
     T.OptCfg.check(cfg())
@@ -1229,7 +1237,7 @@ def kvcheck(+n: Nat, +weights: String, +ids0: String) -> IO(Unit):
     IO.print(kc_go(Nat.min(n, Nat.sub(TT(), m)), m, ids, kprompt(m, ids, p)))
 
 def usage() -> IO(Unit):
-  IO.die(Unit, 2, "usage: smol loss [<model.safetensors>] | train <steps> [<model.safetensors>] | grads <file> | finetune <steps> <every> [<out>] | gen <n> <weights> <ids> | draw <n> <seed> <weights> <ids> | genkv <n> <weights> <ids> | drawkv <n> <seed> <weights> <ids> | kvcheck <n> <weights> <ids>")
+  IO.die(Unit, 2, "usage: smol loss [<model.safetensors>] | train <steps> [<model.safetensors>] | grads <file> | finetune <steps> <every> [<out>] | finetunest <steps> <every> <model.safetensors> | gen <n> <weights> <ids> | draw <n> <seed> <weights> <ids> | genkv <n> <weights> <ids> | drawkv <n> <seed> <weights> <ids> | kvcheck <n> <weights> <ids>")
 
 def train_m(mk: Maybe<&2, Nat>) -> IO(Unit):
   match mk:
@@ -1279,17 +1287,23 @@ def kvcheck_m(mn: Maybe<&2, Nat>, +weights: String, +ids: String) -> IO(Unit):
     case Some{n}: kvcheck(n, weights, ids)
     case None{}: usage()
 
-def dispatch_k(is_genkv: Bool, is_check: Bool, +a: String, +b: String, +c: String) -> IO(Unit):
-  match is_genkv is_check:
-    case True{} _: genkv_m(Nat.read(a), b, c)
-    case _ True{}: kvcheck_m(Nat.read(a), b, c)
+def finetune_st_m(mk: Maybe<&2, Nat>, me: Maybe<&2, U32>, +path: String) -> IO(Unit):
+  match mk me:
+    case Some{k} Some{e}: finetune_st(k, e, path)
     case _ _: usage()
+
+def dispatch_k(is_genkv: Bool, is_check: Bool, is_ftst: Bool, +a: String, +b: String, +c: String) -> IO(Unit):
+  match is_genkv is_check is_ftst:
+    case True{} _ _: genkv_m(Nat.read(a), b, c)
+    case _ True{} _: kvcheck_m(Nat.read(a), b, c)
+    case _ _ True{}: finetune_st_m(Nat.read(a), U32.read(b), c)
+    case _ _ _: usage()
 
 def dispatch_5(is_ft: Bool, is_gen: Bool, +mode: String, +a: String, +b: String, +c: String) -> IO(Unit):
   match is_ft is_gen:
     case True{} _: finetune_m(Nat.read(a), U32.read(b), c)
     case _ True{}: gen_m(Nat.read(a), b, c)
-    case _ _: dispatch_k(String.eq(mode, "genkv"), String.eq(mode, "kvcheck"), a, b, c)
+    case _ _: dispatch_k(String.eq(mode, "genkv"), String.eq(mode, "kvcheck"), String.eq(mode, "finetunest"), a, b, c)
 
 def draw_m(mn: Maybe<&2, Nat>, ms: Maybe<&2, U32>, +weights: String, +ids: String) -> IO(Unit):
   match mn ms:
