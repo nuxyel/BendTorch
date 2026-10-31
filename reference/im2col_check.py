@@ -31,8 +31,10 @@ def main():
     out = subprocess.run([binary], cwd=ROOT, capture_output=True, text=True)
     if out.returncode != 0:
         raise SystemExit(out.stdout + out.stderr)
-    words = [int(w) for w in out.stdout.split()[1:]]
+    lines = out.stdout.strip().splitlines()
+    words = [int(w) for w in lines[0].split()[1:]]
     got = np.array(words, dtype=np.uint32).view(np.float32).reshape(16, 18)
+    back = np.array([int(w) for w in lines[1].split()[1:]], dtype=np.uint32).view(np.float32).reshape(16, 2)
 
     # torch: (1, 2, 4, 4) in the same flat order the probe builds it (row-major, channel-minor)
     flat = torch.from_numpy(values(32))
@@ -41,9 +43,12 @@ def main():
     want = want.reshape(16, 18)
 
     gap = np.abs(got - want).max()
+    ident = np.abs(back - values(32).reshape(16, 2)).max()
     print(f"im2col: max |Bend - torch| {gap:.3e}  shape {got.shape}")
-    print("PASS" if gap == 0 else "FAIL")
-    sys.exit(0 if gap == 0 else 1)
+    print(f"col2im(im2col(x)) at k=1: max |Bend - x| {ident:.3e}")
+    ok = gap == 0 and ident == 0
+    print("PASS" if ok else "FAIL")
+    sys.exit(0 if ok else 1)
 
 
 if __name__ == "__main__":

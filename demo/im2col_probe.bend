@@ -11,7 +11,11 @@ def vals(+left: Nat, +i: Nat) -> List<&2, F32>:
     case 1n+rest:
       Con{((F32.from_nat(Nat.mod(Nat.mul(i, 7n), 13n)) - 6.0 : F32) / 4.0 : F32), vals(rest, Nat.add(i, 1n))}
 
+def mkx() -> TA.Mat<16n, 2n>:
+  TA.Mat.from_list(16n, 2n, vals(32n, 0n))
+
 def main() -> IO(Unit):
   do IO<Unit>:
-    T.Mat.print(16n, 18n, "col", T.im2col(1n, 4n, 4n, 2n, 3n, 1n, 1n, TA.Mat.from_list(16n, 2n, vals(32n, 0n))))
+    T.Mat.print(16n, 18n, "col", T.im2col(1n, 4n, 4n, 2n, 3n, 1n, 1n, mkx()))
+    T.Mat.print(16n, 2n, "id", T.col2im(1n, 4n, 4n, 2n, 1n, 0n, 1n, T.im2col(1n, 4n, 4n, 2n, 1n, 0n, 1n, mkx())))
     return Unit{}

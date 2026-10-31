@@ -3228,18 +3228,78 @@ def im2col_n(+n: Nat, +h: Nat, +w: Nat, +c: Nat, +k: Nat, +p: Nat, +s: Nat, d: A
   gl_out(gather(Nat.mul(Nat.mul(n, Nat.mul(oh, ow)), ckk), 0n, n, h, w, c, k, p, s, oh, ow, ckk,
     p_rc(p_ok(0n, 0n, 0n, h, w, k, p, s), d, p_src(0n, 0n, 0n, 0n, h, w, c, k, p, s)), Nil{}))
 
+# add v into acc[src], reading and writing the cell the same way (Array.get hands the array back)
+def add_pair(r: Array<F32> & F32, +src: U32, +v: F32) -> Array<F32>:
+  match r:
+    case Tuple{a, +old}:
+      Array.set(F32, a, src, (old + v : F32))
+
+def add_at(+src: U32, +v: F32, acc: Array<F32>) -> Array<F32>:
+  add_pair(Array.get(F32, acc, src), src, v)
+
+def add_if(ok: Bool, +src: U32, +v: F32, acc: Array<F32>) -> Array<F32>:
+  match ok:
+    case True{}:
+      add_at(src, v, acc)
+    case False{}:
+      acc
+
+# col2im: the gradient of the gather. Every patch cell that read an image cell adds into it, in raster order of the
+# patches and then of the cell inside the patch, which is the order a per-pixel sum on the device reproduces.
+def c2_go(+left: Nat, +j: Nat, +n: Nat, +h: Nat, +w: Nat, +c: Nat, +k: Nat, +p: Nat, +s: Nat, +oh: Nat, +ow: Nat, +ckk: Nat, +per: Nat, +total: Nat, dp: Array<F32> & F32, acc: Array<F32>) -> Array<F32>:
+  match left dp:
+    case 0n Tuple{d, v}:
+      acc
+    case 1n+rest Tuple{dp2, +v}:
+      +pos = Nat.div(j, ckk)
+      +i = Nat.mod(j, ckk)
+      +b = Nat.div(pos, per)
+      +r = Nat.mod(pos, per)
+      +oy = Nat.div(r, ow)
+      +ox = Nat.mod(r, ow)
+      +j2 = Nat.add(j, 1n)
+      c2_go(rest, j2, n, h, w, c, k, p, s, oh, ow, ckk, per, total,
+        Array.get(F32, dp2, U32.from_nat(Nat.mod(j2, total))),
+        add_if(Bool.and(Nat.is_lt(pos, Nat.mul(n, per)), p_ok(i, oy, ox, h, w, k, p, s)),
+          p_src(i, b, oy, ox, h, w, c, k, p, s), v, acc))
+
+def col2im(+n: Nat, +h: Nat, +w: Nat, +c: Nat, +k: Nat, +p: Nat, +s: Nat, dp: TA.Mat<Nat.mul(n, Nat.mul(ocount(h, p, k, s), ocount(w, p, k, s))), Nat.mul(c, Nat.mul(k, k))>) -> TA.Mat<Nat.mul(n, Nat.mul(h, w)), c>:
+  match dp:
+    case TA.Mat{d}:
+      +oh = ocount(h, p, k, s)
+      +ow = ocount(w, p, k, s)
+      +ckk = Nat.mul(c, Nat.mul(k, k))
+      +per = Nat.mul(oh, ow)
+      +total = Nat.mul(Nat.mul(n, per), ckk)
+      +size = Nat.mul(Nat.mul(n, Nat.mul(h, w)), c)
+      TA.Mat{c2_go(total, 0n, n, h, w, c, k, p, s, oh, ow, ckk, per, total,
+        Array.get(F32, d, U32.from_nat(0n)),
+        Array.new(F32, TA.cap_depth(size), 0.0))}
+
 def im2col(+n: Nat, +h: Nat, +w: Nat, +c: Nat, +k: Nat, +p: Nat, +s: Nat, x: TA.Mat<Nat.mul(n, Nat.mul(h, w)), c>) -> TA.Mat<Nat.mul(n, Nat.mul(ocount(h, p, k, s), ocount(w, p, k, s))), Nat.mul(c, Nat.mul(k, k))>:
   match x:
     case TA.Mat{d}:
       TA.Mat.from_list(Nat.mul(n, Nat.mul(ocount(h, p, k, s), ocount(w, p, k, s))), Nat.mul(c, Nat.mul(k, k)), im2col_n(n, h, w, c, k, p, s, d))
 
-# =====================================================================================================
-# Losses over arrays (cross-entropy, MSE, NLL)
-# =====================================================================================================
+# Conv2d is im2col then Linear's three products, so its parameter type is Lin<c·k·k, co> and it inherits lin_step,
+# lin_zeros and the PL/PA plumbing: a Train sees a parameter tree it already knows. The stride is given as s - 1
+# (1n+s below), so it is never 0; the patch matrix is kept only in the forward's state, which is what the backward
+# needs, and it is not rebuilt.
+def conv_b2(+n: Nat, +h: Nat, +w: Nat, +c: Nat, +co: Nat, +k: Nat, +p: Nat, +s1: Nat, b: Bwd<Lin<Nat.mul(c, Nat.mul(k, k)), co>, TA.Mat<Nat.mul(n, Nat.mul(ocount(h, p, k, Nat.add(1n, s1)), ocount(w, p, k, Nat.add(1n, s1)))), Nat.mul(c, Nat.mul(k, k))>>) -> Bwd<Lin<Nat.mul(c, Nat.mul(k, k)), co>, TA.Mat<Nat.mul(n, Nat.mul(h, w)), c>>:
+  match b:
+    case Bwd{prm, dx, gg}:
+      Bwd{prm, col2im(n, h, w, c, k, p, Nat.add(1n, s1), dx), gg}
 
-# ---- cross-entropy of the logits z (n x c) against one label per row, mean over the rows (PyTorch's F.cross_entropy,
-# reduction="mean"); its gradient is (softmax(z) - onehot) / n. Over z's own array, a row at a time, with
-# bend-ml-tensor-array's Mat.softmax_ce's operations in its order, so its bits. ----
+def Conv2d(+n: Nat, +h: Nat, +w: Nat, +c: Nat, +co: Nat, +k: Nat, +p: Nat, +s1: Nat, +par: Nat) -> Layer<Lin<Nat.mul(c, Nat.mul(k, k)), co>, TA.Mat<Nat.mul(n, Nat.mul(h, w)), c>, TA.Mat<Nat.mul(n, Nat.mul(ocount(h, p, k, Nat.add(1n, s1)), ocount(w, p, k, Nat.add(1n, s1)))), co>, TA.Mat<Nat.mul(n, Nat.mul(ocount(h, p, k, Nat.add(1n, s1)), ocount(w, p, k, Nat.add(1n, s1)))), Nat.mul(c, Nat.mul(k, k))>>:
+  Layer{
+    prm => x => lin_fwd(Nat.mul(n, Nat.mul(ocount(h, p, k, Nat.add(1n, s1)), ocount(w, p, k, Nat.add(1n, s1)))), Nat.mul(c, Nat.mul(k, k)), co, par, prm, im2col(n, h, w, c, k, p, Nat.add(1n, s1), x)),
+    prm => st => dy => gg => conv_b2(n, h, w, c, co, k, p, s1, lin_bwd(Nat.mul(n, Nat.mul(ocount(h, p, k, Nat.add(1n, s1)), ocount(w, p, k, Nat.add(1n, s1)))), Nat.mul(c, Nat.mul(k, k)), co, par, prm, st, dy, gg)),
+    op => prm => gg => st => lin_step(Nat.mul(c, Nat.mul(k, k)), co, op, prm, gg, st),
+    u => lin_zeros(Nat.mul(c, Nat.mul(k, k)), co),
+    prm => lin_dump(Nat.mul(c, Nat.mul(k, k)), co, prm),
+    prm => xs => off => lin_load(Nat.mul(c, Nat.mul(k, k)), co, prm, xs, off),
+    prm => xs => off => lin_store(Nat.mul(c, Nat.mul(k, k)), co, prm, xs, off),
+    u => U32.from_nat(Nat.mul(co, Nat.add(1n, Nat.mul(c, Nat.mul(k, k)))))}
 
 def hit(b: Bool) -> F32:
   match b:
