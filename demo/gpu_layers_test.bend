@@ -4,12 +4,12 @@
 # output (forward y, backward dX and the gradient; for the optimizer, the weights, the zeroed gradient and the moments):
 #   SiLU, Mul2, Mat.sum2 and Mat.dup, RMSNorm, RoPE, Attention, SGD, momentum, AdamW, MSE (loss and gradient),
 #   Embedding (rows and gradient), CrossEntropy (loss and gradient), attention at small and odd sizes, GroupNorm,
-#   FullAttention at SmolLM2's sizes and at small sizes
+#   FullAttention at SmolLM2's sizes and at small sizes, Conv2d at a small odd shape and at a realistic one
 # With `+RTS --gpu off -RTS` or without CUDA every case is 0 (the same bits). On the GPU, SiLU, attention, full attention
 # and cross-entropy take CUDA's float exp, whose last bit can differ from the host's: 1 ulp is accepted for an
 # exponential (my decision, 2026-10-18), and the differences that follow from it downstream are what this test shows;
 # every other case is 0.
-#   gpu_layers_test        every case, one line          gpu_layers_test <k>   case k alone (0..15, in the order above)
+#   gpu_layers_test        every case, one line          gpu_layers_test <k>   case k alone (0..16, in the order above)
 import Base
 import ../torch/main.bend as T
 import ../torch/gpu.bend as G
@@ -264,6 +264,30 @@ def ce1(+n: Nat, +c: Nat, +ls: List<&2, Nat>, +s: U32) -> U32:
 def ce() -> U32:
   max4(u32_max(ce1(64n, 49152n, idl(64n, 0, 49152, 91), 91), ce1(9n, 1000n, idl(9n, 0, 1000, 92), 92)), u32_max(ce1(7n, 5n, [3n, 9n, 0n, 4n, 1n, 2n, 2n], 93), ce1(5n, 6n, [5n, 0n, 3n], 94)), ce1(3n, 1n, [0n, 0n, 0n], 95), ce1(6n, 13n, idl(6n, 0, 13, 96), 96))
 
+# ---- Conv2d: y, dX and the weight's and bias's gradients. The patch matrix's columns are c·k·k and the rows are
+# n·oh·ow (n·h·w cells for dX); the parameter type is main.bend's Lin<c·k·k, co>, so the gradient lives in Lin too.
+
+def c_lin(+i: Nat, +o: Nat, a: T.Lin<i, o>, b: T.Lin<i, o>) -> U32:
+  match a b:
+    case T.Lin{w1, b1} T.Lin{w2, b2}: u32_max(dm(o, i, w1, w2), dm(1n, o, b1, b2))
+
+def c_conv(+n: Nat, +h: Nat, +w: Nat, +c: Nat, +co: Nat, +k: Nat, +p: Nat, +s1: Nat, a: RR<T.Lin<Nat.mul(c, Nat.mul(k, k)), co>, TA.Mat<Nat.mul(n, Nat.mul(h, w)), c>, TA.Mat<Nat.mul(n, Nat.mul(T.ocount(h, p, k, Nat.add(1n, s1)), T.ocount(w, p, k, Nat.add(1n, s1)))), co>>, b: RR<T.Lin<Nat.mul(c, Nat.mul(k, k)), co>, TA.Mat<Nat.mul(n, Nat.mul(h, w)), c>, TA.Mat<Nat.mul(n, Nat.mul(T.ocount(h, p, k, Nat.add(1n, s1)), T.ocount(w, p, k, Nat.add(1n, s1)))), co>>) -> U32:
+  match a b:
+    case RR{y1, d1, g1} RR{y2, d2, g2}: max3(dm(Nat.mul(n, Nat.mul(T.ocount(h, p, k, Nat.add(1n, s1)), T.ocount(w, p, k, Nat.add(1n, s1)))), co, y1, y2), dm(Nat.mul(n, Nat.mul(h, w)), c, d1, d2), c_lin(Nat.mul(c, Nat.mul(k, k)), co, g1, g2))
+
+# 2 images of 5 x 3, 3 channels, 2 output channels, 3 x 3, padding 1, stride 1: a small odd shape with a padded
+# border (oh = 5, ow = 3, so 30 patch rows of 27 numbers and 30 image cells)
+def conv_small() -> U32:
+  c_conv(2n, 5n, 3n, 3n, 2n, 3n, 1n, 0n, run(~T.Lin<27n, 2n>, ~TA.Mat<30n, 3n>, ~TA.Mat<30n, 2n>, ~TA.Mat<30n, 27n>, ~T.Conv2d(2n, 5n, 3n, 3n, 2n, 3n, 1n, 0n, 0n), T.Lin{mat(2n, 27n, 171), mat(1n, 2n, 172)}, mat(30n, 3n, 173), mat(30n, 2n, 174), T.Lin{mat(2n, 27n, 175), mat(1n, 2n, 176)}), run(~T.Lin<27n, 2n>, ~TA.Mat<30n, 3n>, ~TA.Mat<30n, 2n>, ~TA.Mat<30n, 27n>, ~G.Conv2d(2n, 5n, 3n, 3n, 2n, 3n, 1n, 0n, 0n), T.Lin{mat(2n, 27n, 171), mat(1n, 2n, 172)}, mat(30n, 3n, 173), mat(30n, 2n, 174), T.Lin{mat(2n, 27n, 175), mat(1n, 2n, 176)}))
+
+# 2 images of 32 x 32, 3 channels, 16 output channels, 3 x 3, padding 1, stride 1: CIFAR's shape (2048 patch rows of
+# 27 numbers, 2048 image cells)
+def conv_big() -> U32:
+  c_conv(2n, 32n, 32n, 3n, 16n, 3n, 1n, 0n, run(~T.Lin<27n, 16n>, ~TA.Mat<2048n, 3n>, ~TA.Mat<2048n, 16n>, ~TA.Mat<2048n, 27n>, ~T.Conv2d(2n, 32n, 32n, 3n, 16n, 3n, 1n, 0n, 0n), T.Lin{mat(16n, 27n, 181), mat(1n, 16n, 182)}, mat(2048n, 3n, 183), mat(2048n, 16n, 184), T.Lin{mat(16n, 27n, 185), mat(1n, 16n, 186)}), run(~T.Lin<27n, 16n>, ~TA.Mat<2048n, 3n>, ~TA.Mat<2048n, 16n>, ~TA.Mat<2048n, 27n>, ~G.Conv2d(2n, 32n, 32n, 3n, 16n, 3n, 1n, 0n, 0n), T.Lin{mat(16n, 27n, 181), mat(1n, 16n, 182)}, mat(2048n, 3n, 183), mat(2048n, 16n, 184), T.Lin{mat(16n, 27n, 185), mat(1n, 16n, 186)}))
+
+def conv2d() -> U32:
+  u32_max(conv_small(), conv_big())
+
 # ---- GroupNorm: y, dx and the gain's and bias's gradients (added into gradients that are not zero); 8 images of 64
 # pixels in 8 groups of 16 channels, and 3 images of 5 pixels in 3 groups of 2 ----
 
@@ -282,17 +306,22 @@ def gn() -> U32:
 
 # every case, on one line
 def all_cases() -> IO(Unit):
-  IO.print(U32.show(silu()) ++ " " ++ U32.show(mul2()) ++ " " ++ U32.show(sumdup()) ++ " " ++ U32.show(rms()) ++ " " ++ U32.show(rope()) ++ " " ++ U32.show(attn()) ++ " " ++ U32.show(step(T.SGD{0.01}, 0n)) ++ " " ++ U32.show(step(T.Momentum{0.01, 0.9}, 1n)) ++ " " ++ U32.show(step(T.Opt.at(T.CAdamW{0.001, 0.9, 0.999, 0.00000001, 0.01, 0.1, 0.001}, 0.1, 0.001), 2n)) ++ " " ++ U32.show(mse()) ++ " " ++ U32.show(emb()) ++ " " ++ U32.show(ce()) ++ " " ++ U32.show(attn_small()) ++ " " ++ U32.show(gn()) ++ " " ++ U32.show(attnf()) ++ " " ++ U32.show(attnf_small()))
+  IO.print(U32.show(silu()) ++ " " ++ U32.show(mul2()) ++ " " ++ U32.show(sumdup()) ++ " " ++ U32.show(rms()) ++ " " ++ U32.show(rope()) ++ " " ++ U32.show(attn()) ++ " " ++ U32.show(step(T.SGD{0.01}, 0n)) ++ " " ++ U32.show(step(T.Momentum{0.01, 0.9}, 1n)) ++ " " ++ U32.show(step(T.Opt.at(T.CAdamW{0.001, 0.9, 0.999, 0.00000001, 0.01, 0.1, 0.001}, 0.1, 0.001), 2n)) ++ " " ++ U32.show(mse()) ++ " " ++ U32.show(emb()) ++ " " ++ U32.show(ce()) ++ " " ++ U32.show(attn_small()) ++ " " ++ U32.show(gn()) ++ " " ++ U32.show(attnf()) ++ " " ++ U32.show(attnf_small()) ++ " " ++ U32.show(conv2d()))
 
 # case k alone (0 = SiLU .. 11 = CrossEntropy, 12 = attention at small sizes, 13 = GroupNorm, 14 = full attention at
-# SmolLM2's sizes, 15 = full attention at small sizes). In the line above, a case's bangs can follow host work in the same
+# SmolLM2's sizes, 15 = full attention at small sizes, 16 = Conv2d). In the line above, a case's bangs can follow host work in the same
 # evaluation and then run on the CPU threads: under nsys, the whole line made 15 bangs on the device, and cross-entropy
 # read 0 ulps there against 4 alone. So make gpu runs each case as its own program (nsys: every case's bangs on the
 # device, 2026-10-21).
+def one_16(k: Nat) -> U32:
+  match k:
+    case 0n: conv2d()
+    case 1n+q: 4294967295
+
 def one_15(k: Nat) -> U32:
   match k:
     case 0n: attnf_small()
-    case 1n+q: 4294967295
+    case 1n+q: one_16(q)
 
 def one_14(k: Nat) -> U32:
   match k:

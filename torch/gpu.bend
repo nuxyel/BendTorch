@@ -11,6 +11,7 @@
 #   their optimizer step.
 # - SiLU, Mul2, Add2, Residual, Mat.dup and Mat.sum2: their element-wise loops.
 # - RMSNorm, RoPE and Attention (main.bend's names; fast.bend's are main.bend's, on the CPU).
+# - im2col, col2im and Conv2d: the gather and its scatter as cell bangs, then the linear layer's three products.
 # - MSE, CrossEntropy and Embedding (its rows, its gradient and its step), so that a training step's work, the loss
 #   included, stays on the device; the host reads back a few numbers a row for the loss.
 # The names are fast.bend's, so a program switches by its import line alone (the Makefile builds the GPU demos so).
@@ -1611,6 +1612,194 @@ def cx_1(+n: Nat, +c: Nat, +labels: List<&2, Nat>, z: Array<F32>, r: IA) -> T.Lo
 def CrossEntropy(+n: Nat, +c: Nat, z: TA.Mat<n, c>, +labels: List<&2, Nat>) -> T.LossOut<TA.Mat<n, c>>:
   match z:
     case TA.Mat{d}: cx_1(n, c, labels, d, ids_arr(n, labels))
+
+# ---- conv on the device: im2col, col2im and Conv2d, with main.bend's index arithmetic and bits ----
+#
+# im2col is a cell bang: cell e of the n·oh·ow rows of c·k·k numbers is one number, read from the image cell main.bend's
+# p_src names (or 0 outside the window, as p_rc gives). col2im is a cell bang over the n·h·w·c image cells: a leaf sums
+# the patches that read its cell, stepping oy and then ox in increasing raster order, which is the order main.bend's
+# c2_go adds them in (one pass over the patches, j = pos·c·k·k + i increasing), so its sums have main.bend's bits. The
+# stride is s = 1n + s1, as in main.bend.
+#
+# A cell may be read by up to ceil(k / s) patches along each axis, so each axis walks k candidates (the most) and a
+# candidate that is not a patch is skipped: with s = k there is exactly one candidate, the round trip the probe and
+# (at k = 1) the law conv_roundtrip state.
+
+type EIC is Data:
+  EIC{n: U32, h: U32, w: U32, c: U32, k: U32, p: U32, s: U32, oh: U32, ow: U32, per: U32, ckk: U32}
+
+# one input array and one output array, threaded through a bang's cells (arrays are linear in Bend)
+type CIC is Type:
+  CIC{d: Array<F32>, o: Array<F32>}
+
+# the gathered matrix's cells, and a col2im cell's running sum
+type GIS is Type:
+  GIS{d: Array<F32>, o: Array<F32>, acc: F32}
+
+def eic(+n: Nat, +h: Nat, +w: Nat, +c: Nat, +k: Nat, +p: Nat, +s: Nat) -> EIC:
+  EIC{U32.from_nat(n), U32.from_nat(h), U32.from_nat(w), U32.from_nat(c), U32.from_nat(k), U32.from_nat(p), U32.from_nat(s), U32.from_nat(T.ocount(h, p, k, s)), U32.from_nat(T.ocount(w, p, k, s)), U32.from_nat(Nat.mul(T.ocount(h, p, k, s), T.ocount(w, p, k, s))), U32.from_nat(Nat.mul(c, Nat.mul(k, k)))}
+
+def eic_n(+g: EIC) -> U32:
+  match g:
+    case EIC{+n, +h, +w, +c, +k, +p, +s, +oh, +ow, +per, +ckk}: ((n * per : U32) * ckk : U32)
+
+# the cell a read hands back, written at e
+def i2c_set(+e: U32, r: Array<F32> & F32, o: Array<F32>) -> CIC:
+  match r:
+    case Tuple{d, +x}: CIC{d, Array.set(F32, o, e, x)}
+
+# cell e = the value at src when the window is inside, else 0.0 (as p_rc gives it)
+def i2c_put(+e: U32, ok: Bool, +src: U32, s: CIC) -> CIC:
+  match ok s:
+    case True{} CIC{d, o}:
+      i2c_set(e, Array.get(F32, d, src), o)
+    case False{} CIC{d, o}:
+      CIC{d, Array.set(F32, o, e, 0.0)}
+
+def i2c_cell(+e: U32, +g: EIC, s: CIC) -> CIC:
+  match g s:
+    case EIC{+n, +h, +w, +c, +k, +p, +s, +oh, +ow, +per, +ckk} CIC{d, o}:
+      +kk = (k * k : U32)
+      +pos = U32.div(e, ckk)
+      +i = U32.mod(e, ckk)
+      +ch = U32.div(i, kk)
+      +rem = U32.mod(i, kk)
+      +ky = U32.div(rem, k)
+      +kx = U32.mod(rem, k)
+      +b = U32.div(pos, per)
+      +r = U32.mod(pos, per)
+      +oy = U32.div(r, ow)
+      +ox = U32.mod(r, ow)
+      +my = (oy * s : U32)
+      +mx = (ox * s : U32)
+      +iy = ((my + ky : U32) - p : U32)
+      +ix = ((mx + kx : U32) - p : U32)
+      +src = (((((b * h : U32) + iy : U32) * w : U32) + ix : U32) * c : U32)
+      +ok1 = Bool.and(U32.is_lt(pos, (n * per : U32)), U32.is_le(p, (my + ky : U32)))
+      +ok2 = Bool.and(U32.is_le(p, (mx + kx : U32)), U32.is_lt(iy, h))
+      i2c_put(e, Bool.and(ok1, Bool.and(ok2, U32.is_lt(ix, w))), (src + ch : U32), CIC{d, o})
+
+def i2c_loop(k: Nat, +e: U32, +l: U32, +g: EIC, s: CIC) -> CIC:
+  match k:
+    case 0n: s
+    case 1n+q: i2c_loop(q, (e + l : U32), l, g, i2c_cell(e, g, s))
+
+def cic_o(s: CIC) -> Array<F32>:
+  match s:
+    case CIC{d, o}: o
+
+def lf_i2c(+t: U32, +l: U32, +g: EIC, x1: Array<F32>, x2: Array<F32>, x3: Array<F32>, x4: Array<F32>, o: Array<F32>) -> Array<F32>:
+  cic_o(i2c_loop(TG.share(t, eic_n(g), l), t, l, g, CIC{x1, o}))
+
+def i2c_fin(-n: Nat, -h: Nat, -w: Nat, -c: Nat, -k: Nat, -p: Nat, -s: Nat, r: TG.R1) -> TA.Mat<Nat.mul(n, Nat.mul(T.ocount(h, p, k, s), T.ocount(w, p, k, s))), Nat.mul(c, Nat.mul(k, k))>:
+  match r:
+    case TG.R1{x1, x2, x3, x4, a}: TA.Mat{a}
+
+# the gathered matrix: n·oh·ow rows of c·k·k numbers (main.bend's im2col)
+def im2col(+n: Nat, +h: Nat, +w: Nat, +c: Nat, +k: Nat, +p: Nat, +s: Nat, x: TA.Mat<Nat.mul(n, Nat.mul(h, w)), c>) -> TA.Mat<Nat.mul(n, Nat.mul(T.ocount(h, p, k, s), T.ocount(w, p, k, s))), Nat.mul(c, Nat.mul(k, k))>:
+  match x:
+    case TA.Mat{d}:
+      i2c_fin(n, h, w, c, k, p, s, TG.run1_new(~EIC, ~lf_i2c, TG.depth(Nat.mul(Nat.mul(n, Nat.mul(T.ocount(h, p, k, s), T.ocount(w, p, k, s))), Nat.mul(c, Nat.mul(k, k)))), eic(n, h, w, c, k, p, s), d, nn(Unit{}), nn(Unit{}), nn(Unit{}), TA.cap_depth(Nat.mul(Nat.mul(n, Nat.mul(T.ocount(h, p, k, s), T.ocount(w, p, k, s))), Nat.mul(c, Nat.mul(k, k))))))
+
+# dp[j] added into the running sum when the candidate is a patch that reads this cell
+def gi_put(+a: F32, r: Array<F32> & F32, o: Array<F32>) -> GIS:
+  match r:
+    case Tuple{d, +v}: GIS{d, o, (a + v : F32)}
+
+def gi_add(ok: Bool, +j: U32, s: GIS) -> GIS:
+  match ok s:
+    case True{} GIS{d, o, +a}:
+      gi_put(a, Array.get(F32, d, j), o)
+    case False{} r:
+      r
+
+# the candidates along x, in increasing ox: ky is the patch's row offset (from gi_qy)
+def gi_qx(k: Nat, +yok: Bool, +qx: U32, +ox0: U32, +oy: U32, +ky: U32, +ix: U32, +b: U32, +ch: U32, +g: EIC, r: GIS) -> GIS:
+  match k g:
+    case 0n _: r
+    case 1n+q EIC{+n, +h, +w, +c, +kn, +p, +s, +oh, +ow, +per, +ckk}:
+      +ox = (ox0 + qx : U32)
+      +mx = (ox * s : U32)
+      +m = (ix + p : U32)
+      +ok = Bool.and(Bool.and(U32.is_lt(ox, ow), U32.is_le(mx, m)), U32.is_lt(((m - mx : U32)), kn))
+      +pos = ((b * per : U32) + (oy * ow : U32) : U32)
+      +pos2 = (pos + ox : U32)
+      +kk2 = (kn * kn : U32)
+      +j = ((((pos2 * ckk : U32) + (ch * kk2 : U32) : U32) + (ky * kn : U32) : U32) + ((m - mx : U32)) : U32)
+      gi_qx(q, yok, (qx + 1 : U32), ox0, oy, ky, ix, b, ch, g, gi_add(Bool.and(yok, ok), j, r))
+
+# the candidates along y, in increasing oy, each running gi_qx in increasing ox
+def gi_qy(k: Nat, +qy: U32, +oy0: U32, +ox0: U32, +iy: U32, +ix: U32, +b: U32, +ch: U32, +g: EIC, r: GIS) -> GIS:
+  match k g:
+    case 0n _: r
+    case 1n+q EIC{+n, +h, +w, +c, +kn, +p, +s, +oh, +ow, +per, +ckk}:
+      +oy = (oy0 + qy : U32)
+      +my = (oy * s : U32)
+      +m = (iy + p : U32)
+      +ok = Bool.and(Bool.and(U32.is_lt(oy, oh), U32.is_le(my, m)), U32.is_lt(((m - my : U32)), kn))
+      gi_qy(q, (qy + 1 : U32), oy0, ox0, iy, ix, b, ch, g, gi_qx(U32.to_nat(kn), ok, 0, ox0, oy, ((m - my : U32)), ix, b, ch, g, r))
+
+def gis_set(+e: U32, s: GIS) -> CIC:
+  match s:
+    case GIS{d, o, +a}: CIC{d, Array.set(F32, o, e, a)}
+
+# the number col2im writes at image cell e: the sum, in main.bend's order, of the gathered cells that read it
+def gi_cell(+e: U32, +g: EIC, s: CIC) -> CIC:
+  match g s:
+    case EIC{+n, +h, +w, +c, +k, +p, +s, +oh, +ow, +per, +ckk} CIC{d, o}:
+      +ch = U32.mod(e, c)
+      +q = U32.div(e, c)
+      +ix = U32.mod(q, w)
+      +q2 = U32.div(q, w)
+      +iy = U32.mod(q2, h)
+      +b = U32.div(q2, h)
+      +my = (iy + p : U32)
+      +mx = (ix + p : U32)
+      +oy0 = Bool.pick(U32, U32.is_lt(my, k), 0, U32.div(((my + s : U32) - k : U32), s))
+      +ox0 = Bool.pick(U32, U32.is_lt(mx, k), 0, U32.div(((mx + s : U32) - k : U32), s))
+      gis_set(e, gi_qy(U32.to_nat(k), 0, oy0, ox0, iy, ix, b, ch, g, GIS{d, o, 0.0}))
+
+def gi_loop(k: Nat, +e: U32, +l: U32, +g: EIC, s: CIC) -> CIC:
+  match k:
+    case 0n: s
+    case 1n+q: gi_loop(q, (e + l : U32), l, g, gi_cell(e, g, s))
+
+# the image cells, n·h·w·c of them
+def gi_n(+g: EIC) -> U32:
+  match g:
+    case EIC{+n, +h, +w, +c, +k, +p, +s, +oh, +ow, +per, +ckk}: (((n * h : U32) * w : U32) * c : U32)
+
+def lf_gi(+t: U32, +l: U32, +g: EIC, x1: Array<F32>, x2: Array<F32>, x3: Array<F32>, x4: Array<F32>, o: Array<F32>) -> Array<F32>:
+  cic_o(gi_loop(TG.share(t, gi_n(g), l), t, l, g, CIC{x1, o}))
+
+def gi_fin(-n: Nat, -h: Nat, -w: Nat, -c: Nat, -k: Nat, -p: Nat, -s: Nat, r: TG.R1) -> TA.Mat<Nat.mul(n, Nat.mul(h, w)), c>:
+  match r:
+    case TG.R1{x1, x2, x3, x4, a}: TA.Mat{a}
+
+# the gradient of the gather: n·h·w rows of c numbers (main.bend's col2im)
+def col2im(+n: Nat, +h: Nat, +w: Nat, +c: Nat, +k: Nat, +p: Nat, +s: Nat, dp: TA.Mat<Nat.mul(n, Nat.mul(T.ocount(h, p, k, s), T.ocount(w, p, k, s))), Nat.mul(c, Nat.mul(k, k))>) -> TA.Mat<Nat.mul(n, Nat.mul(h, w)), c>:
+  match dp:
+    case TA.Mat{d}:
+      gi_fin(n, h, w, c, k, p, s, TG.run1_new(~EIC, ~lf_gi, TG.depth(Nat.mul(Nat.mul(n, Nat.mul(h, w)), c)), eic(n, h, w, c, k, p, s), d, nn(Unit{}), nn(Unit{}), nn(Unit{}), TA.cap_depth(Nat.mul(Nat.mul(n, Nat.mul(h, w)), c))))
+
+def conv_b2(+n: Nat, +h: Nat, +w: Nat, +c: Nat, +co: Nat, +k: Nat, +p: Nat, +s1: Nat, b: T.Bwd<T.Lin<Nat.mul(c, Nat.mul(k, k)), co>, TA.Mat<Nat.mul(n, Nat.mul(T.ocount(h, p, k, Nat.add(1n, s1)), T.ocount(w, p, k, Nat.add(1n, s1)))), Nat.mul(c, Nat.mul(k, k))>>) -> T.Bwd<T.Lin<Nat.mul(c, Nat.mul(k, k)), co>, TA.Mat<Nat.mul(n, Nat.mul(h, w)), c>>:
+  match b:
+    case T.Bwd{prm, dx, gg}:
+      T.Bwd{prm, col2im(n, h, w, c, k, p, Nat.add(1n, s1), dx), gg}
+
+# Conv2d: device im2col, then the device Linear's products; the backward is the device Linear's, then device col2im.
+# The parameters are main.bend's Lin<c·k·k, co>, so lin_step, lin_zeros, lin_dump, lin_load and lin_store serve it as
+# they serve Linear.
+def Conv2d(+n: Nat, +h: Nat, +w: Nat, +c: Nat, +co: Nat, +k: Nat, +p: Nat, +s1: Nat, +par: Nat) -> T.Layer<T.Lin<Nat.mul(c, Nat.mul(k, k)), co>, TA.Mat<Nat.mul(n, Nat.mul(h, w)), c>, TA.Mat<Nat.mul(n, Nat.mul(T.ocount(h, p, k, Nat.add(1n, s1)), T.ocount(w, p, k, Nat.add(1n, s1)))), co>, TA.Mat<Nat.mul(n, Nat.mul(T.ocount(h, p, k, Nat.add(1n, s1)), T.ocount(w, p, k, Nat.add(1n, s1)))), Nat.mul(c, Nat.mul(k, k))>>:
+  T.Layer{
+    prm => x => lin_fwd(Nat.mul(n, Nat.mul(T.ocount(h, p, k, Nat.add(1n, s1)), T.ocount(w, p, k, Nat.add(1n, s1)))), Nat.mul(c, Nat.mul(k, k)), co, prm, im2col(n, h, w, c, k, p, Nat.add(1n, s1), x)),
+    prm => st => dy => gg => conv_b2(n, h, w, c, co, k, p, s1, lin_bwd(Nat.mul(n, Nat.mul(T.ocount(h, p, k, Nat.add(1n, s1)), T.ocount(w, p, k, Nat.add(1n, s1)))), Nat.mul(c, Nat.mul(k, k)), co, prm, st, dy, gg)),
+    op => prm => gg => st => lin_step(Nat.mul(c, Nat.mul(k, k)), co, op, prm, gg, st),
+    u => T.lin_zeros(Nat.mul(c, Nat.mul(k, k)), co),
+    prm => T.lin_dump(Nat.mul(c, Nat.mul(k, k)), co, prm),
+    prm => xs => off => T.lin_load(Nat.mul(c, Nat.mul(k, k)), co, prm, xs, off),
+    prm => xs => off => T.lin_store(Nat.mul(c, Nat.mul(k, k)), co, prm, xs, off),
+    u => U32.from_nat(Nat.mul(co, Nat.add(1n, Nat.mul(c, Nat.mul(k, k)))))}
 
 # ---- main.bend's names for the same layers (#13) ----
 #

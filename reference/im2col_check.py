@@ -35,6 +35,7 @@ def main():
     words = [int(w) for w in lines[0].split()[1:]]
     got = np.array(words, dtype=np.uint32).view(np.float32).reshape(16, 18)
     back = np.array([int(w) for w in lines[1].split()[1:]], dtype=np.uint32).view(np.float32).reshape(16, 2)
+    back2 = np.array([int(w) for w in lines[2].split()[1:]], dtype=np.uint32).view(np.float32).reshape(16, 2)
 
     # torch: (1, 2, 4, 4) in the same flat order the probe builds it (row-major, channel-minor)
     flat = torch.from_numpy(values(32))
@@ -44,9 +45,11 @@ def main():
 
     gap = np.abs(got - want).max()
     ident = np.abs(back - values(32).reshape(16, 2)).max()
+    ident2 = np.abs(back2 - values(32).reshape(16, 2)).max()
     print(f"im2col: max |Bend - torch| {gap:.3e}  shape {got.shape}")
     print(f"col2im(im2col(x)) at k=1: max |Bend - x| {ident:.3e}")
-    ok = gap == 0 and ident == 0
+    print(f"col2im(im2col(x)) at k=s=2, p=0: max |Bend - x| {ident2:.3e}")
+    ok = gap == 0 and ident == 0 and ident2 == 0
     print("PASS" if ok else "FAIL")
     sys.exit(0 if ok else 1)
 
