@@ -261,6 +261,17 @@ def cnt_gdrow(m: Nat, +hd: Nat, +ia: U32, +ib: U32, +bs: U32, +acc: List<&2, F32
 def Laws.causal_grad(i, t, hd, sc, ds, dc, vs, vc, d, v, p, g):
   Equal.trans(Nat, T.gr_n(T.grow(i, t, hd, sc, ds, dc, vs, vc, d, v, p, g)), Nat.add(1n+i, 0n), 1n+i, cnt_gdrow(i, hd, ((U32.from_nat(i) * ds : U32) + dc : U32), vc, vs, Nil{}, T.dot0(hd, ((U32.from_nat(i) * ds : U32) + dc : U32), vc, 1, 1, d, v), sc, (U32.from_nat(i) * U32.from_nat(t) : U32), p, g), NL.add_zero(1n+i))
 
+# PROOF (full_keys, full, full_grad): the causal proofs with m in place of i, because a full row reads every key
+# 0..m; the row's count is then 1 + m from the same drow lemmas.
+def Laws.full_keys(i, m, hd, qs, qc, ks, kc, q, k):
+  Equal.trans(Nat, List.length(&2, F32, T.dr_row(T.frow(i, m, hd, qs, qc, ks, kc, q, k))), Nat.add(1n+m, 0n), 1n+m, len_drow(m, hd, ((U32.from_nat(i) * qs : U32) + qc : U32), kc, ks, Nil{}, T.dot0(hd, ((U32.from_nat(i) * qs : U32) + qc : U32), kc, 1, 1, q, k)), NL.add_zero(1n+m))
+
+def Laws.full(i, m, hd, sc, qs, qc, ks, kc, q, k, pa):
+  Equal.trans(Nat, T.pr_n(T.fprow(i, m, hd, sc, qs, qc, ks, kc, q, k, pa)), Nat.add(1n+m, 0n), 1n+m, cnt_drow(m, hd, ((U32.from_nat(i) * qs : U32) + qc : U32), kc, ks, Nil{}, T.dot0(hd, ((U32.from_nat(i) * qs : U32) + qc : U32), kc, 1, 1, q, k), sc, (U32.from_nat(i) * U32.from_nat(1n+m) : U32), pa), NL.add_zero(1n+m))
+
+def Laws.full_grad(i, m, hd, sc, ds, dc, vs, vc, d, v, pa, ga):
+  Equal.trans(Nat, T.gr_n(T.fgrow(i, m, hd, sc, ds, dc, vs, vc, d, v, pa, ga)), Nat.add(1n+m, 0n), 1n+m, cnt_gdrow(m, hd, ((U32.from_nat(i) * ds : U32) + dc : U32), vc, vs, Nil{}, T.dot0(hd, ((U32.from_nat(i) * ds : U32) + dc : U32), vc, 1, 1, d, v), sc, (U32.from_nat(i) * U32.from_nat(1n+m) : U32), pa, ga), NL.add_zero(1n+m))
+
 # =====================================================================================================
 # Attention's trees of sequences: parallel = sequential
 # =====================================================================================================
@@ -423,6 +434,120 @@ def par_mid(-d: Nat, -gs: T.Halves<T.FS>, -n: Nat, +h: Nat, +dm: T.Dm, r: MR<d, 
     case MR{ys, sy, f}:
       par_fin(d, gs, n, h, dm, ys, sy, f, l1(ys, h, dm, Nil{}))
 
+def ffmap(+h: Nat, +dm: T.Dm, xs: List<&1, T.FS>) -> List<&1, Array<F32>>:
+  match xs:
+    case Nil{}:
+      Nil{}
+    case Con{x, t}:
+      T.fs_o(T.fheads_full(h, 0n, dm, x)) <> ffmap(h, dm, t)
+
+# ---- fleaf (the code's loop with an accumulator) is the map pushed onto the accumulator ----
+
+type L1RF<-h: Nat, -dm: T.Dm, -xs: List<&1, T.FS>, -acc: List<&1, Array<F32>>> is Type:
+  L1RF{ys: List<&1, T.FS>, same: {ys == xs : List<&1, T.FS>}, fact: {T.fleaf_full(xs, h, dm, acc) == List.reverse.go(&1, Array<F32>, acc, ffmap(h, dm, xs)) : List<&1, Array<F32>>}}
+
+def lf_con(x: T.FS, -t: List<&1, T.FS>, +h: Nat, +dm: T.Dm, -acc: List<&1, Array<F32>>, r: L1RF<h, dm, t, T.fs_o(T.fheads_full(h, 0n, dm, x)) <> acc>) -> L1RF<h, dm, x <> t, acc>:
+  match r:
+    case L1RF{ys, same, fact}:
+      L1RF{x <> ys, Equal.cong(List<&1, T.FS>, List<&1, T.FS>, z => x <> z, ys, t, same), fact}
+
+def lf1(xs: List<&1, T.FS>, +h: Nat, +dm: T.Dm, -acc: List<&1, Array<F32>>) -> L1RF<h, dm, xs, acc>:
+  match xs:
+    case Nil{}:
+      L1RF{Nil{}, {==}, {==}}
+    case Con{x, t}:
+      lf_con(x, t, h, dm, acc, lf1(t, h, dm, T.fs_o(T.fheads_full(h, 0n, dm, x)) <> acc))
+
+# ---- the map of two lists appended is the two maps appended ----
+
+type MARF<-h: Nat, -dm: T.Dm, -a: List<&1, T.FS>, -b: List<&1, T.FS>> is Type:
+  MARF{ys: List<&1, T.FS>, same: {ys == a : List<&1, T.FS>}, fact: {ffmap(h, dm, List.append(&1, T.FS, a, b)) == List.append(&1, Array<F32>, ffmap(h, dm, a), ffmap(h, dm, b)) : List<&1, Array<F32>>}}
+
+def ma_conf(x: T.FS, -t: List<&1, T.FS>, +h: Nat, +dm: T.Dm, -b: List<&1, T.FS>, r: MARF<h, dm, t, b>) -> MARF<h, dm, x <> t, b>:
+  match r:
+    case MARF{ys, same, fact}:
+      MARF{x <> ys, Equal.cong(List<&1, T.FS>, List<&1, T.FS>, z => x <> z, ys, t, same), Equal.cong(List<&1, Array<F32>>, List<&1, Array<F32>>, z => T.fs_o(T.fheads_full(h, 0n, dm, x)) <> z, ffmap(h, dm, List.append(&1, T.FS, t, b)), List.append(&1, Array<F32>, ffmap(h, dm, t), ffmap(h, dm, b)), fact)}
+
+def map_appf(a: List<&1, T.FS>, +h: Nat, +dm: T.Dm, -b: List<&1, T.FS>) -> MARF<h, dm, a, b>:
+  match a:
+    case Nil{}:
+      MARF{Nil{}, {==}, {==}}
+    case Con{x, t}:
+      ma_conf(x, t, h, dm, b, map_appf(t, h, dm, b))
+
+# ---- a reversed onto b, then c appended: a reversed onto b ++ c ----
+
+type MRF<-d: Nat, -gs: T.Halves<T.FS>, -n: Nat, -h: Nat, -dm: T.Dm> is Type:
+  MRF{ys: List<&1, T.FS>, same: {ys == T.hcat(T.FS, gs) : List<&1, T.FS>}, fact: {T.fpar_full(d, gs, n, h, dm) == ffmap(h, dm, T.hcat(T.FS, gs)) : List<&1, Array<F32>>}}
+
+# depth 0: the two leaves' loops, appended
+def fm0c(-l: List<&1, T.FS>, -r: List<&1, T.FS>, -n: Nat, +h: Nat, +dm: T.Dm, -l1y: List<&1, T.FS>, +sl: {l1y == l : List<&1, T.FS>}, fl: {T.fleaf_full(l, h, dm, Nil{}) == ffmap(h, dm, l) : List<&1, Array<F32>>}, r1: List<&1, T.FS>, sr: {r1 == r : List<&1, T.FS>}, fr: {T.fleaf_full(r, h, dm, Nil{}) == ffmap(h, dm, r) : List<&1, Array<F32>>}, c: MARF<h, dm, l1y, r>) -> MRF<0n, T.Halves{l, r}, n, h, dm>:
+  match c:
+    case MARF{l2, s2, fa}:
+      MRF{List.append(&1, T.FS, l2, r1), app2(T.FS, l2, l, r1, r, Equal.trans(List<&1, T.FS>, l2, l1y, l, s2, sl), sr),
+        Equal.trans(List<&1, Array<F32>>, List.append(&1, Array<F32>, T.fleaf_full(l, h, dm, Nil{}), T.fleaf_full(r, h, dm, Nil{})), List.append(&1, Array<F32>, ffmap(h, dm, l), ffmap(h, dm, r)), ffmap(h, dm, List.append(&1, T.FS, l, r)), app2(Array<F32>, T.fleaf_full(l, h, dm, Nil{}), ffmap(h, dm, l), T.fleaf_full(r, h, dm, Nil{}), ffmap(h, dm, r), fl, fr),
+          Equal.sym(List<&1, Array<F32>>, ffmap(h, dm, List.append(&1, T.FS, l, r)), List.append(&1, Array<F32>, ffmap(h, dm, l), ffmap(h, dm, r)),
+            Equal.trans(List<&1, Array<F32>>, ffmap(h, dm, List.append(&1, T.FS, l, r)), ffmap(h, dm, List.append(&1, T.FS, l1y, r)), List.append(&1, Array<F32>, ffmap(h, dm, l), ffmap(h, dm, r)), Equal.cong(List<&1, T.FS>, List<&1, Array<F32>>, z => ffmap(h, dm, List.append(&1, T.FS, z, r)), l, l1y, Equal.sym(List<&1, T.FS>, l1y, l, sl)),
+              Equal.trans(List<&1, Array<F32>>, ffmap(h, dm, List.append(&1, T.FS, l1y, r)), List.append(&1, Array<F32>, ffmap(h, dm, l1y), ffmap(h, dm, r)), List.append(&1, Array<F32>, ffmap(h, dm, l), ffmap(h, dm, r)), fa, Equal.cong(List<&1, T.FS>, List<&1, Array<F32>>, z => List.append(&1, Array<F32>, ffmap(h, dm, z), ffmap(h, dm, r)), l1y, l, sl)))))}
+
+def fm0b(-l: List<&1, T.FS>, -r: List<&1, T.FS>, -n: Nat, +h: Nat, +dm: T.Dm, l1y: List<&1, T.FS>, +sl: {l1y == l : List<&1, T.FS>}, fl: {T.fleaf_full(l, h, dm, Nil{}) == ffmap(h, dm, l) : List<&1, Array<F32>>}, b: L1RF<h, dm, r, Nil{}>) -> MRF<0n, T.Halves{l, r}, n, h, dm>:
+  match b:
+    case L1RF{r1, sr, fr}:
+      fm0c(l, r, n, h, dm, l1y, sl, fl, r1, sr, fr, map_appf(l1y, h, dm, r))
+
+def fm0a(-l: List<&1, T.FS>, r: List<&1, T.FS>, -n: Nat, +h: Nat, +dm: T.Dm, a: L1RF<h, dm, l, Nil{}>) -> MRF<0n, T.Halves{l, r}, n, h, dm>:
+  match a:
+    case L1RF{l1y, sl, fl}:
+      fm0b(l, r, n, h, dm, l1y, sl, fl, lf1(r, h, dm, Nil{}))
+
+# depth 1 + e: each half cut in two and its treef (the closures run main at depth e), then the two maps appended
+def fm1c(-e: Nat, -l: List<&1, T.FS>, -r: List<&1, T.FS>, +n: Nat, +h: Nat, +dm: T.Dm, -hh1: T.Halves<T.FS>, s1: {hh1 == T.cut(T.FS, TA.half(TA.half(n)), l, Nil{}) : T.Halves<T.FS>}, +cat1: {T.hcat(T.FS, hh1) == l : List<&1, T.FS>}, -hh2: T.Halves<T.FS>, s2: {hh2 == T.cut(T.FS, TA.half(Nat.sub(n, TA.half(n))), r, Nil{}) : T.Halves<T.FS>}, +cat2: {T.hcat(T.FS, hh2) == r : List<&1, T.FS>}, -y1: List<&1, T.FS>, sy1: {y1 == T.hcat(T.FS, hh1) : List<&1, T.FS>}, f1: {T.fpar_full(e, hh1, TA.half(n), h, dm) == ffmap(h, dm, T.hcat(T.FS, hh1)) : List<&1, Array<F32>>}, y2: List<&1, T.FS>, sy2: {y2 == T.hcat(T.FS, hh2) : List<&1, T.FS>}, f2: {T.fpar_full(e, hh2, Nat.sub(n, TA.half(n)), h, dm) == ffmap(h, dm, T.hcat(T.FS, hh2)) : List<&1, Array<F32>>}, ma: MARF<h, dm, y1, y2>) -> MRF<1n+e, T.Halves{l, r}, n, h, dm>:
+  match ma:
+    case MARF{y1b, sb, fa}:
+      +ly1 = Equal.trans(List<&1, T.FS>, y1, T.hcat(T.FS, hh1), l, sy1, cat1)
+      +ly2 = Equal.trans(List<&1, T.FS>, y2, T.hcat(T.FS, hh2), r, sy2, cat2)
+      +q1 = Equal.trans(List<&1, Array<F32>>, T.fpar_full(e, T.cut(T.FS, TA.half(TA.half(n)), l, Nil{}), TA.half(n), h, dm), T.fpar_full(e, hh1, TA.half(n), h, dm), ffmap(h, dm, l), Equal.cong(T.Halves<T.FS>, List<&1, Array<F32>>, z => T.fpar_full(e, z, TA.half(n), h, dm), T.cut(T.FS, TA.half(TA.half(n)), l, Nil{}), hh1, Equal.sym(T.Halves<T.FS>, hh1, T.cut(T.FS, TA.half(TA.half(n)), l, Nil{}), s1)), Equal.trans(List<&1, Array<F32>>, T.fpar_full(e, hh1, TA.half(n), h, dm), ffmap(h, dm, T.hcat(T.FS, hh1)), ffmap(h, dm, l), f1, Equal.cong(List<&1, T.FS>, List<&1, Array<F32>>, z => ffmap(h, dm, z), T.hcat(T.FS, hh1), l, cat1)))
+      +q2 = Equal.trans(List<&1, Array<F32>>, T.fpar_full(e, T.cut(T.FS, TA.half(Nat.sub(n, TA.half(n))), r, Nil{}), Nat.sub(n, TA.half(n)), h, dm), T.fpar_full(e, hh2, Nat.sub(n, TA.half(n)), h, dm), ffmap(h, dm, r), Equal.cong(T.Halves<T.FS>, List<&1, Array<F32>>, z => T.fpar_full(e, z, Nat.sub(n, TA.half(n)), h, dm), T.cut(T.FS, TA.half(Nat.sub(n, TA.half(n))), r, Nil{}), hh2, Equal.sym(T.Halves<T.FS>, hh2, T.cut(T.FS, TA.half(Nat.sub(n, TA.half(n))), r, Nil{}), s2)), Equal.trans(List<&1, Array<F32>>, T.fpar_full(e, hh2, Nat.sub(n, TA.half(n)), h, dm), ffmap(h, dm, T.hcat(T.FS, hh2)), ffmap(h, dm, r), f2, Equal.cong(List<&1, T.FS>, List<&1, Array<F32>>, z => ffmap(h, dm, z), T.hcat(T.FS, hh2), r, cat2)))
+      +bb = Equal.trans(List<&1, Array<F32>>, ffmap(h, dm, List.append(&1, T.FS, l, r)), ffmap(h, dm, List.append(&1, T.FS, y1, y2)), List.append(&1, Array<F32>, ffmap(h, dm, l), ffmap(h, dm, r)), Equal.cong(List<&1, T.FS>, List<&1, Array<F32>>, z => ffmap(h, dm, z), List.append(&1, T.FS, l, r), List.append(&1, T.FS, y1, y2), app2(T.FS, l, y1, r, y2, Equal.sym(List<&1, T.FS>, y1, l, ly1), Equal.sym(List<&1, T.FS>, y2, r, ly2))), Equal.trans(List<&1, Array<F32>>, ffmap(h, dm, List.append(&1, T.FS, y1, y2)), List.append(&1, Array<F32>, ffmap(h, dm, y1), ffmap(h, dm, y2)), List.append(&1, Array<F32>, ffmap(h, dm, l), ffmap(h, dm, r)), fa, app2(Array<F32>, ffmap(h, dm, y1), ffmap(h, dm, l), ffmap(h, dm, y2), ffmap(h, dm, r), Equal.cong(List<&1, T.FS>, List<&1, Array<F32>>, z => ffmap(h, dm, z), y1, l, ly1), Equal.cong(List<&1, T.FS>, List<&1, Array<F32>>, z => ffmap(h, dm, z), y2, r, ly2))))
+      MRF{List.append(&1, T.FS, y1b, y2), app2(T.FS, y1b, l, y2, r, Equal.trans(List<&1, T.FS>, y1b, y1, l, sb, ly1), ly2),
+        Equal.trans(List<&1, Array<F32>>, List.append(&1, Array<F32>, T.fpar_full(e, T.cut(T.FS, TA.half(TA.half(n)), l, Nil{}), TA.half(n), h, dm), T.fpar_full(e, T.cut(T.FS, TA.half(Nat.sub(n, TA.half(n))), r, Nil{}), Nat.sub(n, TA.half(n)), h, dm)), List.append(&1, Array<F32>, ffmap(h, dm, l), ffmap(h, dm, r)), ffmap(h, dm, List.append(&1, T.FS, l, r)), app2(Array<F32>, T.fpar_full(e, T.cut(T.FS, TA.half(TA.half(n)), l, Nil{}), TA.half(n), h, dm), ffmap(h, dm, l), T.fpar_full(e, T.cut(T.FS, TA.half(Nat.sub(n, TA.half(n))), r, Nil{}), Nat.sub(n, TA.half(n)), h, dm), ffmap(h, dm, r), q1, q2), Equal.sym(List<&1, Array<F32>>, ffmap(h, dm, List.append(&1, T.FS, l, r)), List.append(&1, Array<F32>, ffmap(h, dm, l), ffmap(h, dm, r)), bb))}
+
+def fm1b(-e: Nat, -l: List<&1, T.FS>, -r: List<&1, T.FS>, +n: Nat, +h: Nat, +dm: T.Dm, -hh1: T.Halves<T.FS>, s1: {hh1 == T.cut(T.FS, TA.half(TA.half(n)), l, Nil{}) : T.Halves<T.FS>}, cat1: {T.hcat(T.FS, hh1) == l : List<&1, T.FS>}, -hh2: T.Halves<T.FS>, s2: {hh2 == T.cut(T.FS, TA.half(Nat.sub(n, TA.half(n))), r, Nil{}) : T.Halves<T.FS>}, cat2: {T.hcat(T.FS, hh2) == r : List<&1, T.FS>}, r1: MRF<e, hh1, TA.half(n), h, dm>, r2: MRF<e, hh2, Nat.sub(n, TA.half(n)), h, dm>) -> MRF<1n+e, T.Halves{l, r}, n, h, dm>:
+  match r1 r2:
+    case MRF{y1, sy1, f1} MRF{y2, sy2, f2}:
+      fm1c(e, l, r, n, h, dm, hh1, s1, cat1, hh2, s2, cat2, y1, sy1, f1, y2, sy2, f2, map_appf(y1, h, dm, y2))
+
+def fm1a(-e: Nat, -l: List<&1, T.FS>, -r: List<&1, T.FS>, +n: Nat, +h: Nat, +dm: T.Dm, c1: CGR<TA.half(TA.half(n)), l, Nil{}>, c2: CGR<TA.half(Nat.sub(n, TA.half(n))), r, Nil{}>, k1: @g: T.Halves<T.FS> -> MRF<e, g, TA.half(n), h, dm>, k2: @g: T.Halves<T.FS> -> MRF<e, g, Nat.sub(n, TA.half(n)), h, dm>) -> MRF<1n+e, T.Halves{l, r}, n, h, dm>:
+  match c1 c2:
+    case CGR{hh1, s1, cat1} CGR{hh2, s2, cat2}:
+      fm1b(e, l, r, n, h, dm, hh1, s1, cat1, hh2, s2, cat2, k1(hh1), k2(hh2))
+
+def treef(d: Nat, gs: T.Halves<T.FS>, +n: Nat, +h: Nat, +dm: T.Dm) -> MRF<d, gs, n, h, dm>:
+  match d gs:
+    case 0n T.Halves{l, r}:
+      fm0a(l, r, n, h, dm, lf1(l, h, dm, Nil{}))
+    case 1n++e T.Halves{l, r}:
+      fm1a(e, l, r, n, h, dm, cg(TA.half(TA.half(n)), l, Nil{}), cg(TA.half(Nat.sub(n, TA.half(n))), r, Nil{}), g1 => treef(e, g1, TA.half(n), h, dm), g2 => treef(e, g2, Nat.sub(n, TA.half(n)), h, dm))
+
+# the law: the treef gives what fleaf, the loop over the sequences one after another, gives
+def par_fin_f(-d: Nat, -gs: T.Halves<T.FS>, -n: Nat, +h: Nat, +dm: T.Dm, -ys: List<&1, T.FS>, +sy: {ys == T.hcat(T.FS, gs) : List<&1, T.FS>}, f: {T.fpar_full(d, gs, n, h, dm) == ffmap(h, dm, T.hcat(T.FS, gs)) : List<&1, Array<F32>>}, r: L1RF<h, dm, ys, Nil{}>) -> {T.fpar_full(d, gs, n, h, dm) == T.fleaf_full(T.hcat(T.FS, gs), h, dm, Nil{}) : List<&1, Array<F32>>}:
+  match r:
+    case L1RF{ys2, s2, fl}:
+      Equal.trans(List<&1, Array<F32>>, T.fpar_full(d, gs, n, h, dm), ffmap(h, dm, T.hcat(T.FS, gs)), T.fleaf_full(T.hcat(T.FS, gs), h, dm, Nil{}), f,
+        Equal.sym(List<&1, Array<F32>>, T.fleaf_full(T.hcat(T.FS, gs), h, dm, Nil{}), ffmap(h, dm, T.hcat(T.FS, gs)),
+          Equal.trans(List<&1, Array<F32>>, T.fleaf_full(T.hcat(T.FS, gs), h, dm, Nil{}), T.fleaf_full(ys, h, dm, Nil{}), ffmap(h, dm, T.hcat(T.FS, gs)), Equal.cong(List<&1, T.FS>, List<&1, Array<F32>>, z => T.fleaf_full(z, h, dm, Nil{}), T.hcat(T.FS, gs), ys, Equal.sym(List<&1, T.FS>, ys, T.hcat(T.FS, gs), sy)),
+            Equal.trans(List<&1, Array<F32>>, T.fleaf_full(ys, h, dm, Nil{}), ffmap(h, dm, ys), ffmap(h, dm, T.hcat(T.FS, gs)), fl, Equal.cong(List<&1, T.FS>, List<&1, Array<F32>>, z => ffmap(h, dm, z), ys, T.hcat(T.FS, gs), sy)))))
+
+def par_mid_f(-d: Nat, -gs: T.Halves<T.FS>, -n: Nat, +h: Nat, +dm: T.Dm, r: MRF<d, gs, n, h, dm>) -> {T.fpar_full(d, gs, n, h, dm) == T.fleaf_full(T.hcat(T.FS, gs), h, dm, Nil{}) : List<&1, Array<F32>>}:
+  match r:
+    case MRF{ys, sy, f}:
+      par_fin_f(d, gs, n, h, dm, ys, sy, f, lf1(ys, h, dm, Nil{}))
+
+# PROOF (attn_par_fwd_full): attn_par_fwd's proof for the full-visible leaf; the depth induction, cut and append
+# lemmas are the same, and cg (which is about cut and hcat, not about a leaf) is shared with it.
+def Laws.attn_par_fwd_full(d, gs, n, h, dm):
+  par_mid_f(d, gs, n, h, dm, treef(d, gs, n, h, dm))
+
 # PROOF (attn_par_fwd): by induction on the depth, each fact handing its list back (the lists hold arrays, so each is
 # used once): a leaf pair is fleaf twice, and fleaf is the map pushed onto its accumulator (l1); the map of two lists
 # appended is the two maps appended (map_app); cut's halves, appended, are the list it cut (cg); a deeper tree is two
@@ -583,6 +708,119 @@ def b_par_mid(-d: Nat, -gs: T.Halves<T.BG>, -n: Nat, +h: Nat, +dm: T.Dm, r: b_MR
   match r:
     case b_MR{ys, sy, f}:
       b_par_fin(d, gs, n, h, dm, ys, sy, f, b_l1(ys, h, dm, Nil{}))
+
+def b_ffmap(+h: Nat, +dm: T.Dm, xs: List<&1, T.BG>) -> List<&1, T.DB>:
+  match xs:
+    case Nil{}:
+      Nil{}
+    case Con{x, t}:
+      T.db_of(T.bgroups_full(h, 0n, dm, x)) <> b_ffmap(h, dm, t)
+
+# ---- fleaf (the code's loop with an accumulator) is the map pushed onto the accumulator ----
+
+type b_L1RF<-h: Nat, -dm: T.Dm, -xs: List<&1, T.BG>, -acc: List<&1, T.DB>> is Type:
+  b_L1RF{ys: List<&1, T.BG>, same: {ys == xs : List<&1, T.BG>}, fact: {T.bleaf_full(xs, h, dm, acc) == List.reverse.go(&1, T.DB, acc, b_ffmap(h, dm, xs)) : List<&1, T.DB>}}
+
+def b_lf_con(x: T.BG, -t: List<&1, T.BG>, +h: Nat, +dm: T.Dm, -acc: List<&1, T.DB>, r: b_L1RF<h, dm, t, T.db_of(T.bgroups_full(h, 0n, dm, x)) <> acc>) -> b_L1RF<h, dm, x <> t, acc>:
+  match r:
+    case b_L1RF{ys, same, fact}:
+      b_L1RF{x <> ys, Equal.cong(List<&1, T.BG>, List<&1, T.BG>, z => x <> z, ys, t, same), fact}
+
+def b_lf1(xs: List<&1, T.BG>, +h: Nat, +dm: T.Dm, -acc: List<&1, T.DB>) -> b_L1RF<h, dm, xs, acc>:
+  match xs:
+    case Nil{}:
+      b_L1RF{Nil{}, {==}, {==}}
+    case Con{x, t}:
+      b_lf_con(x, t, h, dm, acc, b_lf1(t, h, dm, T.db_of(T.bgroups_full(h, 0n, dm, x)) <> acc))
+
+# ---- the map of two lists appended is the two maps appended ----
+
+type b_MARF<-h: Nat, -dm: T.Dm, -a: List<&1, T.BG>, -b: List<&1, T.BG>> is Type:
+  b_MARF{ys: List<&1, T.BG>, same: {ys == a : List<&1, T.BG>}, fact: {b_ffmap(h, dm, List.append(&1, T.BG, a, b)) == List.append(&1, T.DB, b_ffmap(h, dm, a), b_ffmap(h, dm, b)) : List<&1, T.DB>}}
+
+def b_ma_conf(x: T.BG, -t: List<&1, T.BG>, +h: Nat, +dm: T.Dm, -b: List<&1, T.BG>, r: b_MARF<h, dm, t, b>) -> b_MARF<h, dm, x <> t, b>:
+  match r:
+    case b_MARF{ys, same, fact}:
+      b_MARF{x <> ys, Equal.cong(List<&1, T.BG>, List<&1, T.BG>, z => x <> z, ys, t, same), Equal.cong(List<&1, T.DB>, List<&1, T.DB>, z => T.db_of(T.bgroups_full(h, 0n, dm, x)) <> z, b_ffmap(h, dm, List.append(&1, T.BG, t, b)), List.append(&1, T.DB, b_ffmap(h, dm, t), b_ffmap(h, dm, b)), fact)}
+
+def b_map_appf(a: List<&1, T.BG>, +h: Nat, +dm: T.Dm, -b: List<&1, T.BG>) -> b_MARF<h, dm, a, b>:
+  match a:
+    case Nil{}:
+      b_MARF{Nil{}, {==}, {==}}
+    case Con{x, t}:
+      b_ma_conf(x, t, h, dm, b, b_map_appf(t, h, dm, b))
+
+# ---- a reversed onto b, then c appended: a reversed onto b ++ c ----
+
+type b_MRF<-d: Nat, -gs: T.Halves<T.BG>, -n: Nat, -h: Nat, -dm: T.Dm> is Type:
+  b_MRF{ys: List<&1, T.BG>, same: {ys == T.hcat(T.BG, gs) : List<&1, T.BG>}, fact: {T.bpar_full(d, gs, n, h, dm) == b_ffmap(h, dm, T.hcat(T.BG, gs)) : List<&1, T.DB>}}
+
+# depth 0: the two leaves' loops, appended
+def b_fm0c(-l: List<&1, T.BG>, -r: List<&1, T.BG>, -n: Nat, +h: Nat, +dm: T.Dm, -l1y: List<&1, T.BG>, +sl: {l1y == l : List<&1, T.BG>}, fl: {T.bleaf_full(l, h, dm, Nil{}) == b_ffmap(h, dm, l) : List<&1, T.DB>}, r1: List<&1, T.BG>, sr: {r1 == r : List<&1, T.BG>}, fr: {T.bleaf_full(r, h, dm, Nil{}) == b_ffmap(h, dm, r) : List<&1, T.DB>}, c: b_MARF<h, dm, l1y, r>) -> b_MRF<0n, T.Halves{l, r}, n, h, dm>:
+  match c:
+    case b_MARF{l2, s2, fa}:
+      b_MRF{List.append(&1, T.BG, l2, r1), app2(T.BG, l2, l, r1, r, Equal.trans(List<&1, T.BG>, l2, l1y, l, s2, sl), sr),
+        Equal.trans(List<&1, T.DB>, List.append(&1, T.DB, T.bleaf_full(l, h, dm, Nil{}), T.bleaf_full(r, h, dm, Nil{})), List.append(&1, T.DB, b_ffmap(h, dm, l), b_ffmap(h, dm, r)), b_ffmap(h, dm, List.append(&1, T.BG, l, r)), app2(T.DB, T.bleaf_full(l, h, dm, Nil{}), b_ffmap(h, dm, l), T.bleaf_full(r, h, dm, Nil{}), b_ffmap(h, dm, r), fl, fr),
+          Equal.sym(List<&1, T.DB>, b_ffmap(h, dm, List.append(&1, T.BG, l, r)), List.append(&1, T.DB, b_ffmap(h, dm, l), b_ffmap(h, dm, r)),
+            Equal.trans(List<&1, T.DB>, b_ffmap(h, dm, List.append(&1, T.BG, l, r)), b_ffmap(h, dm, List.append(&1, T.BG, l1y, r)), List.append(&1, T.DB, b_ffmap(h, dm, l), b_ffmap(h, dm, r)), Equal.cong(List<&1, T.BG>, List<&1, T.DB>, z => b_ffmap(h, dm, List.append(&1, T.BG, z, r)), l, l1y, Equal.sym(List<&1, T.BG>, l1y, l, sl)),
+              Equal.trans(List<&1, T.DB>, b_ffmap(h, dm, List.append(&1, T.BG, l1y, r)), List.append(&1, T.DB, b_ffmap(h, dm, l1y), b_ffmap(h, dm, r)), List.append(&1, T.DB, b_ffmap(h, dm, l), b_ffmap(h, dm, r)), fa, Equal.cong(List<&1, T.BG>, List<&1, T.DB>, z => List.append(&1, T.DB, b_ffmap(h, dm, z), b_ffmap(h, dm, r)), l1y, l, sl)))))}
+
+def b_fm0b(-l: List<&1, T.BG>, -r: List<&1, T.BG>, -n: Nat, +h: Nat, +dm: T.Dm, l1y: List<&1, T.BG>, +sl: {l1y == l : List<&1, T.BG>}, fl: {T.bleaf_full(l, h, dm, Nil{}) == b_ffmap(h, dm, l) : List<&1, T.DB>}, b: b_L1RF<h, dm, r, Nil{}>) -> b_MRF<0n, T.Halves{l, r}, n, h, dm>:
+  match b:
+    case b_L1RF{r1, sr, fr}:
+      b_fm0c(l, r, n, h, dm, l1y, sl, fl, r1, sr, fr, b_map_appf(l1y, h, dm, r))
+
+def b_fm0a(-l: List<&1, T.BG>, r: List<&1, T.BG>, -n: Nat, +h: Nat, +dm: T.Dm, a: b_L1RF<h, dm, l, Nil{}>) -> b_MRF<0n, T.Halves{l, r}, n, h, dm>:
+  match a:
+    case b_L1RF{l1y, sl, fl}:
+      b_fm0b(l, r, n, h, dm, l1y, sl, fl, b_lf1(r, h, dm, Nil{}))
+
+# depth 1 + e: each half cut in two and its b_treef (the closures run main at depth e), then the two maps appended
+def b_fm1c(-e: Nat, -l: List<&1, T.BG>, -r: List<&1, T.BG>, +n: Nat, +h: Nat, +dm: T.Dm, -hh1: T.Halves<T.BG>, s1: {hh1 == T.cut(T.BG, TA.half(TA.half(n)), l, Nil{}) : T.Halves<T.BG>}, +cat1: {T.hcat(T.BG, hh1) == l : List<&1, T.BG>}, -hh2: T.Halves<T.BG>, s2: {hh2 == T.cut(T.BG, TA.half(Nat.sub(n, TA.half(n))), r, Nil{}) : T.Halves<T.BG>}, +cat2: {T.hcat(T.BG, hh2) == r : List<&1, T.BG>}, -y1: List<&1, T.BG>, sy1: {y1 == T.hcat(T.BG, hh1) : List<&1, T.BG>}, f1: {T.bpar_full(e, hh1, TA.half(n), h, dm) == b_ffmap(h, dm, T.hcat(T.BG, hh1)) : List<&1, T.DB>}, y2: List<&1, T.BG>, sy2: {y2 == T.hcat(T.BG, hh2) : List<&1, T.BG>}, f2: {T.bpar_full(e, hh2, Nat.sub(n, TA.half(n)), h, dm) == b_ffmap(h, dm, T.hcat(T.BG, hh2)) : List<&1, T.DB>}, ma: b_MARF<h, dm, y1, y2>) -> b_MRF<1n+e, T.Halves{l, r}, n, h, dm>:
+  match ma:
+    case b_MARF{y1b, sb, fa}:
+      +ly1 = Equal.trans(List<&1, T.BG>, y1, T.hcat(T.BG, hh1), l, sy1, cat1)
+      +ly2 = Equal.trans(List<&1, T.BG>, y2, T.hcat(T.BG, hh2), r, sy2, cat2)
+      +q1 = Equal.trans(List<&1, T.DB>, T.bpar_full(e, T.cut(T.BG, TA.half(TA.half(n)), l, Nil{}), TA.half(n), h, dm), T.bpar_full(e, hh1, TA.half(n), h, dm), b_ffmap(h, dm, l), Equal.cong(T.Halves<T.BG>, List<&1, T.DB>, z => T.bpar_full(e, z, TA.half(n), h, dm), T.cut(T.BG, TA.half(TA.half(n)), l, Nil{}), hh1, Equal.sym(T.Halves<T.BG>, hh1, T.cut(T.BG, TA.half(TA.half(n)), l, Nil{}), s1)), Equal.trans(List<&1, T.DB>, T.bpar_full(e, hh1, TA.half(n), h, dm), b_ffmap(h, dm, T.hcat(T.BG, hh1)), b_ffmap(h, dm, l), f1, Equal.cong(List<&1, T.BG>, List<&1, T.DB>, z => b_ffmap(h, dm, z), T.hcat(T.BG, hh1), l, cat1)))
+      +q2 = Equal.trans(List<&1, T.DB>, T.bpar_full(e, T.cut(T.BG, TA.half(Nat.sub(n, TA.half(n))), r, Nil{}), Nat.sub(n, TA.half(n)), h, dm), T.bpar_full(e, hh2, Nat.sub(n, TA.half(n)), h, dm), b_ffmap(h, dm, r), Equal.cong(T.Halves<T.BG>, List<&1, T.DB>, z => T.bpar_full(e, z, Nat.sub(n, TA.half(n)), h, dm), T.cut(T.BG, TA.half(Nat.sub(n, TA.half(n))), r, Nil{}), hh2, Equal.sym(T.Halves<T.BG>, hh2, T.cut(T.BG, TA.half(Nat.sub(n, TA.half(n))), r, Nil{}), s2)), Equal.trans(List<&1, T.DB>, T.bpar_full(e, hh2, Nat.sub(n, TA.half(n)), h, dm), b_ffmap(h, dm, T.hcat(T.BG, hh2)), b_ffmap(h, dm, r), f2, Equal.cong(List<&1, T.BG>, List<&1, T.DB>, z => b_ffmap(h, dm, z), T.hcat(T.BG, hh2), r, cat2)))
+      +bb = Equal.trans(List<&1, T.DB>, b_ffmap(h, dm, List.append(&1, T.BG, l, r)), b_ffmap(h, dm, List.append(&1, T.BG, y1, y2)), List.append(&1, T.DB, b_ffmap(h, dm, l), b_ffmap(h, dm, r)), Equal.cong(List<&1, T.BG>, List<&1, T.DB>, z => b_ffmap(h, dm, z), List.append(&1, T.BG, l, r), List.append(&1, T.BG, y1, y2), app2(T.BG, l, y1, r, y2, Equal.sym(List<&1, T.BG>, y1, l, ly1), Equal.sym(List<&1, T.BG>, y2, r, ly2))), Equal.trans(List<&1, T.DB>, b_ffmap(h, dm, List.append(&1, T.BG, y1, y2)), List.append(&1, T.DB, b_ffmap(h, dm, y1), b_ffmap(h, dm, y2)), List.append(&1, T.DB, b_ffmap(h, dm, l), b_ffmap(h, dm, r)), fa, app2(T.DB, b_ffmap(h, dm, y1), b_ffmap(h, dm, l), b_ffmap(h, dm, y2), b_ffmap(h, dm, r), Equal.cong(List<&1, T.BG>, List<&1, T.DB>, z => b_ffmap(h, dm, z), y1, l, ly1), Equal.cong(List<&1, T.BG>, List<&1, T.DB>, z => b_ffmap(h, dm, z), y2, r, ly2))))
+      b_MRF{List.append(&1, T.BG, y1b, y2), app2(T.BG, y1b, l, y2, r, Equal.trans(List<&1, T.BG>, y1b, y1, l, sb, ly1), ly2),
+        Equal.trans(List<&1, T.DB>, List.append(&1, T.DB, T.bpar_full(e, T.cut(T.BG, TA.half(TA.half(n)), l, Nil{}), TA.half(n), h, dm), T.bpar_full(e, T.cut(T.BG, TA.half(Nat.sub(n, TA.half(n))), r, Nil{}), Nat.sub(n, TA.half(n)), h, dm)), List.append(&1, T.DB, b_ffmap(h, dm, l), b_ffmap(h, dm, r)), b_ffmap(h, dm, List.append(&1, T.BG, l, r)), app2(T.DB, T.bpar_full(e, T.cut(T.BG, TA.half(TA.half(n)), l, Nil{}), TA.half(n), h, dm), b_ffmap(h, dm, l), T.bpar_full(e, T.cut(T.BG, TA.half(Nat.sub(n, TA.half(n))), r, Nil{}), Nat.sub(n, TA.half(n)), h, dm), b_ffmap(h, dm, r), q1, q2), Equal.sym(List<&1, T.DB>, b_ffmap(h, dm, List.append(&1, T.BG, l, r)), List.append(&1, T.DB, b_ffmap(h, dm, l), b_ffmap(h, dm, r)), bb))}
+
+def b_fm1b(-e: Nat, -l: List<&1, T.BG>, -r: List<&1, T.BG>, +n: Nat, +h: Nat, +dm: T.Dm, -hh1: T.Halves<T.BG>, s1: {hh1 == T.cut(T.BG, TA.half(TA.half(n)), l, Nil{}) : T.Halves<T.BG>}, cat1: {T.hcat(T.BG, hh1) == l : List<&1, T.BG>}, -hh2: T.Halves<T.BG>, s2: {hh2 == T.cut(T.BG, TA.half(Nat.sub(n, TA.half(n))), r, Nil{}) : T.Halves<T.BG>}, cat2: {T.hcat(T.BG, hh2) == r : List<&1, T.BG>}, r1: b_MRF<e, hh1, TA.half(n), h, dm>, r2: b_MRF<e, hh2, Nat.sub(n, TA.half(n)), h, dm>) -> b_MRF<1n+e, T.Halves{l, r}, n, h, dm>:
+  match r1 r2:
+    case b_MRF{y1, sy1, f1} b_MRF{y2, sy2, f2}:
+      b_fm1c(e, l, r, n, h, dm, hh1, s1, cat1, hh2, s2, cat2, y1, sy1, f1, y2, sy2, f2, b_map_appf(y1, h, dm, y2))
+
+def b_fm1a(-e: Nat, -l: List<&1, T.BG>, -r: List<&1, T.BG>, +n: Nat, +h: Nat, +dm: T.Dm, c1: b_CGR<TA.half(TA.half(n)), l, Nil{}>, c2: b_CGR<TA.half(Nat.sub(n, TA.half(n))), r, Nil{}>, k1: @g: T.Halves<T.BG> -> b_MRF<e, g, TA.half(n), h, dm>, k2: @g: T.Halves<T.BG> -> b_MRF<e, g, Nat.sub(n, TA.half(n)), h, dm>) -> b_MRF<1n+e, T.Halves{l, r}, n, h, dm>:
+  match c1 c2:
+    case b_CGR{hh1, s1, cat1} b_CGR{hh2, s2, cat2}:
+      b_fm1b(e, l, r, n, h, dm, hh1, s1, cat1, hh2, s2, cat2, k1(hh1), k2(hh2))
+
+def b_treef(d: Nat, gs: T.Halves<T.BG>, +n: Nat, +h: Nat, +dm: T.Dm) -> b_MRF<d, gs, n, h, dm>:
+  match d gs:
+    case 0n T.Halves{l, r}:
+      b_fm0a(l, r, n, h, dm, b_lf1(l, h, dm, Nil{}))
+    case 1n++e T.Halves{l, r}:
+      b_fm1a(e, l, r, n, h, dm, b_cg(TA.half(TA.half(n)), l, Nil{}), b_cg(TA.half(Nat.sub(n, TA.half(n))), r, Nil{}), g1 => b_treef(e, g1, TA.half(n), h, dm), g2 => b_treef(e, g2, Nat.sub(n, TA.half(n)), h, dm))
+
+# the law: the b_treef gives what fleaf, the loop over the sequences one after another, gives
+def b_par_fin_f(-d: Nat, -gs: T.Halves<T.BG>, -n: Nat, +h: Nat, +dm: T.Dm, -ys: List<&1, T.BG>, +sy: {ys == T.hcat(T.BG, gs) : List<&1, T.BG>}, f: {T.bpar_full(d, gs, n, h, dm) == b_ffmap(h, dm, T.hcat(T.BG, gs)) : List<&1, T.DB>}, r: b_L1RF<h, dm, ys, Nil{}>) -> {T.bpar_full(d, gs, n, h, dm) == T.bleaf_full(T.hcat(T.BG, gs), h, dm, Nil{}) : List<&1, T.DB>}:
+  match r:
+    case b_L1RF{ys2, s2, fl}:
+      Equal.trans(List<&1, T.DB>, T.bpar_full(d, gs, n, h, dm), b_ffmap(h, dm, T.hcat(T.BG, gs)), T.bleaf_full(T.hcat(T.BG, gs), h, dm, Nil{}), f,
+        Equal.sym(List<&1, T.DB>, T.bleaf_full(T.hcat(T.BG, gs), h, dm, Nil{}), b_ffmap(h, dm, T.hcat(T.BG, gs)),
+          Equal.trans(List<&1, T.DB>, T.bleaf_full(T.hcat(T.BG, gs), h, dm, Nil{}), T.bleaf_full(ys, h, dm, Nil{}), b_ffmap(h, dm, T.hcat(T.BG, gs)), Equal.cong(List<&1, T.BG>, List<&1, T.DB>, z => T.bleaf_full(z, h, dm, Nil{}), T.hcat(T.BG, gs), ys, Equal.sym(List<&1, T.BG>, ys, T.hcat(T.BG, gs), sy)),
+            Equal.trans(List<&1, T.DB>, T.bleaf_full(ys, h, dm, Nil{}), b_ffmap(h, dm, ys), b_ffmap(h, dm, T.hcat(T.BG, gs)), fl, Equal.cong(List<&1, T.BG>, List<&1, T.DB>, z => b_ffmap(h, dm, z), ys, T.hcat(T.BG, gs), sy)))))
+
+def b_par_mid_f(-d: Nat, -gs: T.Halves<T.BG>, -n: Nat, +h: Nat, +dm: T.Dm, r: b_MRF<d, gs, n, h, dm>) -> {T.bpar_full(d, gs, n, h, dm) == T.bleaf_full(T.hcat(T.BG, gs), h, dm, Nil{}) : List<&1, T.DB>}:
+  match r:
+    case b_MRF{ys, sy, f}:
+      b_par_fin_f(d, gs, n, h, dm, ys, sy, f, b_lf1(ys, h, dm, Nil{}))
+
+# PROOF (attn_par_bwd_full): attn_par_bwd's proof for the full-visible leaf; b_cg (cut and hcat, no leaf) is shared.
+def Laws.attn_par_bwd_full(d, gs, n, h, dm):
+  b_par_mid_f(d, gs, n, h, dm, b_treef(d, gs, n, h, dm))
 
 # PROOF (attn_par_bwd): attn_par_fwd's proof, for BG and bleaf.
 def Laws.attn_par_bwd(d, gs, n, h, dm):
