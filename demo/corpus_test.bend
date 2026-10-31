@@ -10,7 +10,7 @@
 import Base
 import ../torch/main.bend as T
 import ../torch/fast.bend as F
-import bend-ml-tensor-array@0.1.14.0/main.bend as TA
+import bend-ml-tensor-array@0.1.18.0/main.bend as TA
 import ./tensor_test.bend as TS
 
 def ld(+r: Nat, +c: Nat, +dir: String, +name: String) -> IO(TA.Mat<r, c>):

@@ -15,7 +15,7 @@
 # literal shapes and a program checks once where shapes read at run time enter (`Bool.check`).
 
 import Base
-import bend-ml-tensor-array@0.1.14.0/main.bend as TA
+import bend-ml-tensor-array@0.1.18.0/main.bend as TA
 import bend-ml-nat-lemmas@0.1.2.0/main.bend as NL
 
 # =====================================================================================================

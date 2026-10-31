@@ -7,7 +7,7 @@
 # demo/smol.bend's ev_loop is the larger example, over a model and a batch of held-out data.
 import Base
 import ../torch/main.bend as T
-import bend-ml-tensor-array@0.1.14.0/main.bend as TA
+import bend-ml-tensor-array@0.1.18.0/main.bend as TA
 
 def P() -> Type:
   T.Lin<3n, 3n>

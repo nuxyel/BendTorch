@@ -21,7 +21,7 @@
 # checked by Bend's kernel; every F32 result is tested against PyTorch by the scripts in reference/, never proved.
 
 import Base
-import bend-ml-tensor-array@0.1.14.0/main.bend as TA
+import bend-ml-tensor-array@0.1.18.0/main.bend as TA
 import bend-ml-nat-lemmas@0.1.2.0/main.bend as NL
 
 # =====================================================================================================

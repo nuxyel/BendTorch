@@ -4,7 +4,7 @@
 # expect: - observed : Nat.mul(b, 16n)
 import Base
 import ../torch/main.bend as T
-import bend-ml-tensor-array@0.1.14.0/main.bend as TA
+import bend-ml-tensor-array@0.1.18.0/main.bend as TA
 
 def Core(+b: Nat, +t: Nat) -> T.Layer<Unit, T.Two<TA.Mat<Nat.mul(b, t), 32n>, T.Two<TA.Mat<Nat.mul(b, t), 16n>, TA.Mat<Nat.mul(b, t), 16n>>>, TA.Mat<Nat.mul(b, t), 32n>, T.AttnS>:
   T.Attention(Nat.mul(b, t), 32n, 16n, b, 16n, 2n, 2n, 8n, 0.35355339059327373, {==}, {==}, {==})

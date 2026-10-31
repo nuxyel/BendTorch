@@ -12,7 +12,7 @@
 
 import Base
 import ./main.bend as T
-import bend-ml-tensor-array@0.1.14.0/main.bend as TA
+import bend-ml-tensor-array@0.1.18.0/main.bend as TA
 
 # =====================================================================================================
 # Bits
