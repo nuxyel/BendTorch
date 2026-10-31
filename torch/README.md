@@ -95,8 +95,8 @@ mutants of the fast code are caught by it (`make mutate`).
 [`gpu.bend`](gpu.bend) runs a whole training step as bangs (`!` calls), which run on the GPU in a binary built with CUDA
 (`CUDA_HOME=... bend x.bend -o x`) and on the CPU threads otherwise: `LinearF`, `LinearFirstF` and `LinearNBF` with their
 three products from bend-ml-tensor-gpu, and their optimizer step; SiLU, Mul2, Add2, Residual, `Mat.dup`, `Mat.sum2`,
-RMSNorm, RoPE, Attention, Embedding and CrossEntropy. The names are `fast.bend`'s (which has `main.bend`'s RMSNorm,
-RoPE, Attention, Embedding and CrossEntropy under the same names), so a program switches by its import line:
+RMSNorm, RoPE, Attention, FullAttention, Embedding and CrossEntropy. The names are `fast.bend`'s (which has `main.bend`'s
+RMSNorm, RoPE, Attention, Embedding and CrossEntropy under the same names), so a program switches by its import line:
 
 ```python
 import ../torch/main.bend as T
