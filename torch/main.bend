@@ -3153,6 +3153,87 @@ def Attention(+n: Nat, +w: Nat, +kvw: Nat, +b: Nat, +t: Nat, +kv: Nat, +g: Nat, 
   Layer{p => x => attn_fwd(n, w, kvw, AttnDims{b, t, kv, g, hd, sc}, x), p => s => dy => g2 => attn_bwd(n, w, kvw, AttnDims{b, t, kv, g, hd, sc}, s, dy), op => p => g2 => st => no_step(Unit, op, p, g2, st), u => Unit{}, p => PL{p, Nil{}}, p => xs => off => PA{p, xs, off}, p => xs => off => PA{p, xs, off}, u => 0}
 
 # =====================================================================================================
+# conv: im2col (one gathered row per output position) and Conv2d (im2col then Linear's three products)
+# =====================================================================================================
+
+# the output size: floor division, no divisibility condition (the law out_count says so)
+def ocount(+h: Nat, +p: Nat, +k: Nat, +s: Nat) -> Nat:
+  Nat.add(Nat.div(Nat.sub(Nat.add(h, Nat.mul(2n, p)), k), s), 1n)
+
+# the gathered matrix is one flat list of n·oh·ow·c·k·k numbers in raster order; cell i of position q decomposes as
+# (channel, ky, kx) and the position as (batch, oy, ox), channel-major inside the patch as PyTorch's unfold
+def p_ch(+i: Nat, +k: Nat) -> Nat:
+  Nat.div(i, Nat.mul(k, k))
+
+def p_ky(+i: Nat, +k: Nat) -> Nat:
+  Nat.div(Nat.mod(i, Nat.mul(k, k)), k)
+
+def p_kx(+i: Nat, +k: Nat) -> Nat:
+  Nat.mod(i, k)
+
+def p_iy(+i: Nat, +oy: Nat, +k: Nat, +p: Nat, +s: Nat) -> Nat:
+  Nat.sub(Nat.add(Nat.mul(oy, s), p_ky(i, k)), p)
+
+def p_ix(+i: Nat, +ox: Nat, +k: Nat, +p: Nat, +s: Nat) -> Nat:
+  Nat.sub(Nat.add(Nat.mul(ox, s), p_kx(i, k)), p)
+
+def p_ok(+i: Nat, +oy: Nat, +ox: Nat, +h: Nat, +w: Nat, +k: Nat, +p: Nat, +s: Nat) -> Bool:
+  Bool.and(
+    Bool.and(Nat.is_le(p, Nat.add(Nat.mul(oy, s), p_ky(i, k))), Nat.is_lt(p_iy(i, oy, k, p, s), h)),
+    Bool.and(Nat.is_le(p, Nat.add(Nat.mul(ox, s), p_kx(i, k))), Nat.is_lt(p_ix(i, ox, k, p, s), w)))
+
+def p_src(+i: Nat, +b: Nat, +oy: Nat, +ox: Nat, +h: Nat, +w: Nat, +c: Nat, +k: Nat, +p: Nat, +s: Nat) -> U32:
+  U32.from_nat(Nat.add(Nat.mul(Nat.add(Nat.mul(Nat.add(Nat.mul(b, h), p_iy(i, oy, k, p, s)), w), p_ix(i, ox, k, p, s)), c), p_ch(i, k)))
+
+# the array and the cell's value: read when the window is inside, 0 when it is not, so no out-of-bounds cell is touched
+def p_rc(ok: Bool, d: Array<F32>, +src: U32) -> Array<F32> & F32:
+  match ok:
+    case True{}:
+      Array.get(F32, d, src)
+    case False{}:
+      Tuple{d, 0.0}
+
+type GL is Type:
+  GL{d: Array<F32>, xs: List<&2, F32>}
+
+# one flat loop (read_l's shape): each step conses the current number and fetches the next, the array handed forward
+def gather(+left: Nat, +j: Nat, +n: Nat, +h: Nat, +w: Nat, +c: Nat, +k: Nat, +p: Nat, +s: Nat, +oh: Nat, +ow: Nat, +ckk: Nat, rc: Array<F32> & F32, +acc: List<&2, F32>) -> GL:
+  match left rc:
+    case 0n Tuple{d, v}:
+      GL{d, acc}
+    case 1n Tuple{d, +v}:
+      GL{d, Con{v, acc}}
+    case 1n+rest Tuple{d, +v}:
+      +j2 = Nat.add(j, 1n)
+      +pos = Nat.div(j2, ckk)
+      +i = Nat.mod(j2, ckk)
+      +per = Nat.mul(oh, ow)
+      +b = Nat.div(pos, per)
+      +r = Nat.mod(pos, per)
+      +oy = Nat.div(r, ow)
+      +ox = Nat.mod(r, ow)
+      gather(rest, j2, n, h, w, c, k, p, s, oh, ow, ckk,
+        p_rc(Bool.and(Nat.is_lt(pos, Nat.mul(n, per)), p_ok(i, oy, ox, h, w, k, p, s)), d,
+          p_src(i, b, oy, ox, h, w, c, k, p, s)), Con{v, acc})
+
+def gl_out(r: GL) -> List<&2, F32>:
+  match r:
+    case GL{d, xs}:
+      List.reverse(&2, F32, xs)
+
+def im2col_n(+n: Nat, +h: Nat, +w: Nat, +c: Nat, +k: Nat, +p: Nat, +s: Nat, d: Array<F32>) -> List<&2, F32>:
+  +oh = ocount(h, p, k, s)
+  +ow = ocount(w, p, k, s)
+  +ckk = Nat.mul(c, Nat.mul(k, k))
+  gl_out(gather(Nat.mul(Nat.mul(n, Nat.mul(oh, ow)), ckk), 0n, n, h, w, c, k, p, s, oh, ow, ckk,
+    p_rc(p_ok(0n, 0n, 0n, h, w, k, p, s), d, p_src(0n, 0n, 0n, 0n, h, w, c, k, p, s)), Nil{}))
+
+def im2col(+n: Nat, +h: Nat, +w: Nat, +c: Nat, +k: Nat, +p: Nat, +s: Nat, x: TA.Mat<Nat.mul(n, Nat.mul(h, w)), c>) -> TA.Mat<Nat.mul(n, Nat.mul(ocount(h, p, k, s), ocount(w, p, k, s))), Nat.mul(c, Nat.mul(k, k))>:
+  match x:
+    case TA.Mat{d}:
+      TA.Mat.from_list(Nat.mul(n, Nat.mul(ocount(h, p, k, s), ocount(w, p, k, s))), Nat.mul(c, Nat.mul(k, k)), im2col_n(n, h, w, c, k, p, s, d))
+
+# =====================================================================================================
 # Losses over arrays (cross-entropy, MSE, NLL)
 # =====================================================================================================
 
