@@ -1732,3 +1732,37 @@ Six new laws and one rewritten, all by `--verdict`, about the code the demos exe
   and two one-shot test outputs. Each carries a `disable` directive with its reason.
 - One finding taken, as a cleanup with no change in bits: `cx_3` binds `ts_lv(32n, per, 1)` once.
 - `make lint`: 0 findings, 36 suppressed.
+
+## FullAttention closed (2026-11-01, #17, #20)
+
+- adeerkhan's PR #20 (merged 2026-10-31): `FullAttention` in `main.bend` (the causal path's functions with every key
+  visible: `frow`, `fprow`, `fgrow` and the `_full` trees) and in `gpu.bend` (a dense t x t P per head), its laws
+  `full_keys`, `full`, `full_grad`, `attn_par_fwd_full` and `attn_par_bwd_full` by `--verdict`, `test_ops.py` against
+  PyTorch with and without the mask, and `gpu_layers_test`'s cases 14 and 15. `Attention`'s code and bits are unchanged.
+- The two GPU layers gates of `scripts/mutate.py` still expected 14 zeros, so after the merge they failed on the
+  unmutated code and `make mutate` stopped before its first mutant. They expect 16 now.
+- 15 mutants: on `main.bend`, a query or G's row reading only the causal keys (each caught by its law and by
+  `test_ops`), P's rows at stride m, either pass building the causal P, and both trees' halves swapped (the tree laws);
+  on the device lane, the softmax, P·V and the dK/dV sums one key or one head short, a head's P at the wrong offset, and
+  a score written at the transposed cell. All caught. A first try, the cell map's query and key swapped, is an
+  equivalent mutant: every cell still gets its own score, only in another order, so it was replaced.
+- `demo/fullattn_test.bend` and `demo/fullattn_lane.bend` moved to tensor-array 0.1.18.0 and tensor-gpu 0.1.5.0 and
+  into `make check` (my call, 2026-11-01, with `reference/test_fullattn.py` now taking the compiled program).
+  `fullattn_test` had gone stale outside the checks: it passed t to `fprobs`, which takes m = t - 1 since the row
+  laws, so its full rows read a key past the toy's three and did not sum to 1. With 2n: causal 0, full 2.98e-08 from
+  PyTorch, and the last row the same bits in both modes. `fullattn_lane`: the device lane's y, P, G, dQ, dK and dV are
+  the CPU lane's bits on 1 and 16 threads.
+- `make mutate`: 149 mutants, 149 as expected.
+
+## v1.3.0: the gates (2026-11-01)
+
+- In since v1.2.0: GroupNorm on both lanes and through the IEEE edge cases (#15), FullAttention (#20), the tensor stack
+  at tensor-array 0.1.18.0, tensor-fork and tensor-gpu 0.1.5.0 (#21), bend-lint 0.2.2 with its findings read and
+  suppressed, the fullattn demos in `make check`, the mutate.py fix and FullAttention's mutants above, and the docs
+  (the plan's history and statuses, 29 laws in the README). A minor release: GroupNorm and FullAttention are new names
+  in `bendtorch` and `bendtorch-gpu`. adeerkhan's Conv2d (#22) is not in; it rebases on this release.
+- Gates at 11805b9 (busy machine, other jobs running; no timing is taken from them): laws, check, bits, corpus (sha256
+  a9b9fa1cffdef55c, the same bits on 1 and 16 threads), gpu (SiLU 4 ulps, cross-entropy 4, attention 176,128, at small
+  sizes 7,680, full 172,032 and full at small sizes 8,192 through CUDA's exp; all 16 cases 0 with `exp_cr`), bits-smol,
+  smol, `make package CORE=bendtorch VERSION=1.3.0.0`, check-js, mutate (149 of 149 as expected). The READMEs import
+  1.3.0.0.
