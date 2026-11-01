@@ -6,7 +6,7 @@
   <a href="https://github.com/nuxyel/BendTorch/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/nuxyel/BendTorch/ci.yml?branch=main&style=flat-square&label=ci&labelColor=4d4a44&color=7e9a5e" alt="CI"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-8b83b5?style=flat-square&labelColor=4d4a44" alt="MIT license"></a>
   <a href="https://bend-lang.com"><img src="https://img.shields.io/badge/Bend-2.0.39-8b83b5?style=flat-square&labelColor=4d4a44" alt="Bend 2.0.39"></a>
-  <img src="https://img.shields.io/badge/laws%20proved-24-7e9a5e?style=flat-square&labelColor=4d4a44" alt="24 laws proved">
+  <img src="https://img.shields.io/badge/laws%20proved-29-7e9a5e?style=flat-square&labelColor=4d4a44" alt="29 laws proved">
   <img src="https://img.shields.io/badge/planted%20bugs-98%2F98%20as%20expected-7e9a5e?style=flat-square&labelColor=4d4a44" alt="98 planted bugs, 98 as expected">
 </p>
 
@@ -70,6 +70,7 @@ $ bend tests/bad_seq.bend      # Linear(784, 128) followed by Linear(64, 10)
 | `causal_grad` | the backward pass sends no gradient to a key or value after the query's position: row i of the scores' gradient is computed over exactly i + 1 positions |
 | `kv_of_group`, `gqa_head`, `kv_cols` | with `g` query heads per key/value head, query head `j·g + i` reads key/value head `j`; `kv_cols` says it of the columns both passes of attention read, which come from one function |
 | `attn_par_fwd`, `attn_par_bwd` | attention's tree of parallel sequences gives exactly what running them one after another gives, at every depth and however the sequences are split: the parallel passes are the sequential ones |
+| `full_keys`, `full`, `full_grad` | `FullAttention`, the same layer without the mask, reads every key for every query: the query at position i gets t scores, its softmax runs over all t positions, and its row of the scores' gradient sums over all t; `attn_par_fwd_full` and `attn_par_bwd_full` are the tree laws for its passes |
 | `seq_chain`, `fork_sum`, `both_sum`, `residual` | the `Seq`, `Fork`, `Both` and `Residual` combinators' own code, run on linear layers, gives a backward pass that is the adjoint of the forward pass: the chain rule through `Seq`, the sum of the input gradients through `Fork`, each side on its own through `Both`, and through `Residual` the gradient of the skip connection plus the layer's |
 | `bc_sym` | broadcasting does not depend on the order of the operands: `x + y` and `y + x` accept the same shapes |
 | `sum_numel`, `cat_numel`, `mat_numel` | summing over an axis, joining two tensors and viewing a matrix as a tensor keep the count of numbers right, for every shape |
