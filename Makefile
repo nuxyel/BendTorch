@@ -2,7 +2,7 @@
 export BEND_NO_TELEMETRY := 1
 export PATH := $(HOME)/.bend/bin:$(HOME)/.elan/bin:$(PATH)
 PY := reference/.venv/bin/python
-DEMOS := mlp_test ops_test mnist tiny_llama tiny_rt tensor_test imap_check fast_test gpu_test gpu_layers_test depth_check smol_block infra_test dtype_test tiny_mixed reader_test safetensors_test tiny_bf16opt loop_test
+DEMOS := mlp_test ops_test mnist tiny_llama tiny_rt tensor_test imap_check fast_test gpu_test gpu_layers_test depth_check smol_block infra_test dtype_test tiny_mixed reader_test safetensors_test tiny_bf16opt loop_test fullattn_test fullattn_lane
 # torch/load.bend's defs that reach the foreign binary reader (bend-ml-binary-read@0.2.0.0): the list may change only on purpose
 LOAD_DEFS := read_go read_sized read read_f32_at read_bf16_at size weights train_read train St.read St.then St.fill tensors_from tensors piece safetensors
 # torch/gpu.bend's defs that rely on bend-ml-tensor-gpu's @unsafe Array.fork (its leaves do not: they are plain Bend)
@@ -74,6 +74,8 @@ check: laws build ## the laws, then every layer, the tensor operations, the MLP,
 	$(PY) scripts/rts_probe.py --min 1.8 .scratch/fast_test
 	for t in 1 16; do test "$$(.scratch/gpu_test +RTS --threads $$t -RTS | tr '\n' ' ')" = "0 0 0 0 0 0 0 0 " && echo "gpu: torch/gpu.bend's layers give main.bend's bits ($$t CPU threads)" || { echo "gpu: the bits differ ($$t threads)"; exit 1; }; done
 	for t in 1 16; do test "$$(.scratch/gpu_layers_test +RTS --gpu off --threads $$t -RTS | tr '\n' ' ')" = "0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 " && echo "gpu: torch/gpu.bend's element-wise layers, RMSNorm, GroupNorm, RoPE, attention, full attention, optimizer step, MSE, embedding and cross-entropy give main.bend's bits ($$t CPU threads)" || { echo "gpu: the bits differ ($$t threads)"; exit 1; }; done
+	$(PY) reference/test_fullattn.py .scratch/fullattn_test
+	for t in 1 16; do .scratch/fullattn_lane +RTS --gpu off --threads $$t -RTS > .scratch/fullattn_lane_$$t.txt || exit 1; test "$$(grep -c '^cpu ' .scratch/fullattn_lane_$$t.txt) $$(grep -c '^gpu ' .scratch/fullattn_lane_$$t.txt)" = "6 6" && test "$$(sed -n 's/^cpu //p' .scratch/fullattn_lane_$$t.txt)" = "$$(sed -n 's/^gpu //p' .scratch/fullattn_lane_$$t.txt)" && echo "fullattn: the device lane's dense y, P, G, dQ, dK and dV are the CPU lane's bits ($$t CPU threads)" || { echo "fullattn: the device lane's dense stages differ from the CPU lane's ($$t threads)"; exit 1; }; done
 	test "$$(.scratch/depth_check)" = "0" && echo "depth: the scratch arrays' capacity is TA.cap_depth's for n = 0..4999" || { echo "depth: differs from TA.cap_depth"; exit 1; }
 
 corpus:           ## release time only (M14): every layer, loss, optimizer step and tensor operation against bench/corpus/'s frozen PyTorch results (corpus-2: float64 and the sum of |terms|), 1 and 16 threads
