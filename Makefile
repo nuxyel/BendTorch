@@ -127,7 +127,7 @@ check-gpu-test: build-gpu_test
 	for t in 1 16; do test "$$(.scratch/gpu_test +RTS --threads $$t -RTS | tr '\n' ' ')" = "0 0 0 0 0 0 0 0 " && echo "gpu: torch/gpu.bend's layers give main.bend's bits ($$t CPU threads)" || { echo "gpu: the bits differ ($$t threads)"; exit 1; }; done
 
 check-gpu-layers: build-gpu_layers_test
-	for t in 1 16; do test "$$(.scratch/gpu_layers_test +RTS --gpu off --threads $$t -RTS | tr '\n' ' ')" = "0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 " && echo "gpu: torch/gpu.bend's element-wise layers, RMSNorm, GroupNorm, RoPE, attention, full attention, optimizer step, MSE, embedding, cross-entropy and Conv2d give main.bend's bits ($$t CPU threads)" || { echo "gpu: the bits differ ($$t threads)"; exit 1; }; done
+	for t in 1 16; do test "$$(.scratch/gpu_layers_test +RTS --gpu off --threads $$t -RTS | tr '\n' ' ')" = "0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 " && echo "gpu: torch/gpu.bend's element-wise layers, RMSNorm, GroupNorm, RoPE, attention, full attention, optimizer step, MSE, embedding, cross-entropy and Conv2d give main.bend's bits ($$t CPU threads)" || { echo "gpu: the bits differ ($$t threads)"; exit 1; }; done
 
 check-fullattn: build-fullattn_test
 	$(PY) reference/test_fullattn.py .scratch/fullattn_test
@@ -172,10 +172,10 @@ gpu: cuda-toolkit  ## torch/gpu.bend on the GPU (needs a CUDA toolkit in CUDA_HO
 	ldd .scratch/gpu_test_cuda | grep -q libnvrtc && echo "gpu: the test binary links libnvrtc" || { echo "gpu: gpu_test_cuda does not link libnvrtc; the build is CPU-only"; exit 1; }
 	test "$$(LD_LIBRARY_PATH=$(CUDA_LIB) .scratch/gpu_test_cuda | tr '\n' ' ')" = "0 0 0 0 0 0 0 0 " && echo "gpu: torch/gpu.bend's layers give main.bend's bits on the GPU" || { echo "gpu: the bits differ on the GPU"; exit 1; }
 	CUDA_HOME=$(CUDA_HOME) LD_LIBRARY_PATH=$(CUDA_LIB) bend demo/gpu_layers_test.bend -o .scratch/gpu_layers_test_cuda
-	for k in 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16; do LD_LIBRARY_PATH=$(CUDA_LIB) .scratch/gpu_layers_test_cuda $$k || exit 1; done | tr '\n' ' ' | tee .scratch/gpu_layers.txt; echo
-	set -- $$(cat .scratch/gpu_layers.txt); test "$$1" -le 4 && test "$${12}" -le 4 && test "$$2 $$3 $$4 $$5 $$7 $$8 $$9 $${10} $${11} $${14} $${17}" = "0 0 0 0 0 0 0 0 0 0 0" && echo "gpu: the same bits on the GPU, but SiLU ($$1 ulps), cross-entropy ($${12}) and attention ($$6 ulps, at small sizes $${13}, full $${15} and full at small sizes $${16}: no bound, see the next check) through CUDA's float exp" || { echo "gpu: the layers differ on the GPU beyond CUDA's exp"; exit 1; }
+	for k in 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18; do LD_LIBRARY_PATH=$(CUDA_LIB) .scratch/gpu_layers_test_cuda $$k || exit 1; done | tr '\n' ' ' | tee .scratch/gpu_layers.txt; echo
+	set -- $$(cat .scratch/gpu_layers.txt); test "$$1" -le 4 && test "$${12}" -le 4 && test "$$2 $$3 $$4 $$5 $$7 $$8 $$9 $${10} $${11} $${14} $${17} $${18}" = "0 0 0 0 0 0 0 0 0 0 0 0" && echo "gpu: the same bits on the GPU, but SiLU ($$1 ulps), cross-entropy ($${12}) and attention ($$6 ulps, at small sizes $${13}, full $${15} and full at small sizes $${16}: no bound, see the next check) through CUDA's float exp" || { echo "gpu: the layers differ on the GPU beyond CUDA's exp"; exit 1; }
 	CUDA_HOME=$(CUDA_HOME) scripts/gpu_expcr.sh | tee .scratch/gpu_expcr.txt
-	test "$$(tail -1 .scratch/gpu_expcr.txt)" = "0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 " && echo "gpu: with exp_cr (the host's exp bits) in place of F32.exp, every case gives main.bend's bits on the device: the device code is exact but for CUDA's exp" || { echo "gpu: with exp_cr the device still differs from main.bend"; exit 1; }
+	test "$$(tail -1 .scratch/gpu_expcr.txt)" = "0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 " && echo "gpu: with exp_cr (the host's exp bits) in place of F32.exp, every case gives main.bend's bits on the device: the device code is exact but for CUDA's exp" || { echo "gpu: with exp_cr the device still differs from main.bend"; exit 1; }
 	for d in mnist tiny_llama smol_block; do sed 's|^import ../torch/fast.bend as F$$|import ../torch/gpu.bend as F|' demo/$$d.bend > .scratch/$${d}_gpu.bend && grep -q 'torch/gpu.bend' .scratch/$${d}_gpu.bend && CUDA_HOME=$(CUDA_HOME) LD_LIBRARY_PATH=$(CUDA_LIB) bend .scratch/$${d}_gpu.bend -o .scratch/$${d}_gpu || exit 1; done
 	LD_LIBRARY_PATH=$(CUDA_LIB) $(PY) reference/test_mnist.py .scratch/mnist_gpu
 	LD_LIBRARY_PATH=$(CUDA_LIB) $(PY) reference/test_tiny.py .scratch/tiny_llama_gpu 20
