@@ -33,8 +33,8 @@
 # checks both). This file writes no @unsafe of its own. All of it is Bend.
 
 import Base
-import bend-ml-tensor-array@0.1.14.0/main.bend as TA
-import bend-ml-tensor-gpu@0.1.2.1/main.bend as TG
+import bend-ml-tensor-array@0.1.18.0/main.bend as TA
+import bend-ml-tensor-gpu@0.1.5.0/main.bend as TG
 import ./main.bend as T
 
 # ---- Linear: y = x·Wᵀ + b ----

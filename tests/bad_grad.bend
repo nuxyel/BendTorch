@@ -3,7 +3,7 @@
 # expect: - observed : TA.Mat<3n, 2n>
 import Base
 import ../torch/main.bend as T
-import bend-ml-tensor-array@0.1.14.0/main.bend as TA
+import bend-ml-tensor-array@0.1.18.0/main.bend as TA
 
 def bad_b3(-n: Nat, b: TA.Mat<1n, 2n>, w: TA.Mat<2n, 3n>, dx: TA.Mat<n, 3n>, r: TA.MMulTN<3n, n, 2n>) -> T.Bwd<T.Lin<3n, 2n>, TA.Mat<n, 3n>>:
   match r:
