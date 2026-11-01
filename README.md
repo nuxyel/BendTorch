@@ -242,8 +242,8 @@ The full list, each with its measurement or reason, is in [`docs/limitations.md`
   GPU step is the runtime (filling new arrays on one lane, a fixed cost between kernels), not the work.
 - **Convolution is one layer**: `Conv2d` is `im2col` then `Linear`, in both lanes, with the parameters typed
   `Lin<c·k·k, co>` so the optimizer step, the zero parameters and the checkpoints are the linear layers' own. It has a
-  row law and a round-trip law at a 1 x 1 kernel; GroupNorm is in both lanes too, and full attention shipped in v1.3.0
-  ([#17](https://github.com/nuxyel/BendTorch/issues/17) closed). A UNet still needs RoPE2d
+  row law and a round-trip law at a 1 x 1 kernel; GroupNorm is in the CPU, parallel and GPU lanes, and full attention
+  shipped in v1.3.0 ([#17](https://github.com/nuxyel/BendTorch/issues/17) closed). A UNet still needs RoPE2d
   ([#18](https://github.com/nuxyel/BendTorch/issues/18)) and adaLN ([#19](https://github.com/nuxyel/BendTorch/issues/19));
   an unconditional UNet needs neither.
 - **Matrices only**, F32 training (BF16 storage, int8 inference), one CUDA GPU; SmolLM2-1.7B trains in 32 GB only with AdamW's moments packed in BF16, at 24.1 GB of peak memory.
