@@ -1798,3 +1798,12 @@ Six new laws and one rewritten, all by `--verdict`, about the code the demos exe
 - So the published array version removes all of the list version's cost from a SmolLM2 step, and BendTorch's own loss
   costs the same as tensor-array's. BendTorch keeps its own (its tree sum is what keeps the loss within the tolerance
   of PyTorch's at 49,152 classes). Raw outputs and scripts in my private notes.
+
+## v1.3.0: the release run (2026-11-01)
+
+- Since 11805b9 only the docs, the README's mutants figure and these notes changed, so the gates were run again at
+  48eb980 (the code of the release) on a quiet machine: laws and check, bits, corpus (sha256 a9b9fa1cffdef55c, the same
+  bits on 1 and 16 threads), check-js, gpu (SiLU 4 ulps, cross-entropy 4, attention 176,128, at small sizes 7,680, full
+  172,032 and full at small sizes 8,192 through CUDA's exp; every case 0 with `exp_cr`), bits-smol, smol, mutate (149
+  mutants, 149 as expected: 146 caught, the 3 known equivalent ones survive), `make package CORE=bendtorch
+  VERSION=1.3.0.0`. All passed, with the same numbers as the run at 11805b9.
