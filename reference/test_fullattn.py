@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """The causal and full attention probabilities for the 3x3 toy, from PyTorch.
 
-  ../bend-lab/reference/.venv-lucidrains/bin/python reference/test_fullattn.py [bend_output.txt]
+  reference/.venv/bin/python reference/test_fullattn.py .scratch/fullattn_test
 
-`demo/fullattn_test.bend` prints the same two 3x3 matrices from Bend's own
+`demo/fullattn_test.bend` (built into the program given, as make check does) prints the same two 3x3 matrices from Bend's own
 `probs` (causal) and `fprobs` (full). This builds q and k with the same numbers,
 computes softmax(scale * q k^T) with and without the causal mask, and compares
 the printed values within float32 summation-order tolerance.
@@ -12,7 +12,6 @@ It also checks the invariant the design rests on: the last row of P sees every
 key in both modes, so causal and full must agree there, and in Bend they agree
 bit for bit.
 """
-import os
 import re
 import subprocess
 import sys
@@ -20,8 +19,6 @@ import sys
 import numpy as np
 import torch
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-BEND = os.path.expanduser("~/.bend/bin/bend")
 
 Q = np.array([[0.1, 0.2], [0.3, -0.4], [0.5, 0.6]], dtype=np.float32)
 K = np.array([[-0.2, 0.4], [0.7, 0.1], [-0.3, -0.5]], dtype=np.float32)
@@ -40,10 +37,9 @@ def reference(causal):
 
 
 def bend_output():
-    if len(sys.argv) > 1:
-        return open(sys.argv[1]).read()
-    out = subprocess.run([BEND, "demo/fullattn_test.bend"], cwd=ROOT,
-                         capture_output=True, text=True)
+    if len(sys.argv) != 2:
+        raise SystemExit(__doc__)
+    out = subprocess.run([sys.argv[1]], capture_output=True, text=True)
     if out.returncode != 0:
         raise SystemExit(out.stdout + out.stderr)
     return out.stdout
