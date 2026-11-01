@@ -84,11 +84,11 @@ GPU = gpu
 
 def gpu_layers():
     # torch/gpu.bend's other layers, optimizer step, losses and embedding must keep main.bend's bits with +RTS --gpu off -RTS:
-    # demo/gpu_layers_test.bend prints 14 zeros
+    # demo/gpu_layers_test.bend prints 16 zeros
     b = subprocess.run(["bend", "demo/gpu_layers_test.bend", "-o", ".scratch/mut_gpu_layers"], capture_output=True, env=ENV)
     if b.returncode != 0:
         return False
-    return subprocess.run([".scratch/mut_gpu_layers", "+RTS", "--gpu", "off", "--threads", "16", "-RTS"], capture_output=True, text=True).stdout.split() == ["0"] * 14
+    return subprocess.run([".scratch/mut_gpu_layers", "+RTS", "--gpu", "off", "--threads", "16", "-RTS"], capture_output=True, text=True).stdout.split() == ["0"] * 16
 
 
 GPUL = gpu_layers
@@ -96,9 +96,9 @@ GPUL = gpu_layers
 
 def gpu_expcr():
     # make gpu's exactness check: with exp_cr in place of F32.exp, every GPU layer case gives main.bend's bits on the
-    # device (scripts/gpu_expcr.sh prints 14 zeros); needs CUDA, and make mutate runs under the heavy-run lock
+    # device (scripts/gpu_expcr.sh prints 16 zeros); needs CUDA, and make mutate runs under the heavy-run lock
     r = subprocess.run(["scripts/gpu_expcr.sh"], capture_output=True, text=True, env=ENV)
-    return r.returncode == 0 and r.stdout.strip().splitlines()[-1].split() == ["0"] * 14
+    return r.returncode == 0 and r.stdout.strip().splitlines()[-1].split() == ["0"] * 16
 
 
 EXPCR = gpu_expcr
