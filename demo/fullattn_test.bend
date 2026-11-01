@@ -1,11 +1,12 @@
 # The two attention probability matrices on a 3x3 toy: causal (probs) and full
 # (fprobs), one head of 2 numbers, scale 0.5. reference/test_fullattn.py builds
 # the same q and k and prints the same two matrices from PyTorch's
-# scaled_dot_product_attention with is_causal on and off.
+# scaled_dot_product_attention with is_causal on and off. fprobs takes m = t - 1, the last key's index (the laws'
+# form), so the 3 x 3 toy passes 2n.
 #
-#   bend demo/fullattn_test.bend
+#   bend demo/fullattn_test.bend -o .scratch/fullattn_test && reference/.venv/bin/python reference/test_fullattn.py .scratch/fullattn_test
 import Base
-import bend-ml-tensor-array@0.1.14.0/main.bend as TA
+import bend-ml-tensor-array@0.1.18.0/main.bend as TA
 import ../torch/main.bend as T
 
 def qv() -> List<&2, F32>:
@@ -46,4 +47,4 @@ def main() -> IO(Unit):
     IO.print("causal")
     Unit <- show(T.probs(3n, 2n, 0.5, (2 : U32), (0 : U32), (2 : U32), (0 : U32), arr(qv()), arr(kv())))
     IO.print("full")
-    show(T.fprobs(3n, 2n, 0.5, (2 : U32), (0 : U32), (2 : U32), (0 : U32), arr(qv()), arr(kv())))
+    show(T.fprobs(2n, 2n, 0.5, (2 : U32), (0 : U32), (2 : U32), (0 : U32), arr(qv()), arr(kv())))

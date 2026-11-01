@@ -1,10 +1,11 @@
-# Bit probe (temporary): the same q, k, v, dO through the CPU lane's full forward and backward and the device lane's
-# dense ones.  b=1, t=4, kv=1, g=1, hd=4, n=4, scale 0.5.  Every matrix holds 16 distinct values (i*5 + start mod 16,
-# scaled into [-1, 1)), so a wrong index or a skipped cell cannot pass by symmetry.  Run it with +RTS --gpu off -RTS:
-# this probe compares bits (the CPU threads), not the card.
+# Bit probe: the same q, k, v, dO through the CPU lane's full forward and backward and the device lane's dense ones,
+# stage by stage (y, P after the softmax, G, dQ, dK, dV), each printed as "cpu <stage>" and "gpu <stage>" with its
+# words. b=1, t=4, kv=1, g=1, hd=4, n=4, scale 0.5. Every matrix holds 16 distinct values (i*5 + start mod 16, scaled
+# into [-1, 1)), so a wrong index or a skipped cell cannot pass by symmetry. make check runs it with +RTS --gpu off -RTS
+# on 1 and 16 threads and requires each gpu line to be its cpu line: it compares bits (the CPU threads), not the card.
 import Base
-import bend-ml-tensor-array@0.1.14.0/main.bend as TA
-import bend-ml-tensor-gpu@0.1.2.1/main.bend as TG
+import bend-ml-tensor-array@0.1.18.0/main.bend as TA
+import bend-ml-tensor-gpu@0.1.5.0/main.bend as TG
 import ../torch/main.bend as T
 import ../torch/gpu.bend as G
 
