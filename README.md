@@ -178,14 +178,14 @@ against PyTorch's.
 
 ## 05 · Use it
 
-Four packages on BendHub, all at version 1.2.0.0. Import the files you need in your own Bend program:
+Four packages on BendHub, all at version 1.3.0.0. Import the files you need in your own Bend program:
 
 ```python
-import bendtorch@1.2.0.0/main.bend as T          # layers, combinators, losses, optimizers, Train
-import bendtorch@1.2.0.0/tensor.bend as TT       # general tensors: any rank, broadcasting, their gradients
-import bendtorch-fast@1.2.0.0/main.bend as F     # the same layers and bits, in parallel on the CPU
-import bendtorch-gpu@1.2.0.0/main.bend as G      # the layers on one CUDA GPU (all but GELUErf)
-import bendtorch-load@1.2.0.0/main.bend as L     # weights from flat binary and safetensors files, checkpoints
+import bendtorch@1.3.0.0/main.bend as T          # layers, combinators, losses, optimizers, Train
+import bendtorch@1.3.0.0/tensor.bend as TT       # general tensors: any rank, broadcasting, their gradients
+import bendtorch-fast@1.3.0.0/main.bend as F     # the same layers and bits, in parallel on the CPU
+import bendtorch-gpu@1.3.0.0/main.bend as G      # the layers on one CUDA GPU (all but GELUErf)
+import bendtorch-load@1.3.0.0/main.bend as L     # weights from flat binary and safetensors files, checkpoints
 ```
 
 `bendtorch` holds the laws and their proofs. The other three are outside the proofs on purpose: `-fast` and `-gpu` share
