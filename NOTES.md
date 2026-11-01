@@ -1766,3 +1766,35 @@ Six new laws and one rewritten, all by `--verdict`, about the code the demos exe
   sizes 7,680, full 172,032 and full at small sizes 8,192 through CUDA's exp; all 16 cases 0 with `exp_cr`), bits-smol,
   smol, `make package CORE=bendtorch VERSION=1.3.0.0`, check-js, mutate (149 of 149 as expected). The READMEs import
   1.3.0.0.
+
+## tensor-array's cross entropy inside the demos, idle machine (2026-11-01)
+
+- The plan's "Cross entropy and the MNIST step": bend-ml-tensor-array's `Mat.softmax_ce` walks each row over the array
+  since 0.1.17.0; before, it read each row into a list (`ce_rows`, still in the package as its reference). I timed both
+  inside scratch copies of `demo/mnist.bend` and `demo/smol.bend` with the loss swapped (`ce_arr` and `ce_list`, small
+  wrappers to `T.LossOut`), next to the demos as they ship (`bt`, BendTorch's own `CrossEntropy`, over the array since
+  2026-10-17). No change to the package or the demos.
+- Method: c9760d9, Bend 2.0.39, clang 23.1.3, tensor-array 0.1.18.0, on mains with the `performance` profile. Every block
+  started with load1 under 1.0 (0.91-0.99; it climbs to 2-4 from the block's own 16-thread runs) and nothing else
+  running. Alternated rounds with the build order shuffled each round, one thread pinned with `taskset -c 3`, 16
+  threads unpinned (`+RTS --threads 16 -RTS`), medians. MNIST: one epoch (`1 0 sgd 0.1`), 7 rounds, the whole run's wall
+  time (`train_seconds` prints one decimal, too coarse) and perf's user-mode instructions and cycles on one thread.
+  `train 3` on SmolLM2-135M: `train_ms`, 3 rounds, then one run of each tensor-array build under perf.
+- Bits: the array and list versions give the same output in every run, on 1 and 16 threads (MNIST `train_loss=0.5148658`,
+  9108/10000; `train 3`'s three losses). BendTorch's own loss gives its own bits, as before: it sums the
+  exponentials as a tree and takes log-softmax, so at 49,152 classes its `train 3` losses sit 409-655 F32 steps from
+  tensor-array's (the reason it has its own, M10).
+- MNIST (rows of 10), one thread: 1909 ms (1892-1913) with the array version, 1961 (1945-1966) with the list, 1912
+  (1893-1916) with BendTorch's; 44.649 G against 44.830 G instructions, 8.55 G against 8.80 G cycles. 16 threads: 1472,
+  1469 and 1574 ms, inside each other's spread (1420-1793). The 181 M instructions are the softmax's own work (bend-ml
+  measured 15 M for 50 batches), so the 2.7% is real but small, and under the size at which a gap between two builds
+  means anything by itself.
+- `train 3` (two rows of 128 positions, 49,152 classes): one thread 41,664 ms (41,659-41,815) with the array version,
+  43,134 (42,559-43,220) with the list, 41,783 (41,716-41,805) with BendTorch's; 16 threads 10,576 (10,486-10,597),
+  12,236 (12,146-12,298) and 10,571 (10,536-10,595). The list version costs about 1.5 s on one thread (+3.5%) and 1.7 s
+  on 16 (+15.7%), the same absolute time, as a loss that runs on one thread should; under perf it runs 26.3 G more
+  instructions (+2.7%), so it is the work, not the build's schedule. The array version is BendTorch's own loss's time
+  to within 0.3% on both thread counts.
+- So the published array version removes all of the list version's cost from a SmolLM2 step, and BendTorch's own loss
+  costs the same as tensor-array's. BendTorch keeps its own (its tree sum is what keeps the loss within the tolerance
+  of PyTorch's at 49,152 classes). Raw outputs and scripts in my private notes.
