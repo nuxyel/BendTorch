@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # make gpu's exactness check: demo/gpu_layers_test.bend built with CUDA against a copy of torch/ in .scratch/gpu_expcr/
 # where every F32.exp of main.bend and gpu.bend is demo/exp_cr.bend's exp_cr (the host's F32.exp bits, in plain F32 and
-# U32 arithmetic), each case run alone so that its bangs run on the device. Prints the 14 cases' ulps; with the
+# U32 arithmetic), each case run alone so that its bangs run on the device. Prints the 16 cases' ulps; with the
 # exponential the same on the host and the device, every case must be 0, which shows that the device code differs from
 # main.bend's only through CUDA's float exp. torch/ itself is not touched.
 #
@@ -29,5 +29,5 @@ for f in main gpu; do
 done
 cp demo/gpu_layers_test.bend "$D/demo/gpu_layers_test.bend"
 CUDA_HOME=$CUDA_HOME LD_LIBRARY_PATH=$CUDA_LIB bend "$D/demo/gpu_layers_test.bend" -o "$D/gpu_layers_test_cuda"
-for k in 0 1 2 3 4 5 6 7 8 9 10 11 12 13; do LD_LIBRARY_PATH=$CUDA_LIB "$D/gpu_layers_test_cuda" $k; done | tr '\n' ' '
+for k in 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do LD_LIBRARY_PATH=$CUDA_LIB "$D/gpu_layers_test_cuda" $k; done | tr '\n' ' '
 echo

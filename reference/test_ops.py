@@ -54,6 +54,15 @@ def rope(x, t=4, heads=2, hd=4, base=10000.0):
     return (xh * cos + rotate_half(xh) * sin).reshape(x.shape)
 
 
+def attention_full(q, k, v, b=2, t=4, h=4, kv=2, hd=4, scale=0.5):
+    """The same as attention() without the mask: every position sees every key."""
+    q = q.reshape(b, t, h, hd).transpose(1, 2)
+    k = k.reshape(b, t, kv, hd).transpose(1, 2).repeat_interleave(h // kv, dim=1)
+    v = v.reshape(b, t, kv, hd).transpose(1, 2).repeat_interleave(h // kv, dim=1)
+    s = (q @ k.transpose(-1, -2)) * scale
+    return (s.softmax(-1) @ v).transpose(1, 2).reshape(b * t, h * hd)
+
+
 def attention(q, k, v, b=2, t=4, h=4, kv=2, hd=4, scale=0.5):
     q = q.reshape(b, t, h, hd).transpose(1, 2)
     k = k.reshape(b, t, kv, hd).transpose(1, 2).repeat_interleave(h // kv, dim=1)
@@ -253,6 +262,16 @@ def case(binary: str, seed: int, failures: list[str], edge: str = "") -> tuple[f
     files["attn.dy"] = dy
     y.backward(dy)
     ref.update({"attn.y": y.detach(), "attn.dq": q.grad, "attn.dk": k.grad, "attn.dv": v.grad})
+    # the same q, k, v through FullAttention: no mask, so every row sums over all t positions. The edge inputs are not
+    # used here (an -inf in a visible key makes the reference itself NaN in ways the causal case documents), so the
+    # full blocks are compared only on the random inputs.
+    if not edge:
+        qf = leaf("attn.q", q0.detach().clone())
+        kf = leaf("attn.k", k0.detach().clone())
+        vf = leaf("attn.v", v0.detach().clone())
+        yf = attention_full(qf, kf, vf)
+        yf.backward(dy)
+        ref.update({"attnf.y": yf.detach(), "attnf.dq": qf.grad, "attnf.dk": kf.grad, "attnf.dv": vf.grad})
     if edge == "A":
         # Accepted for now (Renan, 2026-10-18; to be tested and compared later): v[5, 3] = -inf sits at position 1 of
         # sequence 1, which row 4 (position 0) cannot see. Row 4 has one visible position, so dS = P (dP - P dP) = 0 and

@@ -2442,6 +2442,33 @@ def prows(left: Nat, +i: Nat, +t: Nat, +hd: Nat, +sc: F32, +qs: U32, +qc: U32, +
 def probs(+t: Nat, +hd: Nat, +sc: F32, +qs: U32, +qc: U32, +ks: U32, +kc: U32, q: Array<F32>, k: Array<F32>) -> QK:
   prows(Nat.sub(t, 1n), 0n, t, hd, sc, qs, qc, ks, kc, prow(0n, t, hd, sc, qs, qc, ks, kc, q, k, zeros_a(Nat.mul(t, t))))
 
+# ---- the same P with every key visible: full attention. `qrow` stops at the
+# query's own position (i + 1 keys, the causal law); `frow` reads all t keys and
+# `fprow` softmaxes over all of them, so the row's zeros after position i do not
+# exist here. Everything else (the scaling, the write order, the softmax) is the
+# causal path's own functions, so the two agree bit for bit on the triangle the
+# causal one covers.
+def frow(+i: Nat, +m: Nat, +hd: Nat, +qs: U32, +qc: U32, +ks: U32, +kc: U32, q: Array<F32>, k: Array<F32>) -> DR:
+  drow(m, hd, ((U32.from_nat(i) * qs : U32) + qc : U32), kc, ks, Nil{}, dot0(hd, ((U32.from_nat(i) * qs : U32) + qc : U32), kc, 1, 1, q, k))
+
+def fprow2(+sc: F32, +off: U32, p: Array<F32>, r: DR) -> PR:
+  prow2(sc, off, p, r)
+
+# row i of a head's P with every key: the scaled scores of query i against keys 0..t-1 (frow), then the softmax over
+# all t of them (the law full)
+def fprow(+i: Nat, +m: Nat, +hd: Nat, +sc: F32, +qs: U32, +qc: U32, +ks: U32, +kc: U32, q: Array<F32>, k: Array<F32>, p: Array<F32>) -> PR:
+  fprow2(sc, (U32.from_nat(i) * U32.from_nat(1n+m) : U32), p, frow(i, m, hd, qs, qc, ks, kc, q, k))
+
+def fprows(left: Nat, +i: Nat, +m: Nat, +hd: Nat, +sc: F32, +qs: U32, +qc: U32, +ks: U32, +kc: U32, r: PR) -> QK:
+  match left r:
+    case 0n PR{q, k, p, n}:
+      QK{q, k, p}
+    case 1n+rest PR{q, k, p, n}:
+      fprows(rest, 1n+i, m, hd, sc, qs, qc, ks, kc, fprow(1n+i, m, hd, sc, qs, qc, ks, kc, q, k, p))
+
+def fprobs(+m: Nat, +hd: Nat, +sc: F32, +qs: U32, +qc: U32, +ks: U32, +kc: U32, q: Array<F32>, k: Array<F32>) -> QK:
+  fprows(m, 0n, m, hd, sc, qs, qc, ks, kc, fprow(0n, m, hd, sc, qs, qc, ks, kc, q, k, zeros_a(Nat.mul(1n+m, 1n+m))))
+
 type PO is Type:
   PO{a: Array<F32>, b: Array<F32>, o: Array<F32>}
 
@@ -2920,6 +2947,55 @@ def attn_fwd(+n: Nat, +w: Nat, +kvw: Nat, +dm: AttnDims, x: Two<TA.Mat<n, w>, Tw
     case AttnDims{+b, +t, +kv, +g, +hd, +sc} Two{TA.Mat{q}, Two{TA.Mat{k}, TA.Mat{v}}}:
       af2(n, w, b, kv, dm_of(dm), fslices(b, 0n, t, w, kvw, kv, g, hd, FL{q, k, v, Nil{}}))
 
+# ---- the same forward with every key visible. The leaf is the only new arithmetic: head_full builds P with fprobs
+# instead of probs; the tree, the slices and the P·V are the causal path's own functions. Kept beside the causal ones
+# rather than behind a flag so that no call into Attention changes and the laws attn_par_fwd / attn_par_bwd still
+# compare the functions they name.
+def head_full(+dm: Dm, +cols: HC, s: FS) -> FS:
+  match dm cols s:
+    case Dm{+t, +g, +hd, +w, +kvw, +sc} HC{+hc, +kc} FS{q, k, v, o}:
+      head_f2(t, hd, w, kvw, hc, kc, v, o, fprobs(Nat.sub(t, 1n), hd, sc, U32.from_nat(w), hc, U32.from_nat(kvw), kc, q, k))
+
+def fheads_full(left: Nat, +hi: Nat, +dm: Dm, s: FS) -> FS:
+  match left:
+    case 0n:
+      s
+    case 1n+n:
+      fheads_full(n, 1n+hi, dm, head_full(dm, head_cols(dm, hi), s))
+
+def fleaf_full(xs: List<&1, FS>, +h: Nat, +dm: Dm, acc: List<&1, Array<F32>>) -> List<&1, Array<F32>>:
+  match xs:
+    case Nil{}:
+      List.reverse(&1, Array<F32>, acc)
+    case Con{x, rest}:
+      fleaf_full(rest, h, dm, fs_o(fheads_full(h, 0n, dm, x)) <> acc)
+
+def fpar_full(d: Nat, gs: Halves<FS>, +n: Nat, +h: Nat, +dm: Dm) -> List<&1, Array<F32>>:
+  match d gs:
+    case 0n Halves{l, r}:
+      a b = fleaf_full(l, h, dm, Nil{}) fleaf_full(r, h, dm, Nil{})
+      List.append(&1, Array<F32>, a, b)
+    case 1n++e Halves{l, r}:
+      a b = fpar_full(e, cut(FS, TA.half(TA.half(n)), l, Nil{}), TA.half(n), h, dm) fpar_full(e, cut(FS, TA.half(Nat.sub(n, TA.half(n))), r, Nil{}), Nat.sub(n, TA.half(n)), h, dm)
+      List.append(&1, Array<F32>, a, b)
+
+def fgo_full(big: Bool, +b: Nat, +h: Nat, +dm: Dm, xs: List<&1, FS>) -> List<&1, Array<F32>>:
+  match big:
+    case True{}:
+      fpar_full(Nat.sub(depth(b), 1n), cut(FS, TA.half(b), xs, Nil{}), b, h, dm)
+    case False{}:
+      fleaf_full(xs, h, dm, Nil{})
+
+def af2_full(-n: Nat, +w: Nat, +b: Nat, +kv: Nat, +dm: Dm, s: FL) -> Fwd<Unit, TA.Mat<n, w>, AttnS>:
+  match dm s:
+    case Dm{+t, +g, +hd, +gw, +kw, +sc} FL{q, k, v, xs}:
+      Fwd{Unit{}, TA.Mat{blocks_in(b, 0n, t, gw, w, kv, UO{fgo_full(attn_tree(Nat.mul(b, kv), t, gw), Nat.mul(b, kv), g, dm, List.reverse(&1, FS, xs)), zeros_a(Nat.mul(Nat.mul(b, t), w))})}, AttnS{q, k, v}}
+
+def attn_fwd_full(+n: Nat, +w: Nat, +kvw: Nat, +dm: AttnDims, x: Two<TA.Mat<n, w>, Two<TA.Mat<n, kvw>, TA.Mat<n, kvw>>>) -> Fwd<Unit, TA.Mat<n, w>, AttnS>:
+  match dm x:
+    case AttnDims{+b, +t, +kv, +g, +hd, +sc} Two{TA.Mat{q}, Two{TA.Mat{k}, TA.Mat{v}}}:
+      af2_full(n, w, b, kv, dm_of(dm), fslices(b, 0n, t, w, kvw, kv, g, hd, FL{q, k, v, Nil{}}))
+
 def ab3(-n: Nat, -w: Nat, -kvw: Nat, o: D3) -> Bwd<Unit, Two<TA.Mat<n, w>, Two<TA.Mat<n, kvw>, TA.Mat<n, kvw>>>>:
   match o:
     case D3{dq, dk, dv}:
@@ -2934,6 +3010,85 @@ def attn_bwd(+n: Nat, +w: Nat, +kvw: Nat, +dm: AttnDims, s: AttnS, dy: TA.Mat<n,
   match dm s dy:
     case AttnDims{+b, +t, +kv, +g, +hd, +sc} AttnS{q, k, v} TA.Mat{d}:
       ab2(n, w, kvw, b, kv, dm_of(dm), bslices(b, 0n, t, w, kvw, kv, g, hd, BL{q, k, v, d, Nil{}}))
+
+# ---- the backward of the full-visible forward. G's row i also needs every key, so fgrow takes t - 1 dots where grow
+# takes i; the rest (gfix, pmul, pacc, the group sum, the tree) is the causal path's own code.
+def fgrow(+i: Nat, +m: Nat, +hd: Nat, +sc: F32, +ds: U32, +dc: U32, +vs: U32, +vc: U32, d: Array<F32>, v: Array<F32>, p: Array<F32>, g: Array<F32>) -> GR:
+  gr2(sc, (U32.from_nat(i) * U32.from_nat(1n+m) : U32), p, g, drow(m, hd, ((U32.from_nat(i) * ds : U32) + dc : U32), vc, vs, Nil{}, dot0(hd, ((U32.from_nat(i) * ds : U32) + dc : U32), vc, 1, 1, d, v)))
+
+def fgrows(left: Nat, +i: Nat, +m: Nat, +hd: Nat, +sc: F32, +ds: U32, +dc: U32, +vs: U32, +vc: U32, r: GR) -> GW:
+  match left r:
+    case 0n GR{d, v, A2{p, g}, n}:
+      GW{d, v, p, g}
+    case 1n+rest GR{d, v, A2{p, g}, n}:
+      fgrows(rest, 1n+i, m, hd, sc, ds, dc, vs, vc, fgrow(1n+i, m, hd, sc, ds, dc, vs, vc, d, v, p, g))
+
+def fhb1(+t: Nat, +hd: Nat, +w: Nat, +kvw: Nat, +sc: F32, +hc: U32, +kc: U32, v: Array<F32>, d: Array<F32>, dq: Array<F32>, dka: Array<F32>, dva: Array<F32>, r: QK) -> BS:
+  match r:
+    case QK{q, k, p}:
+      hb2(t, hd, w, kvw, hc, kc, q, k, dq, dka, dva, fgrows(Nat.sub(t, 1n), 0n, Nat.sub(t, 1n), hd, sc, U32.from_nat(w), hc, U32.from_nat(kvw), kc, fgrow(0n, Nat.sub(t, 1n), hd, sc, U32.from_nat(w), hc, U32.from_nat(kvw), kc, d, v, p, zeros_a(Nat.mul(t, t)))))
+
+def head_bwd_full(+dm: Dm, +cols: HC, s: BS) -> BS:
+  match dm cols s:
+    case Dm{+t, +g, +hd, +w, +kvw, +sc} HC{+hc, +kc} BS{q, k, v, d, dq, dka, dva}:
+      fhb1(t, hd, w, kvw, sc, hc, kc, v, d, dq, dka, dva, fprobs(Nat.sub(t, 1n), hd, sc, U32.from_nat(w), hc, U32.from_nat(kvw), kc, q, k))
+
+def bheads_full(left: Nat, +hi: Nat, +dm: Dm, s: BS) -> BS:
+  match left:
+    case 0n:
+      s
+    case 1n+n:
+      bheads_full(n, 1n+hi, dm, head_bwd_full(dm, head_cols(dm, hi), s))
+
+def bgroup_full(+dm: Dm, +j: Nat, s: BG) -> BG:
+  match dm s:
+    case Dm{+t, +g, +hd, +w, +kvw, +sc} BG{q, k, v, d, dq, dk, dv}:
+      bg_fin(t, hd, kvw, j, dk, dv, bheads_full(g, Nat.mul(j, g), dm, BS{q, k, v, d, dq, zeros_a(Nat.mul(t, hd)), zeros_a(Nat.mul(t, hd))}))
+
+def bgroups_full(left: Nat, +j: Nat, +dm: Dm, s: BG) -> BG:
+  match left:
+    case 0n:
+      s
+    case 1n+n:
+      bgroups_full(n, 1n+j, dm, bgroup_full(dm, j, s))
+
+def bleaf_full(xs: List<&1, BG>, +kv: Nat, +dm: Dm, acc: List<&1, DB>) -> List<&1, DB>:
+  match xs:
+    case Nil{}:
+      List.reverse(&1, DB, acc)
+    case Con{x, rest}:
+      bleaf_full(rest, kv, dm, db_of(bgroups_full(kv, 0n, dm, x)) <> acc)
+
+def bpar_full(d: Nat, gs: Halves<BG>, +n: Nat, +kv: Nat, +dm: Dm) -> List<&1, DB>:
+  match d gs:
+    case 0n Halves{l, r}:
+      a b = bleaf_full(l, kv, dm, Nil{}) bleaf_full(r, kv, dm, Nil{})
+      List.append(&1, DB, a, b)
+    case 1n++e Halves{l, r}:
+      a b = bpar_full(e, cut(BG, TA.half(TA.half(n)), l, Nil{}), TA.half(n), kv, dm) bpar_full(e, cut(BG, TA.half(Nat.sub(n, TA.half(n))), r, Nil{}), Nat.sub(n, TA.half(n)), kv, dm)
+      List.append(&1, DB, a, b)
+
+def bgo_full(big: Bool, +b: Nat, +kv: Nat, +dm: Dm, xs: List<&1, BG>) -> List<&1, DB>:
+  match big:
+    case True{}:
+      bpar_full(Nat.sub(depth(b), 1n), cut(BG, TA.half(b), xs, Nil{}), b, kv, dm)
+    case False{}:
+      bleaf_full(xs, kv, dm, Nil{})
+
+def ab2_full(+n: Nat, +w: Nat, +kvw: Nat, +b: Nat, +kv: Nat, +dm: Dm, s: BL) -> Bwd<Unit, Two<TA.Mat<n, w>, Two<TA.Mat<n, kvw>, TA.Mat<n, kvw>>>>:
+  match dm s:
+    case Dm{+t, +g, +hd, +gw, +kw, +sc} BL{q, k, v, d, xs}:
+      ab3(n, w, kvw, dblocks_in(b, 0n, t, gw, hd, w, kvw, kv, UD{bgo_full(attn_tree(Nat.mul(b, kv), t, gw), Nat.mul(b, kv), 1n, dm, List.reverse(&1, BG, xs)), D3{zeros_a(Nat.mul(n, w)), zeros_a(Nat.mul(n, kvw)), zeros_a(Nat.mul(n, kvw))}}))
+
+def attn_bwd_full(+n: Nat, +w: Nat, +kvw: Nat, +dm: AttnDims, s: AttnS, dy: TA.Mat<n, w>) -> Bwd<Unit, Two<TA.Mat<n, w>, Two<TA.Mat<n, kvw>, TA.Mat<n, kvw>>>>:
+  match dm s dy:
+    case AttnDims{+b, +t, +kv, +g, +hd, +sc} AttnS{q, k, v} TA.Mat{d}:
+      ab2_full(n, w, kvw, b, kv, dm_of(dm), bslices(b, 0n, t, w, kvw, kv, g, hd, BL{q, k, v, d, Nil{}}))
+
+# the same layer as Attention with every key visible; Attention itself is untouched, so the causal laws and the bits
+# of every existing model stay as they are
+def FullAttention(+n: Nat, +w: Nat, +kvw: Nat, +b: Nat, +t: Nat, +kv: Nat, +g: Nat, +hd: Nat, +sc: F32, -e1: {n == Nat.mul(b, t) : Nat}, -e2: {w == Nat.mul(Nat.mul(kv, g), hd) : Nat}, -e3: {kvw == Nat.mul(kv, hd) : Nat}) -> Layer<Unit, Two<TA.Mat<n, w>, Two<TA.Mat<n, kvw>, TA.Mat<n, kvw>>>, TA.Mat<n, w>, AttnS>:
+  Layer{p => x => attn_fwd_full(n, w, kvw, AttnDims{b, t, kv, g, hd, sc}, x), p => s => dy => g2 => attn_bwd_full(n, w, kvw, AttnDims{b, t, kv, g, hd, sc}, s, dy), op => p => g2 => st => no_step(Unit, op, p, g2, st), u => Unit{}, p => PL{p, Nil{}}, p => xs => off => PA{p, xs, off}, p => xs => off => PA{p, xs, off}, u => 0}
 
 # the core of attention, after the projections and RoPE; the erased arguments are the shape facts it relies on
 def Attention(+n: Nat, +w: Nat, +kvw: Nat, +b: Nat, +t: Nat, +kv: Nat, +g: Nat, +hd: Nat, +sc: F32, -e1: {n == Nat.mul(b, t) : Nat}, -e2: {w == Nat.mul(Nat.mul(kv, g), hd) : Nat}, -e3: {kvw == Nat.mul(kv, hd) : Nat}) -> Layer<Unit, Two<TA.Mat<n, w>, Two<TA.Mat<n, kvw>, TA.Mat<n, kvw>>>, TA.Mat<n, w>, AttnS>:
