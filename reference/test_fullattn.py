@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The causal and full attention probabilities for the 3x3 toy, from PyTorch.
 
-  ../bend-lab/reference/.venv-lucidrains/bin/python reference/test_fullattn.py [bend_output.txt]
+  ../bend-lab/reference/.venv-lucidrains/bin/python reference/test_fullattn.py [.scratch/fullattn_test]
 
 `demo/fullattn_test.bend` prints the same two 3x3 matrices from Bend's own
 `probs` (causal) and `fprobs` (full). This builds q and k with the same numbers,
@@ -40,10 +40,12 @@ def reference(causal):
 
 
 def bend_output():
+    """The demo's stdout: the built binary when given, else `bend` on the source."""
     if len(sys.argv) > 1:
-        return open(sys.argv[1]).read()
-    out = subprocess.run([BEND, "demo/fullattn_test.bend"], cwd=ROOT,
-                         capture_output=True, text=True)
+        out = subprocess.run([sys.argv[1]], cwd=ROOT, capture_output=True, text=True)
+    else:
+        out = subprocess.run([BEND, "demo/fullattn_test.bend"], cwd=ROOT,
+                             capture_output=True, text=True)
     if out.returncode != 0:
         raise SystemExit(out.stdout + out.stderr)
     return out.stdout
