@@ -136,7 +136,7 @@ general here is Bend's **templates**: a `Layer` record passed as `~l` is substit
 | The F32 code computes the formulas of the `Nat` model | **tested only** | the same tests |
 | `torch/fast.bend`'s layers (over bend-ml-tensor-fork, `@unsafe` `Array.fork`) give `main.bend`'s bits: the linear layers forward and backward, the optimizer step (SGD, momentum, AdamW) and the element-wise layers (SiLU, Mul2, Residual's copies and sums) | **tested**, bit for bit, at MNIST's, the tiny Llama's and splitting sizes, 1 and 16 threads and JavaScript; 7 mutants | `demo/fast_test.bend` (12 cases); `make laws` pins its defs outside the proofs |
 | `torch/gpu.bend`'s linear layers (over bend-ml-tensor-gpu, one `!` call a product, `@unsafe` `Array.fork`) give `main.bend`'s bits | **tested**, bit for bit, forward and backward at MNIST's, the tiny Llama's and SmolLM2-135M's sizes, on the GPU and 1 and 16 CPU threads; MNIST and the tiny Llama trained on the GPU give `bench/bits.txt`'s outputs; 1 mutant (tensor-gpu's code is tested in bend-ml) | `demo/gpu_test.bend` (8 cases), `make gpu`; `make laws` pins its defs outside the proofs |
-| `torch/gpu.bend`'s other layers and optimizer step (leaves in plain Bend over tensor-gpu's `run1`..`run4`) give `main.bend`'s bits | **tested** at SmolLM2-135M's sizes: exact with `+RTS --gpu off -RTS` on 1 and 16 threads; on the GPU exact except SiLU (up to 4 ulps, CUDA's float `exp`; accepted, debt in NOTES); the block trained on the GPU against PyTorch; 19 mutants | `demo/gpu_layers_test.bend` (14 cases), `make gpu` |
+| `torch/gpu.bend`'s other layers and optimizer step (leaves in plain Bend over tensor-gpu's `run1`..`run4`) give `main.bend`'s bits | **tested** at SmolLM2-135M's sizes: exact with `+RTS --gpu off -RTS` on 1 and 16 threads; on the GPU exact except SiLU (up to 4 ulps, CUDA's float `exp`; accepted, debt in NOTES); the block trained on the GPU against PyTorch; 26 mutants | `demo/gpu_layers_test.bend` (16 cases), `make gpu` |
 | The non-linear layers' gradient formulas | **tested only** | `test_ops.py` |
 | Bend's checker and kernel, the translation to C, clang, the CPU | **trusted** | |
 
@@ -151,9 +151,10 @@ algebra of the formulas (`dy·(W·x) == (Wᵀ·dy)·x`), with no rounding to rea
 (`F32.mul(3.0, 3.0)` does not reduce), so a law about F32 values can only treat the operations as uninterpreted; no
 IEEE 754 property is claimed anywhere.
 
-`scripts/mutate.py` changes the code and the specification on purpose (57 mutants) and checks that a gate fails. A
-mutant that survives a gate is listed with the reason (today one: a fault the numbers miss by accident and a bounds
-check catches; since M8 the laws catch the two that used to slip past them, `kv_of` bypassed and a softmax over one
+`scripts/mutate.py` changes the code and the specification on purpose (149 mutants) and checks that a gate fails. A
+mutant that survives a gate is listed with the reason (today three: the whole-tensor sum's index map, which the
+numbers miss by accident and a bounds check catches, and two equivalent mutants, the GPU cross-entropy's block size and
+the packed AdamW's last block; since M8 the laws catch the two that used to slip past them, `kv_of` bypassed and a softmax over one
 position too few).
 
 ## Numerical validation
