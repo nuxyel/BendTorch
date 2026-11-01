@@ -1,7 +1,7 @@
 # Conv2d probe: n=1, h=w=4, c=2, co=3, k=3, p=1, stride 1. Prints y, dX, dW, db as
 # raw words; reference/conv2d_check.py compares all four against F.conv2d.
 import Base
-import bend-ml-tensor-array@0.1.14.0/main.bend as TA
+import bend-ml-tensor-array@0.1.18.0/main.bend as TA
 import ../torch/main.bend as T
 
 def vals(+left: Nat, +i: Nat) -> List<&2, F32>:

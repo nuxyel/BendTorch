@@ -2,7 +2,7 @@
 # k=s=2, p=0 (4 patch rows of 8 numbers, oh=ow=2), 16 x 2 images back.
 # reference/im2col_check.py builds the same x and compares with F.unfold.
 import Base
-import bend-ml-tensor-array@0.1.14.0/main.bend as TA
+import bend-ml-tensor-array@0.1.18.0/main.bend as TA
 import ../torch/main.bend as T
 
 def vals(+left: Nat, +i: Nat) -> List<&2, F32>:
