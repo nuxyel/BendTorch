@@ -89,7 +89,7 @@ by accident (a one-cell array wraps every index to 0), and a bounds check catche
 GPU block size, and any block size that divides a row gives the same sum, bit for bit: the law `block_sum` proves it;
 the third lets packed AdamW write past n into cells that hold zeros and stay zero.
 
-<p align="center"><img src="docs/media/mutants.webp" alt="98 planted bugs: 96 caught, 2 survive by design" width="80%"></p>
+<p align="center"><img src="docs/media/mutants.webp" alt="149 planted faults: 146 caught, 3 survive by design" width="80%"></p>
 
 ## 03 · It trains, and it computes what PyTorch computes
 
