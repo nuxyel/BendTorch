@@ -119,7 +119,7 @@ check-block: build-smol_block
 	$(PY) reference/test_block.py .scratch/smol_block 4 135m sgd
 
 check-fast: build-fast_test
-	for t in 1 16; do test "$$(.scratch/fast_test +RTS --threads $$t -RTS | tr '\n' ' ')" = "0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 " && echo "fast: torch/fast.bend's layers and optimizer step give main.bend's bits ($$t threads)" || { echo "fast: the bits differ ($$t threads)"; exit 1; }; done
+	for t in 1 16; do test "$$(.scratch/fast_test +RTS --threads $$t -RTS | tr '\n' ' ')" = "0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 " && echo "fast: torch/fast.bend's layers and optimizer step give main.bend's bits ($$t threads)" || { echo "fast: the bits differ ($$t threads)"; exit 1; }; done
 	.scratch/fast_test --threads 16 > /dev/null 2>&1; test $$? = 2 && echo "fast: fast_test refuses a bare --threads 16 (a runtime option outside +RTS ... -RTS)" || { echo "fast_test accepted a bare --threads"; exit 1; }
 	$(PY) scripts/rts_probe.py --min 1.8 .scratch/fast_test
 
