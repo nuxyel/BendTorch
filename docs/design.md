@@ -91,7 +91,7 @@ general here is Bend's **templates**: a `Layer` record passed as `~l` is substit
 ## Neural network API and training
 
 - Layers: `Linear`, `LinearNB`, `Embedding`, `RMSNorm`, `LayerNorm`, `GroupNorm`, the activations, `Softmax`, `LogSoftmax`, `RoPE`,
-  `Attention`; losses `CrossEntropy`, `NLL`, `MSE`; optimizers SGD, momentum, Adam, AdamW, in PyTorch's order of
+  `Attention`, `FullAttention`; losses `CrossEntropy`, `NLL`, `MSE`; optimizers SGD, momentum, Adam, AdamW, in PyTorch's order of
   operations.
 - `Train.step(~model, ~loss, cfg, state, x, targets)` is the whole training step for any layer and any loss. The state
   holds the parameters, their gradient and `OptState<P>`: no buffers for SGD, one for momentum, two for Adam/AdamW;
@@ -127,6 +127,7 @@ general here is Bend's **templates**: a `Layer` record passed as `~l` is substit
 | The backward pass sends no gradient to a key or value after the query's position: row i of G is computed over i + 1 positions | **law** about the package's own `grow` | `causal_grad` |
 | Query head `j·g + i` belongs to key/value head `j`, through the function both passes of attention call and the columns both read | **law** about the package's `kv_of`, `head_cols` (and `Nat.div`) | `kv_of_group`, `gqa_head`, `kv_cols` |
 | Attention's tree of sequences gives the sequential result at every depth and split | **law** about the package's `fpar`/`bpar` against `fleaf`/`bleaf` | `attn_par_fwd`, `attn_par_bwd` |
+| FullAttention reads all t keys for every query, its softmax and its row of G run over all t positions, and its trees give the sequential result | **law** about the package's own `frow`, `fprow`, `fgrow` and `fpar_full`/`bpar_full` | `full_keys`, `full`, `full_grad`, `attn_par_fwd_full`, `attn_par_bwd_full` |
 | `Seq`, `Fork`, `Both` and `Residual` compose backward passes correctly (chain rule, sum of input gradients, sides kept apart, skip connection plus layer) | **law** about the combinators' own code, on the `Nat` model's linear layers | `seq_chain`, `fork_sum`, `both_sum`, `residual` |
 | Each layer's output and gradients equal PyTorch's within the tolerance | **tested**, 10 seeds, with IEEE edge cases for the activations | `reference/test_ops.py` |
 | The optimizers equal `torch.optim` step by step | **tested** | `reference/test_mlp.py` |
