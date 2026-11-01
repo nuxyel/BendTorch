@@ -128,5 +128,6 @@ Numbers marked "busy machine" were taken with other jobs running and are a first
 
 ## Machine and versions
 
-- Measured on one laptop: Core Ultra 7 155H, 32 GB, RTX 4050 Laptop 6 GB; Bend 2.0.37, PyTorch 2.14.1. Numbers on other
-  machines will differ; the bits on the CPU should not.
+- Measured on one laptop: Core Ultra 7 155H, 32 GB, RTX 4050 Laptop 6 GB; PyTorch 2.14.1; Bend 2.0.37 for the numbers
+  dated up to 2026-10-21 and 2.0.39, the pinned version, for those since 2026-10-24. Numbers on other machines will
+  differ; the bits on the CPU should not.
