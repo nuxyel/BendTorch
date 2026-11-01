@@ -84,11 +84,11 @@ GPU = gpu
 
 def gpu_layers():
     # torch/gpu.bend's other layers, optimizer step, losses and embedding must keep main.bend's bits with +RTS --gpu off -RTS:
-    # demo/gpu_layers_test.bend prints 13 zeros
+    # demo/gpu_layers_test.bend prints 16 zeros
     b = subprocess.run(["bend", "demo/gpu_layers_test.bend", "-o", ".scratch/mut_gpu_layers"], capture_output=True, env=ENV)
     if b.returncode != 0:
         return False
-    return subprocess.run([".scratch/mut_gpu_layers", "+RTS", "--gpu", "off", "--threads", "16", "-RTS"], capture_output=True, text=True).stdout.split() == ["0"] * 13
+    return subprocess.run([".scratch/mut_gpu_layers", "+RTS", "--gpu", "off", "--threads", "16", "-RTS"], capture_output=True, text=True).stdout.split() == ["0"] * 16
 
 
 GPUL = gpu_layers
@@ -96,9 +96,9 @@ GPUL = gpu_layers
 
 def gpu_expcr():
     # make gpu's exactness check: with exp_cr in place of F32.exp, every GPU layer case gives main.bend's bits on the
-    # device (scripts/gpu_expcr.sh prints 13 zeros); needs CUDA, and make mutate runs under the heavy-run lock
+    # device (scripts/gpu_expcr.sh prints 16 zeros); needs CUDA, and make mutate runs under the heavy-run lock
     r = subprocess.run(["scripts/gpu_expcr.sh"], capture_output=True, text=True, env=ENV)
-    return r.returncode == 0 and r.stdout.strip().splitlines()[-1].split() == ["0"] * 13
+    return r.returncode == 0 and r.stdout.strip().splitlines()[-1].split() == ["0"] * 16
 
 
 EXPCR = gpu_expcr
@@ -210,6 +210,12 @@ MUTANTS = [
      "case EN{+n}: ew1_loop(~f, TG.share(t, n, l), t, l, o, Array.get(F32, x, t))", "case EN{+n}: ew1_loop(~f, Nat.sub(TG.share(t, n, l), 1n), t, l, o, Array.get(F32, x, t))", GPUL, "caught"),
     ("gpu RMSNorm: the gain's gradient overwrites the one it is given", "torch/gpu.bend",
      "Array.set(F32, ga, j, (v + s : F32))", "Array.set(F32, ga, j, s)", GPUL, "caught"),
+    ("gpu GroupNorm: a leaf takes the first image's block of its group", "torch/gpu.bend",
+     "r4_y(T.gnf_grp(hw, (U32.div(t, ng) * hwc : U32)", "r4_y(T.gnf_grp(hw, (U32.mod(t, ng) * hwc : U32)", GPUL, "caught"),
+    ("gpu GroupNorm: dx swaps the two means", "torch/gpu.bend",
+     "cg, mu, r, (sa / nf : F32), (sb / nf : F32), GB{x, dy, g, dx})", "cg, mu, r, (sb / nf : F32), (sa / nf : F32), GB{x, dy, g, dx})", GPUL, "caught"),
+    ("gpu GroupNorm: a channel's gradient reads the statistics of the wrong group", "torch/gpu.bend",
+     "gdw_imgs(Nat.sub(n, 1n), t, U32.div(t, cg), hw", "gdw_imgs(Nat.sub(n, 1n), t, U32.div(t, ng), hw", GPUL, "caught"),
     ("gpu RoPE: the backward pass rotates forward", "torch/gpu.bend",
      "T.Bwd{p, rope_go(n, w, False{}, t, h, half, base, dy), g}", "T.Bwd{p, rope_go(n, w, True{}, t, h, half, base, dy), g}", GPUL, "caught"),
     ("gpu attention: dK and dV leave out the group's last head", "torch/gpu.bend",
@@ -226,6 +232,18 @@ MUTANTS = [
      "((U32.mod(bj, kv) * hd32 : U32) + U32.mod(r, hd32) : U32)", "((U32.mod(bj, kv) * hd32 : U32) + 0 : U32)", GPUL, "caught"),
     ("gpu attention: dQ's cells read K's column of the head's first key/value head", "torch/gpu.bend",
      "(U32.div(hi, g) * hd32 : U32) : U32) + U32.mod(col, hd32) : U32), 1, kvw, a, b)", "(0 * hd32 : U32) : U32) + U32.mod(col, hd32) : U32), 1, kvw, a, b)", GPUL, "caught"),
+    ("gpu full attention: the softmax leaves out a row's last key", "torch/gpu.bend",
+     "T.pc_a(T.psmc(U32.to_nat(t32), toff_f(", "T.pc_a(T.psmc(Nat.sub(U32.to_nat(t32), 1n), toff_f(", GPUL, "caught"),
+    ("gpu full attention: a head's P starts t cells after the previous head's instead of t·t", "torch/gpu.bend",
+     "((bh * tr : U32) + i * t32 : U32)", "((bh * t32 : U32) + i * t32 : U32)", GPUL, "caught"),
+    ("gpu full attention: a score is written at the transposed cell (P transposed)", "torch/gpu.bend",
+     "case IJ{+ok, +bh, +i, +j}: sc_if(ok, (toff_f(bh, i, t32, tr) + j : U32)", "case IJ{+ok, +bh, +i, +j}: sc_if(ok, (toff_f(bh, j, t32, tr) + i : U32)", GPUL, "caught"),
+    ("gpu full attention: o and dQ leave out the last key", "torch/gpu.bend",
+     "T.dot0(t, toff_f(", "T.dot0(Nat.sub(t, 1n), toff_f(", GPUL, "caught"),
+    ("gpu full attention: dK and dV leave out the group's last head", "torch/gpu.bend",
+     "dsum_h(Nat.sub(gn, 1n), ia, ib, t, t32", "dsum_h(Nat.sub(gn, 2n), ia, ib, t, t32", GPUL, "caught"),
+    ("gpu full attention: dK and dV's first head leaves out the last query", "torch/gpu.bend",
+     "ddot(t, ia, ib, t32, w, 0.0,", "ddot(Nat.sub(t, 1n), ia, ib, t32, w, 0.0,", GPUL, "caught"),
     ("gpu MSE: the gradient has the wrong sign", "torch/gpu.bend",
      "MS{Array.set(F32, y, i, ((a - b : F32) * kk : F32))", "MS{Array.set(F32, y, i, ((b - a : F32) * kk : F32))", GPUL, "caught"),
     ("gpu Adam: the gradient is not zeroed", "torch/gpu.bend",
@@ -301,6 +319,24 @@ MUTANTS = [
      "  drow(i, hd, ((U32.from_nat(i) * qs : U32) + qc : U32), kc, ks,", "  drow(1n+i, hd, ((U32.from_nat(i) * qs : U32) + qc : U32), kc, ks,", laws, "caught"),
     ("attention: a query reads one key past its position (numbers)", "torch/main.bend",
      "  drow(i, hd, ((U32.from_nat(i) * qs : U32) + qc : U32), kc, ks,", "  drow(1n+i, hd, ((U32.from_nat(i) * qs : U32) + qc : U32), kc, ks,", OPS, "caught"),
+    ("full attention: a query reads only the keys up to its own position", "torch/main.bend",
+     "drow(m, hd, ((U32.from_nat(i) * qs", "drow(i, hd, ((U32.from_nat(i) * qs", laws, "caught"),
+    ("full attention: a query reads only the keys up to its own position (numbers)", "torch/main.bend",
+     "drow(m, hd, ((U32.from_nat(i) * qs", "drow(i, hd, ((U32.from_nat(i) * qs", OPS, "caught"),
+    ("full attention: the backward's G row sums only the keys up to the query's position", "torch/main.bend",
+     "drow(m, hd, ((U32.from_nat(i) * ds", "drow(i, hd, ((U32.from_nat(i) * ds", laws, "caught"),
+    ("full attention: the backward's G row sums only the keys up to the query's position (numbers)", "torch/main.bend",
+     "drow(m, hd, ((U32.from_nat(i) * ds", "drow(i, hd, ((U32.from_nat(i) * ds", OPS, "caught"),
+    ("full attention: P's rows are written m apart instead of 1 + m", "torch/main.bend",
+     "fprow2(sc, (U32.from_nat(i) * U32.from_nat(1n+m) : U32)", "fprow2(sc, (U32.from_nat(i) * U32.from_nat(m) : U32)", OPS, "caught"),
+    ("full attention: the forward builds the causal P", "torch/main.bend",
+     "head_f2(t, hd, w, kvw, hc, kc, v, o, fprobs(Nat.sub(t, 1n), hd, sc,", "head_f2(t, hd, w, kvw, hc, kc, v, o, probs(t, hd, sc,", OPS, "caught"),
+    ("full attention: the backward recomputes the causal P", "torch/main.bend",
+     "dva, fprobs(Nat.sub(t, 1n), hd, sc,", "dva, probs(t, hd, sc,", OPS, "caught"),
+    ("full attention: the tree of sequences puts the right half's outputs first", "torch/main.bend",
+     "      a b = fleaf_full(l, h, dm, Nil{}) fleaf_full(r, h, dm, Nil{})\n      List.append(&1, Array<F32>, a, b)", "      a b = fleaf_full(l, h, dm, Nil{}) fleaf_full(r, h, dm, Nil{})\n      List.append(&1, Array<F32>, b, a)", laws, "caught"),
+    ("full attention: the backward tree puts the right half's gradients first", "torch/main.bend",
+     "      a b = bleaf_full(l, kv, dm, Nil{}) bleaf_full(r, kv, dm, Nil{})\n      List.append(&1, DB, a, b)", "      a b = bleaf_full(l, kv, dm, Nil{}) bleaf_full(r, kv, dm, Nil{})\n      List.append(&1, DB, b, a)", laws, "caught"),
     ("cross-entropy: the gradient forgets the label", "torch/main.bend",
      "((x - hit(U32.is_eq(j, y)) : F32) / nf : F32)", "(x / nf : F32)", OPS, "caught"),
     ("scratch arrays: half the capacity they need", "torch/main.bend",
@@ -336,6 +372,14 @@ MUTANTS = [
      "smb_fix(Nat.sub(c, 1n), off, s,", "smb_fix(Nat.sub(c, 1n), off, F32.neg(s),", OPS, "caught"),
     ("rmsnorm: the backward pass drops the mean term", "torch/main.bend",
      "rmsb_w(Nat.sub(d, 1n), 0, off, r, (s / df : F32), dx, dg,", "rmsb_w(Nat.sub(d, 1n), 0, off, r, 0.0, dx, dg,", OPS, "caught"),
+    ("groupnorm: the statistics cover one row of the block, not all its rows", "torch/main.bend",
+     "gn_sum(Nat.sub(hw, 1n), off, c, cg, asum(", "gn_sum(0n, off, c, cg, asum(", OPS, "caught"),
+    ("groupnorm: every group uses the first group's channels", "torch/main.bend",
+     "gnf_groups(q, off, (j + U32.from_nat(cg) : U32),", "gnf_groups(q, off, j,", OPS, "caught"),
+    ("groupnorm: the second image starts where the first did", "torch/main.bend",
+     "gnf_images(q, (off + (U32.from_nat(hw) * c : U32) : U32),", "gnf_images(q, off,", OPS, "caught"),
+    ("groupnorm: the backward pass drops the mean of dxh·xh", "torch/main.bend",
+     "(sa / nf : F32), (sb / nf : F32), R4B{", "(sa / nf : F32), 0.0, R4B{", OPS, "caught"),
     ("rope: the backward pass rotates forward", "torch/main.bend",
      "Bwd{p, rope_go(n, w, False{}, t, h, half, base, dy), g}",
      "Bwd{p, rope_go(n, w, True{}, t, h, half, base, dy), g}", OPS, "caught"),

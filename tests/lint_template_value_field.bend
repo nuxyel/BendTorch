@@ -1,5 +1,6 @@
-# Fixture for bend-lint-rules/performance/template_value_field (`make lint`): a record of functions with a value field
-# computed from templates is reported; the same field as a closure, and a record of plain values, are not.
+# Fixture for bend-lint's performance/template_value_field (`bend-lint-rules@0.2.2.0`, `make lint`): a record of
+# functions with a value field computed from templates is reported; the same field as a closure, and a record of plain
+# values, are not.
 import Base
 
 type R is Type:
@@ -17,7 +18,7 @@ def E.n(r: E) -> U32:
     case E{f, n}: n
 
 def eager(~a: E, ~b: E) -> E:
-  # bend-lint: expect-next performance/template_value_field@warning -- the eager count of BendTorch's M9, kept as the rule's test
+  # bend-lint: expect-next bend-lint-rules/performance/template_value_field@information -- the eager count of BendTorch's M9, kept as the rule's test
   E{x => x, (E.n(a) + E.n(b) : U32)}
 
 def lazy(~a: R, ~b: R) -> R:

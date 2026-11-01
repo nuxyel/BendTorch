@@ -154,8 +154,8 @@ fine-tuning a part of the weights (proposed 2026-10-17, my call to confirm).
   conversions tested bit for bit against `tensor.to(torch.bfloat16)`.
 - Mixed precision: BF16 weights and activations in storage, F32 arithmetic and F32 master weights in the optimizer.
 - int8 with a scale per row, for inference.
-- F64: not in Bend 2.0.38; a two-F32 ("double-word") accumulator as an experiment for long sums, and an upstream request
-  draft.
+- F64: not in Bend 2.0.38, nor in 2.0.39 (the pin); a two-F32 ("double-word") accumulator as an experiment for long
+  sums, and an upstream request draft.
 - Pass: conversions bit-exact; a mixed-precision tiny Llama within a stated tolerance of the F32 one, measured. **Done 2026-10-18** (`torch/dtype.bend`, `make check`, `make mixed-long`; NOTES): conversions bit-exact, int8 within the tolerance, mixed precision within the adopted criterion; SmolLM2-1.7B's fit left for after v1.
 
 ### M12 · Backends (~1 week, GPU open-ended)
@@ -163,7 +163,8 @@ fine-tuning a part of the weights (proposed 2026-10-17, my call to confirm).
 - A JavaScript lane: the test programs built with `bend -o x.js` and run with Bun (not node: the file reads use
   `bun:ffi`), compared with the same oracles. **Done 2026-10-16** (`make check-js`): every test passes and the training
   and generation outputs are the native build's bits; `exp`/`tanh` happened to match libm's on every input tested.
-- WASM: not a Bend 2.0.38 target; only JS inside a bundled page (`bend page.html -o dir`). Recorded, not built.
+- WASM: not a Bend 2.0.38 target, nor a 2.0.39 one; only JS inside a bundled page (`bend page.html -o dir`). Recorded,
+  not built.
 - GPU: element-wise and product kernels with `!` on the RTX 4050, measured against the CPU on the same work; adopted
   only where faster.
 - Pass: `make check-js` green; a GPU measurement in NOTES whatever its result. **GPU products done 2026-10-18** (`torch/gpu.bend` over
@@ -199,7 +200,10 @@ in other frameworks and languages, from the same initial weights on the same dat
 - Pass: a `BENCHMARK.md` with the machine, the versions, every number and the losses shown; the method and raw results
   in my private notes. Its numbers go into the README before the repository opens.
 
-## The order to v1 (agreed 2026-10-18)
+## The order to v1 (agreed 2026-10-18; history)
+
+Kept as it was agreed. Every step was done and v1.0.0 shipped on 2026-10-22 (NOTES, 2026-10-18 to 2026-10-22); the
+GPU stayed slower than the CPU at every size trained, and the demos stay on `fast.bend`.
 
 1. Idle-machine run 1: the native target and FMA (below), and the GPU probes (matrix products on the GPU against the
    CPU and against the same algorithm handwritten in CUDA).
@@ -221,8 +225,11 @@ target and FMA were timed on 2026-10-18, `NOTES.md`).
 
 ## To try: training on 16 threads (added 2026-10-25)
 
-Status 2026-10-26: AdamW's two paths are in blocks (NOTES), RMSNorm stays (0.5% of the step), the cross entropy
-over the array is in bend-ml, not published. Timing waits for an idle window.
+Status 2026-11-01: AdamW's two paths are in blocks and were timed in the idle window of 2026-10-26 (`train 3` on 135M,
+16 threads, -2.3%, the same bits; NOTES 2026-10-26), RMSNorm stays (0.5% of the step), and the cross entropy over the
+array is published in bend-ml-tensor-array 0.1.17.0, timed inside the MNIST demo and `train 3` in the idle window of
+2026-11-01 (NOTES): the same bits as the list version, `train 3` 1.5 s faster on one thread and 1.7 s on 16 (+15.7% for
+the list), MNIST within 3%; BendTorch's own cross-entropy, which the demos use, runs at the array version's time.
 
 Found by timing BendTorch v1.1.1's pieces alone at 1 and 16 threads (the same bits on both):
 
@@ -237,14 +244,53 @@ Found by timing BendTorch v1.1.1's pieces alone at 1 and 16 threads (the same bi
   layer's split, the optimizer or the setup) before changing anything.
 - **Cross entropy and the MNIST step**: bend-ml's `Mat.softmax_ce` walks its rows as lists, one after another; over
   an `Array` the same rows give the same bits in 3.4x fewer cycles. That change belongs to bend-ml; time it here
-  inside the MNIST demo and `train 3` before it is published.
+  inside the MNIST demo and `train 3` before it is published. Done: published in 0.1.17.0, timed on 2026-11-01 (NOTES).
 
-## Going public
+## Next milestone: convolution and GroupNorm (added 2026-10-28, from #15)
 
-The repository is private until a v1 I am satisfied with; then it opens. Before that:
+Status 2026-11-01: GroupNorm done on both lanes (below); `Im2col` and a Conv2d built on it are in progress in
+adeerkhan's PR #22, to be rebased on v1.3.0; the UNet's other pieces come after it.
 
-- an audit of every file and of the whole history that will be published: nothing private, no analysis or method
-  beyond a one-line result in `NOTES.md` and `docs/` (the detailed material belongs in my private repositories), no link
-  to private repositories;
-- a README with the measured numbers (M15's benchmark among them), `CONTRIBUTING.md` and the GitHub templates on `main`, CI green;
-- a decision about the BendHub package name and a check of the name's conflicts.
+After the 16-thread training work above. Asked for in #15 (a UNet denoiser), which serves as the design issue.
+
+- Layout channels last: a batch of images is a `Mat<n·h·w, c>`. A k×k convolution is `Seq(Im2col, Linear)`: `Im2col`
+  gathers each output pixel's k·k·c window into a row (zeros at the padding, with explicit bounds, since indexes
+  wrap), and `Linear` brings its backward, the optimizer step and both lanes' products. The output size,
+  (h + 2p − k)/s + 1, is in the types.
+- `Im2col`'s backward as a gather: each input pixel sums the at most k·k cells that read it, in a fixed order, so the
+  parallel version writes no cell twice and keeps the same bits at any thread count.
+- GroupNorm: LayerNorm's kernel over one sample's group (h·w rows, c/g columns), scale and shift per channel. No
+  BatchNorm for now. Done 2026-10-29 in `main.bend` (`GroupNorm(n, hw, ng, cg, eps)`, c = ng·cg in the type), against
+  `F.group_norm`; in `gpu.bend` on 2026-10-30 (a leaf an (image, group) block, then a leaf a channel for the gain's
+  and bias's gradients), `main.bend`'s bits on 1 and 16 CPU threads and on the RTX 4050. Not in `fast.bend`, like
+  LayerNorm.
+- The UNet's other pieces: a channel concat (skip connections), a nearest-neighbour upsample (a gather), a per-pixel
+  time-embedding add.
+- Tests: sections in `demo/ops_test.bend` and `reference/test_ops.py` against `nn.Conv2d`, `F.unfold`/`F.fold`,
+  `nn.GroupNorm`; the law to try is `Im2col`'s backward as the adjoint of its forward on the exact model, not a
+  condition for the layer. Then a small UNet against a PyTorch twin on #15's optdigits setup.
+- On the GPU, `Array.new` fills a new block on one lane (bendlang/bend#1778), which the im2col buffer will feel.
+- Rough size: about 1.5 to 2 weeks in all.
+- Who does what (#15, 2026-10-29): adeerkhan takes `Im2col` (forward, backward, both lanes, tests against `F.unfold`)
+  and a Conv2d built from `Im2col` and `Linear` against `nn.Conv2d`, after `FullAttention` (#17); I take GroupNorm.
+  `Im2col` writes 0 at the padding and its output size is floor division, as `nn.Conv2d`'s; its signature rules out
+  `k > h + 2p` and `s = 0`, where `Nat`'s saturating subtraction and division by zero would give `oh = 1`.
+
+## FullAttention (added 2026-10-29, from #17; done 2026-10-31)
+
+`Attention` is causal in both lanes. A separate `FullAttention` (no mask) with its own three laws leaves `Attention`'s
+code and bits alone: it shares `qrow`/`prow` with the number of keys as a parameter, is tested against
+`F.scaled_dot_product_attention(is_causal=False)`, and the tiny Llama's tests show `Attention`'s output unchanged.
+adeerkhan takes it, before `Im2col`.
+
+Done (PR #20, merged 2026-10-31; closed 2026-11-01, NOTES): `FullAttention` in `main.bend` and `gpu.bend`, its laws
+`full_keys`, `full`, `full_grad`, `attn_par_fwd_full` and `attn_par_bwd_full` by `--verdict`, `test_ops.py` against
+PyTorch on 10 seeds, `gpu_layers_test`'s cases 14 and 15 at `main.bend`'s bits (on the device, but for CUDA's exp), the
+`fullattn_*` demos in `make check`, and 15 mutants in `make mutate`, all caught.
+
+## Going public (done with v1.0.0, 2026-10-22)
+
+The repository opened with v1.0.0, with the README's measured numbers (M15's benchmark among them), `CONTRIBUTING.md`
+and the GitHub templates, and the BendHub name `bendtorch` (NOTES, "On BendHub", 2026-10-21). The rule this section set
+stays: nothing private in its files or history, no analysis or method beyond a one-line result in `NOTES.md` and
+`docs/`, no link to private repositories.

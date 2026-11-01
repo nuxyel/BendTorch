@@ -18,7 +18,7 @@ import ../torch/main.bend as T
 import ../torch/fast.bend as F
 import ../torch/dtype.bend as D
 import ./tiny_llama.bend as TL
-import bend-ml-tensor-array@0.1.14.0/main.bend as TA
+import bend-ml-tensor-array@0.1.18.0/main.bend as TA
 
 # a projection without bias: weights seen in BF16, output stored in BF16
 def LinBF(~b: Nat, ~i: Nat, ~o: Nat) -> T.Layer<TL.M(o, i), TL.A(b, i), TL.A(b, o), TL.A(b, i)>:

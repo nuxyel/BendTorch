@@ -23,7 +23,7 @@ import Base
 import ../torch/main.bend as T
 import ../torch/load.bend as L
 import ../torch/fast.bend as F
-import bend-ml-tensor-array@0.1.14.0/main.bend as TA
+import bend-ml-tensor-array@0.1.18.0/main.bend as TA
 
 def M(r: Nat, c: Nat) -> Type:
   TA.Mat<r, c>
@@ -455,6 +455,7 @@ def index_of(voc: List<&2, U32>, +c: U32, +i: Nat) -> Nat:
     case Nil{}:
       0n
     case Con{+v, t}:
+      # bend-lint: disable-next bend-lint-rules/performance/eager_branch -- a 65-character vocabulary, read when the corpus is encoded not-expected-because: not in the training step
       Bool.pick(Nat, U32.is_eq(v, c), i, index_of(t, c, 1n+i))
 
 def byte_at(voc: List<&2, U32>, id: Nat) -> U32:

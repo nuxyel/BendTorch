@@ -15,7 +15,7 @@
 # literal shapes and a program checks once where shapes read at run time enter (`Bool.check`).
 
 import Base
-import bend-ml-tensor-array@0.1.14.0/main.bend as TA
+import bend-ml-tensor-array@0.1.18.0/main.bend as TA
 import bend-ml-nat-lemmas@0.1.2.0/main.bend as NL
 
 # =====================================================================================================
@@ -77,6 +77,7 @@ def bc_eq(a: List<&2, Nat>, b: List<&2, Nat>, o: List<&2, Nat>) -> Bool:
     case Nil{} Nil{} Nil{}:
       True{}
     case Con{+x, ra} Con{+y, rb} Con{+z, ro}:
+      # bend-lint: disable-next bend-lint-rules/performance/eager_branch -- a shape predicate over a list of rank <= 4, once per operation; the types and LAWS.bend read its Bool form not-expected-because: a match would change the definition the proofs reduce, for no measurable gain
       Bool.and(bc_dim(x, y, z), bc_eq(ra, rb, ro))
     case _ _ _:
       False{}
@@ -87,6 +88,7 @@ def bc_rank(+la: Nat, +lb: Nat, +lo: Nat) -> Bool:
 
 # a and b broadcast to o
 def bc_ok(+a: List<&2, Nat>, +b: List<&2, Nat>, +o: List<&2, Nat>) -> Bool:
+  # bend-lint: disable-next bend-lint-rules/performance/eager_branch -- a shape predicate over a list of rank <= 4, once per operation; the types and LAWS.bend read its Bool form not-expected-because: a match would change the definition the proofs reduce, for no measurable gain
   Bool.and(bc_rank(List.length(&2, Nat, a), List.length(&2, Nat, b), List.length(&2, Nat, o)), bc_eq(pad(a, List.length(&2, Nat, o)), pad(b, List.length(&2, Nat, o)), o))
 
 # a proof that b is True, when it is: where shapes read at run time enter, a program checks a condition once
@@ -483,10 +485,12 @@ def all_once(left: Nat, +p: List<&2, Nat>, +i: Nat) -> Bool:
     case 0n:
       True{}
     case 1n+r:
+      # bend-lint: disable-next bend-lint-rules/performance/eager_branch -- a shape predicate over a list of rank <= 4, once per operation; the types and LAWS.bend read its Bool form not-expected-because: a match would change the definition the proofs reduce, for no measurable gain
       Bool.and(Nat.is_eq(count(i, p), 1n), all_once(r, p, 1n+i))
 
 # p is a permutation of the axes of a rank-n tensor
 def is_perm(+p: List<&2, Nat>, +n: Nat) -> Bool:
+  # bend-lint: disable-next bend-lint-rules/performance/eager_branch -- a shape predicate over a list of rank <= 4, once per operation; the types and LAWS.bend read its Bool form not-expected-because: a match would change the definition the proofs reduce, for no measurable gain
   Bool.and(Nat.is_eq(List.length(&2, Nat, p), n), all_once(n, p, 0n))
 
 # reading s at every position of the permuted shape: axis d has s's size and s's stride of axis p[d]; the last first
@@ -551,6 +555,7 @@ def same(a: List<&2, Nat>, b: List<&2, Nat>) -> Bool:
     case Nil{} Nil{}:
       True{}
     case Con{+x, ra} Con{+y, rb}:
+      # bend-lint: disable-next bend-lint-rules/performance/eager_branch -- a shape predicate over a list of rank <= 4, once per operation; the types and LAWS.bend read its Bool form not-expected-because: a match would change the definition the proofs reduce, for no measurable gain
       Bool.and(Nat.is_eq(x, y), same(ra, rb))
     case _ _:
       False{}
@@ -563,11 +568,13 @@ def cat_eq(a: List<&2, Nat>, b: List<&2, Nat>, d: Nat) -> Bool:
     case Con{x, ra} Con{y, rb} 0n:
       same(ra, rb)
     case Con{+x, ra} Con{+y, rb} 1n+p:
+      # bend-lint: disable-next bend-lint-rules/performance/eager_branch -- a shape predicate over a list of rank <= 4, once per operation; the types and LAWS.bend read its Bool form not-expected-because: a match would change the definition the proofs reduce, for no measurable gain
       Bool.and(Nat.is_eq(x, y), cat_eq(ra, rb, p))
     case _ _ _:
       False{}
 
 def cat_ok(+a: List<&2, Nat>, +b: List<&2, Nat>, +d: Nat) -> Bool:
+  # bend-lint: disable-next bend-lint-rules/performance/eager_branch -- a shape predicate over a list of rank <= 4, once per operation; the types and LAWS.bend read its Bool form not-expected-because: a match would change the definition the proofs reduce, for no measurable gain
   Bool.and(Nat.is_lt(d, rank(a)), cat_eq(a, b, d))
 
 def cat_shape(+a: List<&2, Nat>, +b: List<&2, Nat>, +d: Nat) -> List<&2, Nat>:

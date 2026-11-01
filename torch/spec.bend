@@ -3,6 +3,8 @@
 # exact (no rounding), so a law proved here says the formulas are right; whether the F32 code computes them to F32's
 # precision is tested against PyTorch, never proved (docs/design.md, "Proved, tested, trusted").
 
+# bend-lint: disable-file bend-lint-rules/performance/missed_fork -- the exact model the laws speak about not-expected-because: never run for speed
+# bend-lint: disable-file bend-lint-rules/performance/loop_invariant_call -- the exact model the laws speak about not-expected-because: never run for speed
 import Base
 import ./main.bend as T
 

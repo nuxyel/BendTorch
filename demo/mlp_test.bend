@@ -6,7 +6,7 @@
 
 import Base
 import ../torch/main.bend as T
-import bend-ml-tensor-array@0.1.14.0/main.bend as TA
+import bend-ml-tensor-array@0.1.18.0/main.bend as TA
 
 def P() -> Type:
   T.Two<T.Two<T.Lin<7n, 6n>, Unit>, T.Lin<6n, 3n>>

@@ -55,6 +55,7 @@ def words(k: Nat, +i: U32, ra: Array<F32> & F32, acc: String) -> String:
     case 0n Tuple{a, v}:
       acc
     case 1n+p Tuple{a, +v}:
+      # bend-lint: disable-next bend-lint-rules/performance/append_in_loop -- a one-shot test's output line not-expected-because: a few dozen pieces
       words(p, (i + 1 : U32), Array.get(F32, a, (i + 1 : U32)), acc ++ " " ++ U32.show(T.bits(v)))
 
 def show(+s: List<&2, Nat>, +name: String, t: TT.Tensor<s>) -> IO(Unit):

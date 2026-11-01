@@ -6,7 +6,7 @@
 
 import Base
 import ../torch/main.bend as T
-import bend-ml-tensor-array@0.1.14.0/main.bend as TA
+import bend-ml-tensor-array@0.1.18.0/main.bend as TA
 
 def ld(+r: Nat, +c: Nat, +dir: String, +name: String) -> IO(TA.Mat<r, c>):
   T.Mat.load(r, c, dir ++ "/" ++ name ++ ".bin", 0)
@@ -89,6 +89,16 @@ def t_ln(+dir: String) -> IO(Unit):
     g : TA.Mat<1n, 6n> <- ld(1n, 6n, dir, "layernorm.g")
     b : TA.Mat<1n, 6n> <- ld(1n, 6n, dir, "layernorm.b")
     check(~5n, ~6n, ~6n, ~T.LN<6n>, ~TA.Mat<5n, 6n>, ~T.LayerNorm(5n, 6n, 0.00001), ~pp_ln, "layernorm", T.LN{g, b}, x, dy)
+
+# GroupNorm: 2 images of 4 pixels, 3 groups of 2 channels (an 8 x 6 matrix, channels last), so that a group is neither a
+# row nor a column
+def t_gn(+dir: String) -> IO(Unit):
+  do IO<Unit>:
+    x : TA.Mat<8n, 6n> <- ld(8n, 6n, dir, "groupnorm.x")
+    dy : TA.Mat<8n, 6n> <- ld(8n, 6n, dir, "groupnorm.dy")
+    g : TA.Mat<1n, 6n> <- ld(1n, 6n, dir, "groupnorm.g")
+    b : TA.Mat<1n, 6n> <- ld(1n, 6n, dir, "groupnorm.b")
+    check(~8n, ~6n, ~6n, ~T.LN<6n>, ~TA.Mat<8n, 6n>, ~T.GroupNorm(2n, 4n, 3n, 2n, 0.00001), ~pp_ln, "groupnorm", T.LN{g, b}, x, dy)
 
 def t_lnb(+dir: String) -> IO(Unit):
   do IO<Unit>:
@@ -211,6 +221,33 @@ def t_attn(+dir: String) -> IO(Unit):
     dy : TA.Mat<8n, 16n> <- ld(8n, 16n, dir, "attn.dy")
     attn2(dy, T.Layer.fwd(Unit, AttnX, TA.Mat<8n, 16n>, T.AttnS, Attn(), Unit{}, T.Two{q, T.Two{k, v}}))
 
+# the same inputs through FullAttention: every position sees every key
+def AttnF() -> T.Layer<Unit, AttnX, TA.Mat<8n, 16n>, T.AttnS>:
+  T.FullAttention(8n, 16n, 8n, 2n, 4n, 2n, 2n, 4n, 0.5, {==}, {==}, {==})
+
+def attnf3(r: T.Bwd<Unit, AttnX>) -> IO(Unit):
+  match r:
+    case T.Bwd{p, T.Two{dq, T.Two{dk, dv}}, g}:
+      do IO<Unit>:
+        T.Mat.print(8n, 16n, "attnf.dq", dq)
+        T.Mat.print(8n, 8n, "attnf.dk", dk)
+        T.Mat.print(8n, 8n, "attnf.dv", dv)
+
+def attnf2(dy: TA.Mat<8n, 16n>, r: T.Fwd<Unit, TA.Mat<8n, 16n>, T.AttnS>) -> IO(Unit):
+  match r:
+    case T.Fwd{p, y, s}:
+      do IO<Unit>:
+        T.Mat.print(8n, 16n, "attnf.y", y)
+        attnf3(T.Layer.bwd(Unit, AttnX, TA.Mat<8n, 16n>, T.AttnS, AttnF(), p, s, dy, Unit{}))
+
+def t_attn_full(+dir: String) -> IO(Unit):
+  do IO<Unit>:
+    q : TA.Mat<8n, 16n> <- ld(8n, 16n, dir, "attn.q")
+    k : TA.Mat<8n, 8n> <- ld(8n, 8n, dir, "attn.k")
+    v : TA.Mat<8n, 8n> <- ld(8n, 8n, dir, "attn.v")
+    dy : TA.Mat<8n, 16n> <- ld(8n, 16n, dir, "attn.dy")
+    attnf2(dy, T.Layer.fwd(Unit, AttnX, TA.Mat<8n, 16n>, T.AttnS, AttnF(), Unit{}, T.Two{q, T.Two{k, v}}))
+
 # ---- embedding: 5 ids into a table of 7 x 4 (ids repeat) ----
 
 def labs(bs: List<&2, U32>) -> List<&2, Nat>:
@@ -314,9 +351,11 @@ def go(+dir: String) -> IO(Unit):
     t_dropout_stepped(dir)
     t_rope(dir)
     t_attn(dir)
+    t_attn_full(dir)
     t_emb(dir)
     t_tied(dir)
     t_losses(dir)
+    t_gn(dir)
 
 def dispatch(args: List<String>) -> IO(Unit):
   match args:

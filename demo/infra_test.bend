@@ -2,7 +2,7 @@
 import Base
 import ../torch/main.bend as T
 import ../torch/load.bend as L
-import bend-ml-tensor-array@0.1.14.0/main.bend as TA
+import bend-ml-tensor-array@0.1.18.0/main.bend as TA
 
 def M() -> Type:
   TA.Mat<2n, 3n>
@@ -143,6 +143,7 @@ def ok_list(xs: List<String>, +acc: String) -> IO(Unit):
       +x2 = word(U32.read(b2))
       +y1 = word(U32.read(c1))
       +y2 = word(U32.read(c2))
+      # bend-lint: disable-next bend-lint-rules/performance/append_in_loop -- a one-shot test's output line not-expected-because: a few dozen pieces
       ok_list(t, acc ++ " " ++ both(T.OptCfg.ok(T.CAdam{0.001, x1, x2, 0.00000001, 0.0, y1, y2}), T.OptCfg.ok(T.CAdamW{0.001, x1, x2, 0.00000001, 0.01, y1, y2})))
     case _:
       IO.print(acc)

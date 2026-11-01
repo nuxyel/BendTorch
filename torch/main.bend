@@ -21,7 +21,7 @@
 # checked by Bend's kernel; every F32 result is tested against PyTorch by the scripts in reference/, never proved.
 
 import Base
-import bend-ml-tensor-array@0.1.14.0/main.bend as TA
+import bend-ml-tensor-array@0.1.18.0/main.bend as TA
 import bend-ml-nat-lemmas@0.1.2.0/main.bend as NL
 
 # =====================================================================================================
@@ -841,6 +841,7 @@ def pair_store(~P1: Type, ~X1: Type, ~Y1: Type, ~S1: Type, ~P2: Type, ~X2: Type,
       pair_store2(~P2, ~X2, ~Y2, ~S2, ~lb, P1, p2, Layer.store(P1, X1, Y1, S1, la, p1, xs, off))
 
 def Seq(~P1: Type, ~P2: Type, ~X: Type, ~Y: Type, ~Z: Type, ~S1: Type, ~S2: Type, ~la: Layer<P1, X, Y, S1>, ~lb: Layer<P2, Y, Z, S2>) -> Layer<Two<P1, P2>, X, Z, Two<S1, S2>>:
+  # bend-lint: disable-next bend-lint-rules/performance/gpu_fit -- zeros are made once per run (Train.new, OptState.new), and pair_zeros already forks not-expected-because: the combinators nest, so a bang here would run inside a bang
   Layer{p => x => seq_fwd(~P1, ~P2, ~X, ~Y, ~Z, ~S1, ~S2, ~la, ~lb, p, x), p => s => dz => g => seq_bwd(~P1, ~P2, ~X, ~Y, ~Z, ~S1, ~S2, ~la, ~lb, p, s, dz, g), op => p => g => st => seq_step(~P1, ~P2, ~X, ~Y, ~Z, ~S1, ~S2, ~la, ~lb, op, p, g, st), u => pair_zeros(~P1, ~X, ~Y, ~S1, ~P2, ~Y, ~Z, ~S2, ~la, ~lb), p => pair_dump(~P1, ~X, ~Y, ~S1, ~P2, ~Y, ~Z, ~S2, ~la, ~lb, p), p => xs => off => pair_load(~P1, ~X, ~Y, ~S1, ~P2, ~Y, ~Z, ~S2, ~la, ~lb, p, xs, off), p => xs => off => pair_store(~P1, ~X, ~Y, ~S1, ~P2, ~Y, ~Z, ~S2, ~la, ~lb, p, xs, off), u => (Layer.count(P1, X, Y, S1, la) + Layer.count(P2, Y, Z, S2, lb) : U32)}
 
 # Owned layer composition for dimensions read at run time. Each child record is opened once; each closure goes to
@@ -1871,6 +1872,130 @@ def ln_store(+d: Nat, p: LN<d>, xs: Array<F32>, off: U32) -> PA<LN<d>>:
 def LayerNorm(+n: Nat, +d: Nat, +eps: F32) -> Layer<LN<d>, TA.Mat<n, d>, TA.Mat<n, d>, TA.Mat<n, d>>:
   Layer{p => x => ln_fwd(n, d, eps, p, x), p => s => dy => g => ln_bwd(n, d, eps, p, s, dy, g), op => p => g => st => ln_step(d, op, p, g, st), u => LN{TA.Mat.zeros(1n, d), TA.Mat.zeros(1n, d)}, p => ln_dump(d, p), p => xs => off => ln_load(d, p, xs, off), p => xs => off => ln_store(d, p, xs, off), u => U32.from_nat(Nat.mul(2n, d))}
 
+# ---- GroupNorm: LayerNorm over one image's group of channels, with a gain and a bias per channel ----
+# Images are channels last: x is (n·hw) x c with c = ng·cg, image s owns rows s·hw .. s·hw + hw - 1 and group k columns
+# k·cg .. k·cg + cg - 1. Each (image, group) block of hw·cg numbers is normalized by its own mean and biased variance,
+# then y = xh * g[ch] + b[ch], as nn.GroupNorm. Writing c as ng·cg in the type makes "ng divides c" hold by
+# construction. A block is walked one row segment at a time with LayerNorm's loops: `off` is the row's first cell and
+# `j` the group's first channel, so a segment's cells are off + j .. off + j + cg - 1 and its gains g[j .. j + cg - 1].
+
+# acc + the segments of the block's remaining `left` rows, each one row (c cells) below the last, in order
+def gn_sum(left: Nat, +off: U32, +c: U32, +cg: Nat, q: AS) -> AS:
+  match left q:
+    case 0n r:
+      r
+    case 1n+l AS{a, +s}:
+      gn_sum(l, (off + c : U32), c, cg, asum(Nat.sub(cg, 1n), (off + c : U32), s, Array.get(F32, a, (off + c : U32))))
+
+# acc + (x - mu)·(x - mu) over the same segments
+def gn_csq(left: Nat, +off: U32, +c: U32, +cg: Nat, +mu: F32, q: AS) -> AS:
+  match left q:
+    case 0n r:
+      r
+    case 1n+l AS{a, +s}:
+      gn_csq(l, (off + c : U32), c, cg, mu, csq(Nat.sub(cg, 1n), (off + c : U32), mu, s, Array.get(F32, a, (off + c : U32))))
+
+def gn_mr1(+hw: Nat, +off: U32, +c: U32, +cg: Nat, +nf: F32, +eps: F32, q: AS) -> ASM:
+  match q:
+    case AS{a, +s}:
+      ln_mr2(nf, eps, (s / nf : F32), gn_csq(Nat.sub(hw, 1n), off, c, cg, (s / nf : F32), csq(Nat.sub(cg, 1n), off, (s / nf : F32), 0.0, Array.get(F32, a, off))))
+
+# a block's mean and 1 / sqrt(var + eps); off is its first cell, nf = hw·cg
+def gn_mr(+hw: Nat, +off: U32, +c: U32, +cg: Nat, +nf: F32, +eps: F32, x: Array<F32>) -> ASM:
+  gn_mr1(hw, off, c, cg, nf, eps, gn_sum(Nat.sub(hw, 1n), off, c, cg, asum(Nat.sub(cg, 1n), off, 0.0, Array.get(F32, x, off))))
+
+# y over the block's rows, one segment each (LayerNorm's lnf_w with the group's gains)
+def gnf_rows(left: Nat, +off: U32, +j: U32, +c: U32, +cg: Nat, +mu: F32, +r: F32, s: R4) -> R4:
+  match left s:
+    case 0n R4{x, g, b, y}:
+      lnf_w(Nat.sub(cg, 1n), j, off, mu, r, y, Array.get(F32, x, (off + j : U32)), Array.get(F32, g, j), Array.get(F32, b, j))
+    case 1n+l R4{x, g, b, y}:
+      gnf_rows(l, (off + c : U32), j, c, cg, mu, r, lnf_w(Nat.sub(cg, 1n), j, off, mu, r, y, Array.get(F32, x, (off + j : U32)), Array.get(F32, g, j), Array.get(F32, b, j)))
+
+def gnf_grp2(+hw: Nat, +off: U32, +j: U32, +c: U32, +cg: Nat, g: Array<F32>, b: Array<F32>, y: Array<F32>, m: ASM) -> R4:
+  match m:
+    case ASM{x, +mu, +r}:
+      gnf_rows(Nat.sub(hw, 1n), off, j, c, cg, mu, r, R4{x, g, b, y})
+
+# one (image, group) block: off is the image's first row's first cell, j the group's first channel
+def gnf_grp(+hw: Nat, +off: U32, +j: U32, +c: U32, +cg: Nat, +nf: F32, +eps: F32, s: R4) -> R4:
+  match s:
+    case R4{x, g, b, y}:
+      gnf_grp2(hw, off, j, c, cg, g, b, y, gn_mr(hw, (off + j : U32), c, cg, nf, eps, x))
+
+def gnf_groups(left: Nat, +off: U32, +j: U32, +hw: Nat, +c: U32, +cg: Nat, +nf: F32, +eps: F32, s: R4) -> R4:
+  match left:
+    case 0n:
+      gnf_grp(hw, off, j, c, cg, nf, eps, s)
+    case 1n+q:
+      gnf_groups(q, off, (j + U32.from_nat(cg) : U32), hw, c, cg, nf, eps, gnf_grp(hw, off, j, c, cg, nf, eps, s))
+
+def gnf_images(left: Nat, +off: U32, +ng: Nat, +hw: Nat, +c: U32, +cg: Nat, +nf: F32, +eps: F32, s: R4) -> R4:
+  match left:
+    case 0n:
+      gnf_groups(Nat.sub(ng, 1n), off, 0, hw, c, cg, nf, eps, s)
+    case 1n+q:
+      gnf_images(q, (off + (U32.from_nat(hw) * c : U32) : U32), ng, hw, c, cg, nf, eps, gnf_groups(Nat.sub(ng, 1n), off, 0, hw, c, cg, nf, eps, s))
+
+def gn_fwd(+n: Nat, +hw: Nat, +ng: Nat, +cg: Nat, +eps: F32, p: LN<Nat.mul(ng, cg)>, x: TA.Mat<Nat.mul(n, hw), Nat.mul(ng, cg)>) -> Fwd<LN<Nat.mul(ng, cg)>, TA.Mat<Nat.mul(n, hw), Nat.mul(ng, cg)>, TA.Mat<Nat.mul(n, hw), Nat.mul(ng, cg)>>:
+  match p x:
+    case LN{TA.Mat{g}, TA.Mat{b}} TA.Mat{xa}:
+      ln_f2(Nat.mul(n, hw), Nat.mul(ng, cg), gnf_images(Nat.sub(n, 1n), 0, ng, hw, U32.from_nat(Nat.mul(ng, cg)), cg, F32.from_nat(Nat.mul(hw, cg)), eps, R4{xa, g, b, zeros_a(Nat.mul(Nat.mul(n, hw), Nat.mul(ng, cg)))}))
+
+# the backward pass is LayerNorm's with the block in place of the row: the two means (of dxh and of dxh·xh) are taken
+# over the whole block, then each cell's dx, dg[ch] += dy·xh and db[ch] += dy, in order
+def gnb_sums(left: Nat, +off: U32, +j: U32, +c: U32, +cg: Nat, +mu: F32, +r: F32, q: R3SS) -> R3SS:
+  match left q:
+    case 0n t:
+      t
+    case 1n+l R3SS{x, dy, g, +sa, +sb}:
+      gnb_sums(l, (off + c : U32), j, c, cg, mu, r, lnb_sums(Nat.sub(cg, 1n), j, (off + c : U32), mu, r, sa, sb, Array.get(F32, x, ((off + c : U32) + j : U32)), Array.get(F32, dy, ((off + c : U32) + j : U32)), Array.get(F32, g, j)))
+
+def gnb_rows(left: Nat, +off: U32, +j: U32, +c: U32, +cg: Nat, +mu: F32, +r: F32, +ma: F32, +mb: F32, s: R4B) -> R4B:
+  match left s:
+    case 0n R4B{x, dy, g, dx, w}:
+      lnb_w(Nat.sub(cg, 1n), j, off, mu, r, ma, mb, dx, w, Array.get(F32, x, (off + j : U32)), Array.get(F32, dy, (off + j : U32)), Array.get(F32, g, j))
+    case 1n+l R4B{x, dy, g, dx, w}:
+      gnb_rows(l, (off + c : U32), j, c, cg, mu, r, ma, mb, lnb_w(Nat.sub(cg, 1n), j, off, mu, r, ma, mb, dx, w, Array.get(F32, x, (off + j : U32)), Array.get(F32, dy, (off + j : U32)), Array.get(F32, g, j)))
+
+def gnb_grp3(+hw: Nat, +off: U32, +j: U32, +c: U32, +cg: Nat, +nf: F32, +mu: F32, +r: F32, dx: Array<F32>, w: A2, q: R3SS) -> R4B:
+  match q:
+    case R3SS{x, dy, g, +sa, +sb}:
+      gnb_rows(Nat.sub(hw, 1n), off, j, c, cg, mu, r, (sa / nf : F32), (sb / nf : F32), R4B{x, dy, g, dx, w})
+
+def gnb_grp2(+hw: Nat, +off: U32, +j: U32, +c: U32, +cg: Nat, +nf: F32, dy: Array<F32>, g: Array<F32>, dx: Array<F32>, w: A2, m: ASM) -> R4B:
+  match m:
+    case ASM{x, +mu, +r}:
+      gnb_grp3(hw, off, j, c, cg, nf, mu, r, dx, w, gnb_sums(Nat.sub(hw, 1n), off, j, c, cg, mu, r, lnb_sums(Nat.sub(cg, 1n), j, off, mu, r, 0.0, 0.0, Array.get(F32, x, (off + j : U32)), Array.get(F32, dy, (off + j : U32)), Array.get(F32, g, j))))
+
+def gnb_grp(+hw: Nat, +off: U32, +j: U32, +c: U32, +cg: Nat, +nf: F32, +eps: F32, s: R4B) -> R4B:
+  match s:
+    case R4B{x, dy, g, dx, w}:
+      gnb_grp2(hw, off, j, c, cg, nf, dy, g, dx, w, gn_mr(hw, (off + j : U32), c, cg, nf, eps, x))
+
+def gnb_groups(left: Nat, +off: U32, +j: U32, +hw: Nat, +c: U32, +cg: Nat, +nf: F32, +eps: F32, s: R4B) -> R4B:
+  match left:
+    case 0n:
+      gnb_grp(hw, off, j, c, cg, nf, eps, s)
+    case 1n+q:
+      gnb_groups(q, off, (j + U32.from_nat(cg) : U32), hw, c, cg, nf, eps, gnb_grp(hw, off, j, c, cg, nf, eps, s))
+
+def gnb_images(left: Nat, +off: U32, +ng: Nat, +hw: Nat, +c: U32, +cg: Nat, +nf: F32, +eps: F32, s: R4B) -> R4B:
+  match left:
+    case 0n:
+      gnb_groups(Nat.sub(ng, 1n), off, 0, hw, c, cg, nf, eps, s)
+    case 1n+q:
+      gnb_images(q, (off + (U32.from_nat(hw) * c : U32) : U32), ng, hw, c, cg, nf, eps, gnb_groups(Nat.sub(ng, 1n), off, 0, hw, c, cg, nf, eps, s))
+
+def gn_bwd(+n: Nat, +hw: Nat, +ng: Nat, +cg: Nat, +eps: F32, p: LN<Nat.mul(ng, cg)>, x: TA.Mat<Nat.mul(n, hw), Nat.mul(ng, cg)>, dy: TA.Mat<Nat.mul(n, hw), Nat.mul(ng, cg)>, gg: LN<Nat.mul(ng, cg)>) -> Bwd<LN<Nat.mul(ng, cg)>, TA.Mat<Nat.mul(n, hw), Nat.mul(ng, cg)>>:
+  match p x dy:
+    case LN{TA.Mat{g}, b} TA.Mat{xa} TA.Mat{da}:
+      ln_b2(Nat.mul(ng, cg), Nat.mul(n, hw), b, gg, gnb_images(Nat.sub(n, 1n), 0, ng, hw, U32.from_nat(Nat.mul(ng, cg)), cg, F32.from_nat(Nat.mul(hw, cg)), eps, R4B{xa, da, g, zeros_a(Nat.mul(Nat.mul(n, hw), Nat.mul(ng, cg))), A2{zeros_a(Nat.mul(ng, cg)), zeros_a(Nat.mul(ng, cg))}}))
+
+# GroupNorm over n images of hw pixels and ng groups of cg channels, channels last; its parameters are LayerNorm's
+def GroupNorm(+n: Nat, +hw: Nat, +ng: Nat, +cg: Nat, +eps: F32) -> Layer<LN<Nat.mul(ng, cg)>, TA.Mat<Nat.mul(n, hw), Nat.mul(ng, cg)>, TA.Mat<Nat.mul(n, hw), Nat.mul(ng, cg)>, TA.Mat<Nat.mul(n, hw), Nat.mul(ng, cg)>>:
+  Layer{p => x => gn_fwd(n, hw, ng, cg, eps, p, x), p => s => dy => g => gn_bwd(n, hw, ng, cg, eps, p, s, dy, g), op => p => g => st => ln_step(Nat.mul(ng, cg), op, p, g, st), u => LN{TA.Mat.zeros(1n, Nat.mul(ng, cg)), TA.Mat.zeros(1n, Nat.mul(ng, cg))}, p => ln_dump(Nat.mul(ng, cg), p), p => xs => off => ln_load(Nat.mul(ng, cg), p, xs, off), p => xs => off => ln_store(Nat.mul(ng, cg), p, xs, off), u => U32.from_nat(Nat.mul(2n, Nat.mul(ng, cg)))}
+
 # =====================================================================================================
 # Embedding: row i of the output is row ids[i] of the table (v x d); the gradient adds each row back
 # =====================================================================================================
@@ -2000,6 +2125,7 @@ def fork_fwd(~P1: Type, ~P2: Type, ~X: Type, ~Y1: Type, ~Y2: Type, ~S1: Type, ~S
       fork_f2(~P1, ~P2, ~X, ~Y1, ~Y2, ~S1, ~S2, ~la, ~lb, p1, p2, dup(x))
 
 def Fork(~P1: Type, ~P2: Type, ~X: Type, ~Y1: Type, ~Y2: Type, ~S1: Type, ~S2: Type, ~dup: X -> Two<X, X>, ~add: X -> X -> X, ~la: Layer<P1, X, Y1, S1>, ~lb: Layer<P2, X, Y2, S2>) -> Layer<Two<P1, P2>, X, Two<Y1, Y2>, Two<S1, S2>>:
+  # bend-lint: disable-next bend-lint-rules/performance/gpu_fit -- zeros are made once per run (Train.new, OptState.new), and pair_zeros already forks not-expected-because: the combinators nest, so a bang here would run inside a bang
   Layer{p => x => fork_fwd(~P1, ~P2, ~X, ~Y1, ~Y2, ~S1, ~S2, ~dup, ~la, ~lb, p, x), p => s => dy => g => fork_bwd(~P1, ~P2, ~X, ~Y1, ~Y2, ~S1, ~S2, ~add, ~la, ~lb, p, s, dy, g), op => p => g => st => pair_step(~P1, ~X, ~Y1, ~S1, ~P2, ~X, ~Y2, ~S2, ~la, ~lb, op, p, g, st), u => pair_zeros(~P1, ~X, ~Y1, ~S1, ~P2, ~X, ~Y2, ~S2, ~la, ~lb), p => pair_dump(~P1, ~X, ~Y1, ~S1, ~P2, ~X, ~Y2, ~S2, ~la, ~lb, p), p => xs => off => pair_load(~P1, ~X, ~Y1, ~S1, ~P2, ~X, ~Y2, ~S2, ~la, ~lb, p, xs, off), p => xs => off => pair_store(~P1, ~X, ~Y1, ~S1, ~P2, ~X, ~Y2, ~S2, ~la, ~lb, p, xs, off), u => (Layer.count(P1, X, Y1, S1, la) + Layer.count(P2, X, Y2, S2, lb) : U32)}
 
 # ---- Both: la on the first of a pair, lb on the second ----
@@ -2025,6 +2151,7 @@ def both_fwd(~P1: Type, ~P2: Type, ~X1: Type, ~X2: Type, ~Y1: Type, ~Y2: Type, ~
       pair_f3(~P2, ~X2, ~Y2, ~S2, ~lb, P1, Y1, S1, p2, x2, Layer.fwd(P1, X1, Y1, S1, la, p1, x1))
 
 def Both(~P1: Type, ~P2: Type, ~X1: Type, ~X2: Type, ~Y1: Type, ~Y2: Type, ~S1: Type, ~S2: Type, ~la: Layer<P1, X1, Y1, S1>, ~lb: Layer<P2, X2, Y2, S2>) -> Layer<Two<P1, P2>, Two<X1, X2>, Two<Y1, Y2>, Two<S1, S2>>:
+  # bend-lint: disable-next bend-lint-rules/performance/gpu_fit -- zeros are made once per run (Train.new, OptState.new), and pair_zeros already forks not-expected-because: the combinators nest, so a bang here would run inside a bang
   Layer{p => x => both_fwd(~P1, ~P2, ~X1, ~X2, ~Y1, ~Y2, ~S1, ~S2, ~la, ~lb, p, x), p => s => dy => g => both_bwd(~P1, ~P2, ~X1, ~X2, ~Y1, ~Y2, ~S1, ~S2, ~la, ~lb, p, s, dy, g), op => p => g => st => pair_step(~P1, ~X1, ~Y1, ~S1, ~P2, ~X2, ~Y2, ~S2, ~la, ~lb, op, p, g, st), u => pair_zeros(~P1, ~X1, ~Y1, ~S1, ~P2, ~X2, ~Y2, ~S2, ~la, ~lb), p => pair_dump(~P1, ~X1, ~Y1, ~S1, ~P2, ~X2, ~Y2, ~S2, ~la, ~lb, p), p => xs => off => pair_load(~P1, ~X1, ~Y1, ~S1, ~P2, ~X2, ~Y2, ~S2, ~la, ~lb, p, xs, off), p => xs => off => pair_store(~P1, ~X1, ~Y1, ~S1, ~P2, ~X2, ~Y2, ~S2, ~la, ~lb, p, xs, off), u => (Layer.count(P1, X1, Y1, S1, la) + Layer.count(P2, X2, Y2, S2, lb) : U32)}
 
 # ---- Tie: first, mid, last, where first and last share one parameter (tied embeddings: the table is also the output
@@ -2077,6 +2204,7 @@ def tie_bwd(~P: Type, ~Q: Type, ~X: Type, ~Y: Type, ~Z: Type, ~W: Type, ~S1: Typ
 # The shared parameter steps once (through first's step; last's must be the same kind of layer for P, e.g. Embedding
 # and LinearNB over the same v x d matrix), the middle with its own.
 def Tie(~P: Type, ~Q: Type, ~X: Type, ~Y: Type, ~Z: Type, ~W: Type, ~S1: Type, ~S2: Type, ~S3: Type, ~la: Layer<P, X, Y, S1>, ~lb: Layer<Q, Y, Z, S2>, ~lc: Layer<P, Z, W, S3>) -> Layer<Two<P, Q>, X, W, Three<S1, S2, S3>>:
+  # bend-lint: disable-next bend-lint-rules/performance/gpu_fit -- zeros are made once per run (Train.new, OptState.new), and pair_zeros already forks not-expected-because: the combinators nest, so a bang here would run inside a bang
   Layer{pq => x => tie_fwd(~P, ~Q, ~X, ~Y, ~Z, ~W, ~S1, ~S2, ~S3, ~la, ~lb, ~lc, pq, x), pq => s => dw => g => tie_bwd(~P, ~Q, ~X, ~Y, ~Z, ~W, ~S1, ~S2, ~S3, ~la, ~lb, ~lc, pq, s, dw, g), op => p => g => st => pair_step(~P, ~X, ~Y, ~S1, ~Q, ~Y, ~Z, ~S2, ~la, ~lb, op, p, g, st), u => pair_zeros(~P, ~X, ~Y, ~S1, ~Q, ~Y, ~Z, ~S2, ~la, ~lb), p => pair_dump(~P, ~X, ~Y, ~S1, ~Q, ~Y, ~Z, ~S2, ~la, ~lb, p), p => xs => off => pair_load(~P, ~X, ~Y, ~S1, ~Q, ~Y, ~Z, ~S2, ~la, ~lb, p, xs, off), p => xs => off => pair_store(~P, ~X, ~Y, ~S1, ~Q, ~Y, ~Z, ~S2, ~la, ~lb, p, xs, off), u => (Layer.count(P, X, Y, S1, la) + Layer.count(Q, Y, Z, S2, lb) : U32)}
 
 # ---- Add2 and Mul2: element-wise sum and product of a pair of matrices ----
@@ -2313,6 +2441,33 @@ def prows(left: Nat, +i: Nat, +t: Nat, +hd: Nat, +sc: F32, +qs: U32, +qc: U32, +
 # P of one head: queries in q (row stride qs, columns from qc), keys in k (row stride ks, columns from kc)
 def probs(+t: Nat, +hd: Nat, +sc: F32, +qs: U32, +qc: U32, +ks: U32, +kc: U32, q: Array<F32>, k: Array<F32>) -> QK:
   prows(Nat.sub(t, 1n), 0n, t, hd, sc, qs, qc, ks, kc, prow(0n, t, hd, sc, qs, qc, ks, kc, q, k, zeros_a(Nat.mul(t, t))))
+
+# ---- the same P with every key visible: full attention. `qrow` stops at the
+# query's own position (i + 1 keys, the causal law); `frow` reads all t keys and
+# `fprow` softmaxes over all of them, so the row's zeros after position i do not
+# exist here. Everything else (the scaling, the write order, the softmax) is the
+# causal path's own functions, so the two agree bit for bit on the triangle the
+# causal one covers.
+def frow(+i: Nat, +m: Nat, +hd: Nat, +qs: U32, +qc: U32, +ks: U32, +kc: U32, q: Array<F32>, k: Array<F32>) -> DR:
+  drow(m, hd, ((U32.from_nat(i) * qs : U32) + qc : U32), kc, ks, Nil{}, dot0(hd, ((U32.from_nat(i) * qs : U32) + qc : U32), kc, 1, 1, q, k))
+
+def fprow2(+sc: F32, +off: U32, p: Array<F32>, r: DR) -> PR:
+  prow2(sc, off, p, r)
+
+# row i of a head's P with every key: the scaled scores of query i against keys 0..t-1 (frow), then the softmax over
+# all t of them (the law full)
+def fprow(+i: Nat, +m: Nat, +hd: Nat, +sc: F32, +qs: U32, +qc: U32, +ks: U32, +kc: U32, q: Array<F32>, k: Array<F32>, p: Array<F32>) -> PR:
+  fprow2(sc, (U32.from_nat(i) * U32.from_nat(1n+m) : U32), p, frow(i, m, hd, qs, qc, ks, kc, q, k))
+
+def fprows(left: Nat, +i: Nat, +m: Nat, +hd: Nat, +sc: F32, +qs: U32, +qc: U32, +ks: U32, +kc: U32, r: PR) -> QK:
+  match left r:
+    case 0n PR{q, k, p, n}:
+      QK{q, k, p}
+    case 1n+rest PR{q, k, p, n}:
+      fprows(rest, 1n+i, m, hd, sc, qs, qc, ks, kc, fprow(1n+i, m, hd, sc, qs, qc, ks, kc, q, k, p))
+
+def fprobs(+m: Nat, +hd: Nat, +sc: F32, +qs: U32, +qc: U32, +ks: U32, +kc: U32, q: Array<F32>, k: Array<F32>) -> QK:
+  fprows(m, 0n, m, hd, sc, qs, qc, ks, kc, fprow(0n, m, hd, sc, qs, qc, ks, kc, q, k, zeros_a(Nat.mul(1n+m, 1n+m))))
 
 type PO is Type:
   PO{a: Array<F32>, b: Array<F32>, o: Array<F32>}
@@ -2792,6 +2947,55 @@ def attn_fwd(+n: Nat, +w: Nat, +kvw: Nat, +dm: AttnDims, x: Two<TA.Mat<n, w>, Tw
     case AttnDims{+b, +t, +kv, +g, +hd, +sc} Two{TA.Mat{q}, Two{TA.Mat{k}, TA.Mat{v}}}:
       af2(n, w, b, kv, dm_of(dm), fslices(b, 0n, t, w, kvw, kv, g, hd, FL{q, k, v, Nil{}}))
 
+# ---- the same forward with every key visible. The leaf is the only new arithmetic: head_full builds P with fprobs
+# instead of probs; the tree, the slices and the P·V are the causal path's own functions. Kept beside the causal ones
+# rather than behind a flag so that no call into Attention changes and the laws attn_par_fwd / attn_par_bwd still
+# compare the functions they name.
+def head_full(+dm: Dm, +cols: HC, s: FS) -> FS:
+  match dm cols s:
+    case Dm{+t, +g, +hd, +w, +kvw, +sc} HC{+hc, +kc} FS{q, k, v, o}:
+      head_f2(t, hd, w, kvw, hc, kc, v, o, fprobs(Nat.sub(t, 1n), hd, sc, U32.from_nat(w), hc, U32.from_nat(kvw), kc, q, k))
+
+def fheads_full(left: Nat, +hi: Nat, +dm: Dm, s: FS) -> FS:
+  match left:
+    case 0n:
+      s
+    case 1n+n:
+      fheads_full(n, 1n+hi, dm, head_full(dm, head_cols(dm, hi), s))
+
+def fleaf_full(xs: List<&1, FS>, +h: Nat, +dm: Dm, acc: List<&1, Array<F32>>) -> List<&1, Array<F32>>:
+  match xs:
+    case Nil{}:
+      List.reverse(&1, Array<F32>, acc)
+    case Con{x, rest}:
+      fleaf_full(rest, h, dm, fs_o(fheads_full(h, 0n, dm, x)) <> acc)
+
+def fpar_full(d: Nat, gs: Halves<FS>, +n: Nat, +h: Nat, +dm: Dm) -> List<&1, Array<F32>>:
+  match d gs:
+    case 0n Halves{l, r}:
+      a b = fleaf_full(l, h, dm, Nil{}) fleaf_full(r, h, dm, Nil{})
+      List.append(&1, Array<F32>, a, b)
+    case 1n++e Halves{l, r}:
+      a b = fpar_full(e, cut(FS, TA.half(TA.half(n)), l, Nil{}), TA.half(n), h, dm) fpar_full(e, cut(FS, TA.half(Nat.sub(n, TA.half(n))), r, Nil{}), Nat.sub(n, TA.half(n)), h, dm)
+      List.append(&1, Array<F32>, a, b)
+
+def fgo_full(big: Bool, +b: Nat, +h: Nat, +dm: Dm, xs: List<&1, FS>) -> List<&1, Array<F32>>:
+  match big:
+    case True{}:
+      fpar_full(Nat.sub(depth(b), 1n), cut(FS, TA.half(b), xs, Nil{}), b, h, dm)
+    case False{}:
+      fleaf_full(xs, h, dm, Nil{})
+
+def af2_full(-n: Nat, +w: Nat, +b: Nat, +kv: Nat, +dm: Dm, s: FL) -> Fwd<Unit, TA.Mat<n, w>, AttnS>:
+  match dm s:
+    case Dm{+t, +g, +hd, +gw, +kw, +sc} FL{q, k, v, xs}:
+      Fwd{Unit{}, TA.Mat{blocks_in(b, 0n, t, gw, w, kv, UO{fgo_full(attn_tree(Nat.mul(b, kv), t, gw), Nat.mul(b, kv), g, dm, List.reverse(&1, FS, xs)), zeros_a(Nat.mul(Nat.mul(b, t), w))})}, AttnS{q, k, v}}
+
+def attn_fwd_full(+n: Nat, +w: Nat, +kvw: Nat, +dm: AttnDims, x: Two<TA.Mat<n, w>, Two<TA.Mat<n, kvw>, TA.Mat<n, kvw>>>) -> Fwd<Unit, TA.Mat<n, w>, AttnS>:
+  match dm x:
+    case AttnDims{+b, +t, +kv, +g, +hd, +sc} Two{TA.Mat{q}, Two{TA.Mat{k}, TA.Mat{v}}}:
+      af2_full(n, w, b, kv, dm_of(dm), fslices(b, 0n, t, w, kvw, kv, g, hd, FL{q, k, v, Nil{}}))
+
 def ab3(-n: Nat, -w: Nat, -kvw: Nat, o: D3) -> Bwd<Unit, Two<TA.Mat<n, w>, Two<TA.Mat<n, kvw>, TA.Mat<n, kvw>>>>:
   match o:
     case D3{dq, dk, dv}:
@@ -2806,6 +3010,85 @@ def attn_bwd(+n: Nat, +w: Nat, +kvw: Nat, +dm: AttnDims, s: AttnS, dy: TA.Mat<n,
   match dm s dy:
     case AttnDims{+b, +t, +kv, +g, +hd, +sc} AttnS{q, k, v} TA.Mat{d}:
       ab2(n, w, kvw, b, kv, dm_of(dm), bslices(b, 0n, t, w, kvw, kv, g, hd, BL{q, k, v, d, Nil{}}))
+
+# ---- the backward of the full-visible forward. G's row i also needs every key, so fgrow takes t - 1 dots where grow
+# takes i; the rest (gfix, pmul, pacc, the group sum, the tree) is the causal path's own code.
+def fgrow(+i: Nat, +m: Nat, +hd: Nat, +sc: F32, +ds: U32, +dc: U32, +vs: U32, +vc: U32, d: Array<F32>, v: Array<F32>, p: Array<F32>, g: Array<F32>) -> GR:
+  gr2(sc, (U32.from_nat(i) * U32.from_nat(1n+m) : U32), p, g, drow(m, hd, ((U32.from_nat(i) * ds : U32) + dc : U32), vc, vs, Nil{}, dot0(hd, ((U32.from_nat(i) * ds : U32) + dc : U32), vc, 1, 1, d, v)))
+
+def fgrows(left: Nat, +i: Nat, +m: Nat, +hd: Nat, +sc: F32, +ds: U32, +dc: U32, +vs: U32, +vc: U32, r: GR) -> GW:
+  match left r:
+    case 0n GR{d, v, A2{p, g}, n}:
+      GW{d, v, p, g}
+    case 1n+rest GR{d, v, A2{p, g}, n}:
+      fgrows(rest, 1n+i, m, hd, sc, ds, dc, vs, vc, fgrow(1n+i, m, hd, sc, ds, dc, vs, vc, d, v, p, g))
+
+def fhb1(+t: Nat, +hd: Nat, +w: Nat, +kvw: Nat, +sc: F32, +hc: U32, +kc: U32, v: Array<F32>, d: Array<F32>, dq: Array<F32>, dka: Array<F32>, dva: Array<F32>, r: QK) -> BS:
+  match r:
+    case QK{q, k, p}:
+      hb2(t, hd, w, kvw, hc, kc, q, k, dq, dka, dva, fgrows(Nat.sub(t, 1n), 0n, Nat.sub(t, 1n), hd, sc, U32.from_nat(w), hc, U32.from_nat(kvw), kc, fgrow(0n, Nat.sub(t, 1n), hd, sc, U32.from_nat(w), hc, U32.from_nat(kvw), kc, d, v, p, zeros_a(Nat.mul(t, t)))))
+
+def head_bwd_full(+dm: Dm, +cols: HC, s: BS) -> BS:
+  match dm cols s:
+    case Dm{+t, +g, +hd, +w, +kvw, +sc} HC{+hc, +kc} BS{q, k, v, d, dq, dka, dva}:
+      fhb1(t, hd, w, kvw, sc, hc, kc, v, d, dq, dka, dva, fprobs(Nat.sub(t, 1n), hd, sc, U32.from_nat(w), hc, U32.from_nat(kvw), kc, q, k))
+
+def bheads_full(left: Nat, +hi: Nat, +dm: Dm, s: BS) -> BS:
+  match left:
+    case 0n:
+      s
+    case 1n+n:
+      bheads_full(n, 1n+hi, dm, head_bwd_full(dm, head_cols(dm, hi), s))
+
+def bgroup_full(+dm: Dm, +j: Nat, s: BG) -> BG:
+  match dm s:
+    case Dm{+t, +g, +hd, +w, +kvw, +sc} BG{q, k, v, d, dq, dk, dv}:
+      bg_fin(t, hd, kvw, j, dk, dv, bheads_full(g, Nat.mul(j, g), dm, BS{q, k, v, d, dq, zeros_a(Nat.mul(t, hd)), zeros_a(Nat.mul(t, hd))}))
+
+def bgroups_full(left: Nat, +j: Nat, +dm: Dm, s: BG) -> BG:
+  match left:
+    case 0n:
+      s
+    case 1n+n:
+      bgroups_full(n, 1n+j, dm, bgroup_full(dm, j, s))
+
+def bleaf_full(xs: List<&1, BG>, +kv: Nat, +dm: Dm, acc: List<&1, DB>) -> List<&1, DB>:
+  match xs:
+    case Nil{}:
+      List.reverse(&1, DB, acc)
+    case Con{x, rest}:
+      bleaf_full(rest, kv, dm, db_of(bgroups_full(kv, 0n, dm, x)) <> acc)
+
+def bpar_full(d: Nat, gs: Halves<BG>, +n: Nat, +kv: Nat, +dm: Dm) -> List<&1, DB>:
+  match d gs:
+    case 0n Halves{l, r}:
+      a b = bleaf_full(l, kv, dm, Nil{}) bleaf_full(r, kv, dm, Nil{})
+      List.append(&1, DB, a, b)
+    case 1n++e Halves{l, r}:
+      a b = bpar_full(e, cut(BG, TA.half(TA.half(n)), l, Nil{}), TA.half(n), kv, dm) bpar_full(e, cut(BG, TA.half(Nat.sub(n, TA.half(n))), r, Nil{}), Nat.sub(n, TA.half(n)), kv, dm)
+      List.append(&1, DB, a, b)
+
+def bgo_full(big: Bool, +b: Nat, +kv: Nat, +dm: Dm, xs: List<&1, BG>) -> List<&1, DB>:
+  match big:
+    case True{}:
+      bpar_full(Nat.sub(depth(b), 1n), cut(BG, TA.half(b), xs, Nil{}), b, kv, dm)
+    case False{}:
+      bleaf_full(xs, kv, dm, Nil{})
+
+def ab2_full(+n: Nat, +w: Nat, +kvw: Nat, +b: Nat, +kv: Nat, +dm: Dm, s: BL) -> Bwd<Unit, Two<TA.Mat<n, w>, Two<TA.Mat<n, kvw>, TA.Mat<n, kvw>>>>:
+  match dm s:
+    case Dm{+t, +g, +hd, +gw, +kw, +sc} BL{q, k, v, d, xs}:
+      ab3(n, w, kvw, dblocks_in(b, 0n, t, gw, hd, w, kvw, kv, UD{bgo_full(attn_tree(Nat.mul(b, kv), t, gw), Nat.mul(b, kv), 1n, dm, List.reverse(&1, BG, xs)), D3{zeros_a(Nat.mul(n, w)), zeros_a(Nat.mul(n, kvw)), zeros_a(Nat.mul(n, kvw))}}))
+
+def attn_bwd_full(+n: Nat, +w: Nat, +kvw: Nat, +dm: AttnDims, s: AttnS, dy: TA.Mat<n, w>) -> Bwd<Unit, Two<TA.Mat<n, w>, Two<TA.Mat<n, kvw>, TA.Mat<n, kvw>>>>:
+  match dm s dy:
+    case AttnDims{+b, +t, +kv, +g, +hd, +sc} AttnS{q, k, v} TA.Mat{d}:
+      ab2_full(n, w, kvw, b, kv, dm_of(dm), bslices(b, 0n, t, w, kvw, kv, g, hd, BL{q, k, v, d, Nil{}}))
+
+# the same layer as Attention with every key visible; Attention itself is untouched, so the causal laws and the bits
+# of every existing model stay as they are
+def FullAttention(+n: Nat, +w: Nat, +kvw: Nat, +b: Nat, +t: Nat, +kv: Nat, +g: Nat, +hd: Nat, +sc: F32, -e1: {n == Nat.mul(b, t) : Nat}, -e2: {w == Nat.mul(Nat.mul(kv, g), hd) : Nat}, -e3: {kvw == Nat.mul(kv, hd) : Nat}) -> Layer<Unit, Two<TA.Mat<n, w>, Two<TA.Mat<n, kvw>, TA.Mat<n, kvw>>>, TA.Mat<n, w>, AttnS>:
+  Layer{p => x => attn_fwd_full(n, w, kvw, AttnDims{b, t, kv, g, hd, sc}, x), p => s => dy => g2 => attn_bwd_full(n, w, kvw, AttnDims{b, t, kv, g, hd, sc}, s, dy), op => p => g2 => st => no_step(Unit, op, p, g2, st), u => Unit{}, p => PL{p, Nil{}}, p => xs => off => PA{p, xs, off}, p => xs => off => PA{p, xs, off}, u => 0}
 
 # the core of attention, after the projections and RoPE; the erased arguments are the shape facts it relies on
 def Attention(+n: Nat, +w: Nat, +kvw: Nat, +b: Nat, +t: Nat, +kv: Nat, +g: Nat, +hd: Nat, +sc: F32, -e1: {n == Nat.mul(b, t) : Nat}, -e2: {w == Nat.mul(Nat.mul(kv, g), hd) : Nat}, -e3: {kvw == Nat.mul(kv, hd) : Nat}) -> Layer<Unit, Two<TA.Mat<n, w>, Two<TA.Mat<n, kvw>, TA.Mat<n, kvw>>>, TA.Mat<n, w>, AttnS>:
@@ -3066,6 +3349,7 @@ def pt_cells(t: PTree) -> PTU:
     case PNew{v16}: PTU{PNew{v16}, 2}
     case PLeaf{+n, m, v}: PTU{PLeaf{n, m, v}, (2 + (2 * ph_hw(n) : U32) : U32)}
     case PLeafV{+n, m, v}: PTU{PLeafV{n, m, v}, ((2 + ph_hw(n) : U32) + n : U32)}
+    # bend-lint: disable-next bend-lint-rules/performance/missed_fork -- a tree of one node per layer, walked once per checkpoint not-expected-because: a fork costs more than the walk
     case PNode{a, b}: ptu_node(pt_cells(a), pt_cells(b))
 
 type PTA is Type:

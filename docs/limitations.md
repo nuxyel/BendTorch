@@ -115,7 +115,10 @@ Numbers marked "busy machine" were taken with other jobs running and are a first
 ## Features
 
 - The layers work on matrices: a tensor is a `Mat<r, c>`, with batches and heads folded into rows and columns.
-- No `.pt` or safetensors loading (weights come from a flat binary file in the twins' layout). The exact GELU
+- No convolution yet: images go through `Linear` and attention layers only. `GroupNorm` is in (`main.bend` and
+  `gpu.bend`); Conv2d is the next milestone (`docs/plan.md`, [#15](https://github.com/nuxyel/BendTorch/issues/15)).
+- No `.pt` loading: weights come from a flat binary file in the twins' layout or from a `model.safetensors`
+  (`torch/load.bend`, through the temporary foreign reader). The exact GELU
   (`GELUErf`) runs on the CPU and in JavaScript; it is not in `gpu.bend`.
 - int8 is for inference only (weights quantized by rows, activations in F32).
 - Mixed precision is BF16 storage with F32 arithmetic and F32 master weights, measured on the tiny Llama only. It
@@ -125,5 +128,6 @@ Numbers marked "busy machine" were taken with other jobs running and are a first
 
 ## Machine and versions
 
-- Measured on one laptop: Core Ultra 7 155H, 32 GB, RTX 4050 Laptop 6 GB; Bend 2.0.37, PyTorch 2.14.1. Numbers on other
-  machines will differ; the bits on the CPU should not.
+- Measured on one laptop: Core Ultra 7 155H, 32 GB, RTX 4050 Laptop 6 GB; PyTorch 2.14.1; Bend 2.0.37 for the numbers
+  dated up to 2026-10-21 and 2.0.39, the pinned version, for those since 2026-10-24. Numbers on other machines will
+  differ; the bits on the CPU should not.

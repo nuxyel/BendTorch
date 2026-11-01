@@ -32,6 +32,13 @@ def rmsnorm(x, g):
     return g * (x * torch.rsqrt(var + EPS))
 
 
+def groupnorm(x, g, b, n=2, groups=3):
+    """nn.GroupNorm on BendTorch's channels-last layout: (n·hw) x c in and out, (n, c, hw) inside."""
+    c = x.shape[1]
+    xt = x.reshape(n, -1, c).permute(0, 2, 1)
+    return F.group_norm(xt, groups, g, b, EPS).permute(0, 2, 1).reshape(x.shape)
+
+
 def rotate_half(x):
     h = x.shape[-1] // 2
     return torch.cat((-x[..., h:], x[..., :h]), dim=-1)
@@ -45,6 +52,15 @@ def rope(x, t=4, heads=2, hd=4, base=10000.0):
     cos, sin = emb.cos()[:, None, :], emb.sin()[:, None, :]
     xh = x.reshape(x.shape[0], heads, hd)
     return (xh * cos + rotate_half(xh) * sin).reshape(x.shape)
+
+
+def attention_full(q, k, v, b=2, t=4, h=4, kv=2, hd=4, scale=0.5):
+    """The same as attention() without the mask: every position sees every key."""
+    q = q.reshape(b, t, h, hd).transpose(1, 2)
+    k = k.reshape(b, t, kv, hd).transpose(1, 2).repeat_interleave(h // kv, dim=1)
+    v = v.reshape(b, t, kv, hd).transpose(1, 2).repeat_interleave(h // kv, dim=1)
+    s = (q @ k.transpose(-1, -2)) * scale
+    return (s.softmax(-1) @ v).transpose(1, 2).reshape(b * t, h * hd)
 
 
 def attention(q, k, v, b=2, t=4, h=4, kv=2, hd=4, scale=0.5):
@@ -149,6 +165,25 @@ def spiced(g, shape):
     flat = x.view(-1)
     flat[0], flat[1], flat[2], flat[3] = 0.0, -0.0, 12.0, -12.0
     return x
+# GroupNorm's (image, group) blocks of 8 numbers (4 pixels x 2 channels, in the order they are summed) take ROW_EDGE's
+# classes, a block each: blocks 0-2 are image 0's groups 0-2, blocks 3-5 image 1's
+GN_EDGE = {
+    "A": [[NAN, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0], [INF, 1.0, -1.0, 0.0, 2.0, -2.0, 0.5, 3.0],
+          [-INF, 0.5, -INF, 2.0, -INF, -1.0, 1.0, 1.0], [-INF] * 8, [INF, INF, 0.0, 1.0, 2.0, 3.0, 4.0, 5.0],
+          [0.5, -0.5, 1.0, -1.0, 3.0, -3.0, 7.0, -7.0]],
+    "B": [[3e38, -3e38, 1e38, 2e38, -1e38, 1.0, 0.5, -0.5], [1e-40, -1e-40, 1.5e-45, 0.0, -0.0, 1e-39, 1e-40, -1.5e-45],
+          [-0.0] * 8, [89.0, -89.0, 104.0, -104.0, 1e6, -1e6, 20.0, -20.0], [1e-7, -1e-7, 20.0, -20.0, 0.5, -0.5, 0.1, -0.1],
+          [0.5, -0.5, 1.0, -1.0, 3.0, -3.0, 7.0, -7.0]],
+}
+
+
+def gn_edge(kind):
+    """GN_EDGE's blocks laid out channels last: block 3s + k at rows 4s..4s+3, columns 2k, 2k+1."""
+    x = torch.zeros(8, 6)
+    for blk, vals in enumerate(GN_EDGE[kind]):
+        s, k = divmod(blk, 3)
+        x[4 * s:4 * s + 4, 2 * k:2 * k + 2] = torch.tensor(vals).reshape(4, 2)
+    return x
 
 
 def case(binary: str, seed: int, failures: list[str], edge: str = "") -> tuple[float, int, int]:
@@ -167,6 +202,8 @@ def case(binary: str, seed: int, failures: list[str], edge: str = "") -> tuple[f
             x0 = torch.tensor(EDGE).reshape(5, 6)
         elif edge and tag in ROW_OPS:
             x0 = torch.tensor(ROW_EDGE[edge])
+        elif edge and tag == "groupnorm":
+            x0 = gn_edge(edge)
         else:
             x0 = spiced(g, x_shape)
         x = leaf(f"{tag}.x", x0)
@@ -225,6 +262,16 @@ def case(binary: str, seed: int, failures: list[str], edge: str = "") -> tuple[f
     files["attn.dy"] = dy
     y.backward(dy)
     ref.update({"attn.y": y.detach(), "attn.dq": q.grad, "attn.dk": k.grad, "attn.dv": v.grad})
+    # the same q, k, v through FullAttention: no mask, so every row sums over all t positions. The edge inputs are not
+    # used here (an -inf in a visible key makes the reference itself NaN in ways the causal case documents), so the
+    # full blocks are compared only on the random inputs.
+    if not edge:
+        qf = leaf("attn.q", q0.detach().clone())
+        kf = leaf("attn.k", k0.detach().clone())
+        vf = leaf("attn.v", v0.detach().clone())
+        yf = attention_full(qf, kf, vf)
+        yf.backward(dy)
+        ref.update({"attnf.y": yf.detach(), "attnf.dq": qf.grad, "attnf.dk": kf.grad, "attnf.dv": vf.grad})
     if edge == "A":
         # Accepted for now (Renan, 2026-10-18; to be tested and compared later): v[5, 3] = -inf sits at position 1 of
         # sequence 1, which row 4 (position 0) cannot see. Row 4 has one visible position, so dS = P (dP - P dP) = 0 and
@@ -277,6 +324,22 @@ def case(binary: str, seed: int, failures: list[str], edge: str = "") -> tuple[f
         ref["gelu_erf.y"][0, 1] = float("inf")
     files["erf.x"] = erf_inputs(g)
     ref["erf.y"] = torch.special.erf(files["erf.x"].double())
+    # GroupNorm, drawn after erf for the same reason: 2 images of 4 pixels, channels last (8 x 6), 3 groups of 2 channels
+    unary("groupnorm", groupnorm, x_shape=(8, 6), g=torch.randn(6, generator=g), b=torch.randn(6, generator=g))
+    if edge == "B":
+        # LayerNorm's accepted case (Renan, 2026-10-18; extended to GroupNorm, 2026-10-30), on GroupNorm's kernel: block 0 (image 0, channels 0-1) holds
+        # 3e38-sized values whose squares overflow, so its variance is inf and r = 0: BendTorch's y there is b and its dx
+        # 0, and the block adds nothing to g.g, where PyTorch gives NaN for all three. The other blocks are PyTorch's,
+        # and g.g is PyTorch's with block 0's dy at 0 (its x made finite, which no other block reads); g.b is PyTorch's own.
+        m = torch.zeros(8, 6, dtype=torch.bool)
+        m[0:4, 0:2] = True
+        x1 = torch.where(m, 1.0, files["groupnorm.x"]).requires_grad_(True)
+        g1, b1 = (files[f"groupnorm.{k}"].clone().requires_grad_(True) for k in ("g", "b"))
+        y1 = groupnorm(x1, g1, b1)
+        y1.backward(torch.where(m, 0.0, files["groupnorm.dy"]))
+        ref["groupnorm.y"] = torch.where(m, files["groupnorm.b"].expand(8, 6), ref["groupnorm.y"])
+        ref["groupnorm.dx"] = torch.where(m, 0.0, ref["groupnorm.dx"])
+        ref["groupnorm.g.g"] = g1.grad
 
     with tempfile.TemporaryDirectory() as d:
         for name, t in files.items():
@@ -328,7 +391,7 @@ def main():
     case(binary, 101, edge_failures, edge="B")
     print(f"ops: 10 seeds, {total} numbers, {same} bit-identical to torch, worst error {worst:.3f} of the tolerance")
     print(f"ops: IEEE edge cases (NaN, infinities, signed zeros, subnormals, overflow) on {sorted(EDGE_OPS)}, "
-          f"{sorted(ROW_OPS)}, attention and the losses (mse, nll, ce): "
+          f"{sorted(ROW_OPS)}, groupnorm, attention and the losses (mse, nll, ce): "
           f"{'PASS' if not edge_failures else str(len(edge_failures)) + ' differences'}")
     failures += edge_failures
     if failures:

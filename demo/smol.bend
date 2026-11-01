@@ -26,7 +26,7 @@ import Base
 import ../torch/main.bend as T
 import ../torch/load.bend as L
 import ../torch/fast.bend as F
-import bend-ml-tensor-array@0.1.14.0/main.bend as TA
+import bend-ml-tensor-array@0.1.18.0/main.bend as TA
 
 # where the weights and the batches are
 def DATA() -> String:
@@ -921,6 +921,7 @@ def gfwd_then(+n: Nat, r: T.Fwd<P, Y(1n), S(1n)>, k: P -> @+i: Nat -> GenR) -> G
     case T.Fwd{p, y, s}:
       k(p, last_argmax(TA.Mat.read_row(R(1n), V(), y, U32.from_nat(Nat.sub(n, 1n)))))
 
+# bend-lint: disable-begin bend-lint-rules/performance/append_in_loop -- generation appends one token to a prompt of at most TT() ids (60 tokens by default) not-expected-because: window() already rebuilds that list and a 135M forward runs at each step
 # k more tokens after the n in seq, greedily
 def gen_g(k: Nat, p: P, +n: Nat, +seq: List<&2, Nat>) -> GenR:
   match k:
@@ -1223,6 +1224,7 @@ def kc_loop(k: Nat, p: P, hb: TA.Bands<V(), D()>, +id: Nat, +n: Nat, +seq: List<
       "ids" ++ nat_words(List.append(&2, Nat, seq, [id]))
     case 2n+q:
       kc_step(n, id, hb, cs, tb, T.Layer.fwd(P, X, Y(1n), S(1n), Model(~1n), p, window(List.append(&2, Nat, seq, [id]), 1n+n)), p2 => hb2 => cs2 => tb2 => +id2 => +line => line ++ "\n" ++ kc_loop(1n+q, p2, hb2, id2, 1n+n, List.append(&2, Nat, seq, [id]), cs2, tb2))
+# bend-lint: disable-end bend-lint-rules/performance/append_in_loop
 
 def kc_go(+k: Nat, +m: Nat, +ids: List<&2, Nat>, r: KP) -> String:
   match r:

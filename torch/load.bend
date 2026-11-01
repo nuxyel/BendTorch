@@ -1,6 +1,8 @@
 # Temporary loading-only exception: bend-ml-binary-read is foreign C/JavaScript. No file with laws imports this module.
 # Replace it with native Bend when the language supports dense reads (Renan, 2026-10-17).
 # The reader is bend-ml-binary-read@0.2.0.0, with 64-bit offsets, BF16 files and reads into a cell offset
+# bend-lint: disable-file bend-lint-rules/performance/eager_branch -- header parsing: 19-digit numbers and rank <= 4 shapes not-expected-because: weights load once
+# bend-lint: disable-file bend-lint-rules/performance/repeated_call -- St.total again only in the error message not-expected-because: weights load once, and the message runs only on a failure
 import Base
 import bend-ml-binary-read@0.2.0.0/main.bend as R
 import ./main.bend as T

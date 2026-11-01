@@ -5,8 +5,8 @@ Every finding, measurement and decision, by date. Newest at the bottom.
 ## Pinned versions
 
 - Bend **2.0.37** (`bend version`), Lean **4.34.0** for `--verdict`.
-- `bend-ml-tensor-array@0.1.14.0`, `bend-ml-nat-lemmas@0.1.1.0` (BendHub); outside the proofs `bend-ml-tensor-fork@0.1.2.0`
-  (`fast.bend`), `bend-ml-tensor-gpu@0.1.2.1` (`gpu.bend`) and `bend-ml-binary-read@0.1.0.0` (`load.bend`). Updated 2026-10-19.
+- `bend-ml-tensor-array@0.1.18.0`, `bend-ml-nat-lemmas@0.1.2.0` (BendHub); outside the proofs `bend-ml-tensor-fork@0.1.5.0`
+  (`fast.bend`), `bend-ml-tensor-gpu@0.1.5.0` (`gpu.bend`) and `bend-ml-binary-read@0.2.0.0` (`load.bend`). Updated 2026-10-31.
 - Python 3.14.7, torch 2.14.1+cpu, numpy 2.5.4 (`reference/requirements.txt`).
 - Data: MNIST from the PyTorch mirror (`scripts/mnist.sh`); Tiny Shakespeare from karpathy/char-rnn, SHA256
   `86c4e6aa…c565ed` (`scripts/tiny.sh`).
@@ -1640,3 +1640,170 @@ Six new laws and one rewritten, all by `--verdict`, about the code the demos exe
   by the MNIST test, whose output layer is `F.Linear`.
 - Gates at 580fa84 (the code of the release): laws, check, bits, corpus, gpu, bits-smol, smol, `make package
   CORE=bendtorch VERSION=1.2.0.0`, mutate (126 of 126 as expected); check-js after the fix; the new mutant caught.
+
+## v1.2.0 on BendHub (2026-10-27)
+
+- Published from `build/packages/` (`make package CORE=bendtorch VERSION=1.2.0.0` at the tag v1.2.0): `bendtorch@1.2.0.0`
+  `0xea477ac4399d6f3f46b9d25d99c1900c`, `bendtorch-fast@1.2.0.0` `0x89b3380e86f5a59734944cc2f327badb`,
+  `bendtorch-gpu@1.2.0.0` `0x2687dd9704f52182e1ea4e66472c6fcd`, `bendtorch-load@1.2.0.0`
+  `0xa6af449466db11bf10f3a82bbeddb622`: `-fast` and `-gpu` carry `main.bend`'s names for the linear layers (#14).
+- From a clean folder importing the published packages: the core checks and `--verdict` passes; the satellites check
+  with the same defs outside the proofs as `torch/` (64, 108, 22); `fast_test` and `gpu_test` print 0 on 1 and 16
+  threads; `test_infra` and `test_dtype` pass; the tiny Llama's `train 50` gives `bench/bits.txt`'s digest on 1 and 16
+  threads. The READMEs import 1.2.0.0.
+
+## bend-lint 0.1.1: the template value-field rule upstream (2026-10-28)
+
+- M9's local rule was accepted into bend-lint as `performance/template_value_field` (`bend-lint-rules@0.1.1.0`, issue
+  MattCozendey/bend-lint#2). Upstream reads a template's type from the program instead of a list of names, skips
+  templates of function type, and reports at `information`: on a combinator nested 6 deep, the closure field took
+  1.0 s against 1.7 s, but read on every step it was slower (2.4 s against 1.9 s).
+- `package.json` asks for bend-lint ^0.1.1, `bend-lint.json` for `bend-lint-rules@0.1.1.0` with the rule at
+  `information`, and the local copy is gone (it imported `bend-lint-api@0.1.0.0`, which 0.1.1 no longer accepts).
+  `tests/lint_template_value_field.bend` expects the upstream id: the eager `count` is still reported, at both template
+  reads; the closure form and the record of values are not.
+- `make lint`: the same 33 findings as with 0.1.0 (file, line and rule), so nothing new to measure.
+
+## The 1.7B's 22.6 GB is not a stock number (2026-10-28)
+
+- The fine-tune's peak in the README and the v1.2.0 notes (22.6 GB against PyTorch's 24.5) was measured with the
+  allocator patch of 2026-10-26, the fix reported as bendlang/bend#1856 and merged upstream as bendlang/bend#1869, in no
+  release yet. The README now says so, with stock 2.0.39's 24.1 GB for two steps (2026-10-24). `docs/limitations.md`'s
+  22.6 GB for one step from zero weights (2026-10-21) predates the patch, so it is a stock number and stays.
+
+## bend-lint 0.2.2 (2026-10-29)
+
+- `make lint` stopped building its rules: `node_modules` held bend-lint 0.1.0 while `bend-lint.json` asked for
+  `bend-lint-rules@0.1.1.0`, built against another version of the rule API. bend-lint's rules ship at its own version,
+  so `package.json` now asks for ^0.2.2 and `bend-lint.json` for `bend-lint-rules@0.2.2.0`; bend-ml and llama.bend
+  moved the same day.
+- 35 findings, 2 suppressed (the fixture's two `expect-next`), exit 0: 15 `eager_branch` (0.2.0 reports any loop that
+  runs to its end), 7 `append_in_loop`, 4 `gpu_fit`, 3 `repeated_call`, 3 `unused_result`, 2 `missed_fork`, 1
+  `loop_invariant_call`. A report, not a gate: none of them is measured yet.
+
+## GroupNorm (2026-10-29, #15)
+
+- `GroupNorm(n, hw, ng, cg, eps)` in `main.bend`: images channels last, `Mat<n·hw, ng·cg>` in and out, each image's
+  group of `cg` channels normalized over its `hw·cg` numbers (mean, biased variance), then a gain and a bias per
+  channel, as `nn.GroupNorm`. Writing the channel count as `ng·cg` in the type makes "the groups divide the channels"
+  hold by construction. Its parameters are LayerNorm's `LN<c>`, so the step, dump, load and store are LayerNorm's.
+- The kernel is LayerNorm's, walked a row segment at a time: a block's sums, then its squared deviations, then the
+  output (or, backward, the two means of dxh and dxh·xh, then dx, dg and db), each in order. The block loops carry the
+  running value in their own argument (`match left q:`), because a helper that matched it would have to call the loop
+  back.
+- `demo/ops_test.bend` and `reference/test_ops.py`: 2 images of 4 pixels, 3 groups of 2 channels (8 x 6, so a group is
+  neither a row nor a column), against `F.group_norm` on the permuted tensor, drawn after erf so the other layers keep
+  their inputs. y, dx, g.g and g.b within the tolerance on all 10 seeds; `ops: 60780 numbers, worst error 0.427 of the
+  tolerance` (unchanged). The IEEE edge rows are not run through it yet. Four mutants (statistics over one row, every
+  group on the first group's channels, the second image at the first's offset, the backward without the dxh·xh mean)
+  are caught; `make mutate`: 131 of 131 as expected. `make check` passes.
+- CPU only: `fast.bend` and `gpu.bend` have no GroupNorm (LayerNorm has none either); the GPU bangs come with the UNet.
+
+## GroupNorm on the GPU lane, and through the IEEE edge cases (2026-10-30, #15)
+
+- `torch/gpu.bend`'s `GroupNorm`, `main.bend`'s types and names. Forward: one bang, a leaf an (image, group) block,
+  which runs `main.bend`'s own block code (`gnf_grp`) at that block's offsets. Backward: two bangs. A leaf a block
+  writes its cells' dx (LayerNorm's `lnb_w` without dg and db; the sums are `main.bend`'s `gn_mr` and `gnb_sums`) and the
+  block's mean and 1/sqrt(var + eps). Then a leaf a channel sums dy·xh and dy down its rows from +0.0, in the order
+  `main.bend` adds them, into the gain's and the bias's gradients. The step is `opt_mat` on the two `1 x c` matrices,
+  as Linear's. Its six new defs outside the proofs are in `GPU_DEFS`.
+- `demo/gpu_layers_test.bend` case 13: 8 images of 64 pixels, 8 groups of 16 channels (512 x 128), and 3 images of 5
+  pixels, 3 groups of 2, with gradients that are not zero. 0 ulps against `main.bend` on 1 and 16 CPU threads
+  (`make check`) and on the RTX 4050 (`make gpu`, which also passes the `exp_cr` check on all 14 cases); under nsys the
+  case ran its bangs on the device. Three mutants in `make mutate` (a leaf on the first image's block, dx with the two
+  means swapped, a channel's gradient read from the wrong group's statistics), each caught by hand first; `make mutate`: 134 of
+  134 as expected.
+- The IEEE edge cases now reach GroupNorm (`reference/test_ops.py`, `GN_EDGE`): ROW_EDGE's classes, one per (image,
+  group) block of 8 numbers. Set A (NaN, infinities) is PyTorch's. Set B differs in one block only: the 3e38-sized
+  values whose squares overflow give an infinite variance, so r = 0, y = b, dx = 0 and the block adds nothing to the
+  gain's gradient, where PyTorch gives NaN. This is LayerNorm's case, accepted on 2026-10-18 (Renan), with the same
+  kernel, so the test expects it the same way (extended to GroupNorm by Renan, 2026-10-30); every other block is
+  PyTorch's.
+- Still not in `fast.bend` (LayerNorm is not either).
+
+## bend-lint 0.2.2's findings, suppressed with their reasons (2026-10-30)
+
+- The 35 findings of 2026-10-29, read one by one: none is on a path that runs per step at a size where it costs. Proof
+  binders that the rule takes for unused (`Equal.cong`'s motive, 3), shape predicates over lists of rank <= 4 that the
+  types and `LAWS.bend` read in their `Bool` form (`torch/tensor.bend`, 9), loops of at most 32 steps on the host once
+  per bang (`gpu.bend`, 2), zeros made once per run (`pair_zeros`, 4), a tree of one node per layer walked once per
+  checkpoint, the 65-character vocabulary of the demos, weight loading (`load.bend`), the exact model (`spec.bend`),
+  token generation in `smol.bend` (an append of one token to a prompt of at most `TT()` ids, next to a 135M forward),
+  and two one-shot test outputs. Each carries a `disable` directive with its reason.
+- One finding taken, as a cleanup with no change in bits: `cx_3` binds `ts_lv(32n, per, 1)` once.
+- `make lint`: 0 findings, 36 suppressed.
+
+## FullAttention closed (2026-11-01, #17, #20)
+
+- adeerkhan's PR #20 (merged 2026-10-31): `FullAttention` in `main.bend` (the causal path's functions with every key
+  visible: `frow`, `fprow`, `fgrow` and the `_full` trees) and in `gpu.bend` (a dense t x t P per head), its laws
+  `full_keys`, `full`, `full_grad`, `attn_par_fwd_full` and `attn_par_bwd_full` by `--verdict`, `test_ops.py` against
+  PyTorch with and without the mask, and `gpu_layers_test`'s cases 14 and 15. `Attention`'s code and bits are unchanged.
+- The two GPU layers gates of `scripts/mutate.py` still expected 14 zeros, so after the merge they failed on the
+  unmutated code and `make mutate` stopped before its first mutant. They expect 16 now.
+- 15 mutants: on `main.bend`, a query or G's row reading only the causal keys (each caught by its law and by
+  `test_ops`), P's rows at stride m, either pass building the causal P, and both trees' halves swapped (the tree laws);
+  on the device lane, the softmax, P·V and the dK/dV sums one key or one head short, a head's P at the wrong offset, and
+  a score written at the transposed cell. All caught. A first try, the cell map's query and key swapped, is an
+  equivalent mutant: every cell still gets its own score, only in another order, so it was replaced.
+- `demo/fullattn_test.bend` and `demo/fullattn_lane.bend` moved to tensor-array 0.1.18.0 and tensor-gpu 0.1.5.0 and
+  into `make check` (my call, 2026-11-01, with `reference/test_fullattn.py` now taking the compiled program).
+  `fullattn_test` had gone stale outside the checks: it passed t to `fprobs`, which takes m = t - 1 since the row
+  laws, so its full rows read a key past the toy's three and did not sum to 1. With 2n: causal 0, full 2.98e-08 from
+  PyTorch, and the last row the same bits in both modes. `fullattn_lane`: the device lane's y, P, G, dQ, dK and dV are
+  the CPU lane's bits on 1 and 16 threads.
+- `make mutate`: 149 mutants, 149 as expected.
+
+## v1.3.0: the gates (2026-11-01)
+
+- In since v1.2.0: GroupNorm on both lanes and through the IEEE edge cases (#15), FullAttention (#20), the tensor stack
+  at tensor-array 0.1.18.0, tensor-fork and tensor-gpu 0.1.5.0 (#21), bend-lint 0.2.2 with its findings read and
+  suppressed, the fullattn demos in `make check`, the mutate.py fix and FullAttention's mutants above, and the docs
+  (the plan's history and statuses, 29 laws in the README). A minor release: GroupNorm and FullAttention are new names
+  in `bendtorch` and `bendtorch-gpu`. adeerkhan's Conv2d (#22) is not in; it rebases on this release.
+- Gates at 11805b9 (busy machine, other jobs running; no timing is taken from them): laws, check, bits, corpus (sha256
+  a9b9fa1cffdef55c, the same bits on 1 and 16 threads), gpu (SiLU 4 ulps, cross-entropy 4, attention 176,128, at small
+  sizes 7,680, full 172,032 and full at small sizes 8,192 through CUDA's exp; all 16 cases 0 with `exp_cr`), bits-smol,
+  smol, `make package CORE=bendtorch VERSION=1.3.0.0`, check-js, mutate (149 of 149 as expected). The READMEs import
+  1.3.0.0.
+
+## tensor-array's cross entropy inside the demos, idle machine (2026-11-01)
+
+- The plan's "Cross entropy and the MNIST step": bend-ml-tensor-array's `Mat.softmax_ce` walks each row over the array
+  since 0.1.17.0; before, it read each row into a list (`ce_rows`, still in the package as its reference). I timed both
+  inside scratch copies of `demo/mnist.bend` and `demo/smol.bend` with the loss swapped (`ce_arr` and `ce_list`, small
+  wrappers to `T.LossOut`), next to the demos as they ship (`bt`, BendTorch's own `CrossEntropy`, over the array since
+  2026-10-17). No change to the package or the demos.
+- Method: c9760d9, Bend 2.0.39, clang 23.1.3, tensor-array 0.1.18.0, on mains with the `performance` profile. Every block
+  started with load1 under 1.0 (0.91-0.99; it climbs to 2-4 from the block's own 16-thread runs) and nothing else
+  running. Alternated rounds with the build order shuffled each round, one thread pinned with `taskset -c 3`, 16
+  threads unpinned (`+RTS --threads 16 -RTS`), medians. MNIST: one epoch (`1 0 sgd 0.1`), 7 rounds, the whole run's wall
+  time (`train_seconds` prints one decimal, too coarse) and perf's user-mode instructions and cycles on one thread.
+  `train 3` on SmolLM2-135M: `train_ms`, 3 rounds, then one run of each tensor-array build under perf.
+- Bits: the array and list versions give the same output in every run, on 1 and 16 threads (MNIST `train_loss=0.5148658`,
+  9108/10000; `train 3`'s three losses). BendTorch's own loss gives its own bits, as before: it sums the
+  exponentials as a tree and takes log-softmax, so at 49,152 classes its `train 3` losses sit 409-655 F32 steps from
+  tensor-array's (the reason it has its own, M10).
+- MNIST (rows of 10), one thread: 1909 ms (1892-1913) with the array version, 1961 (1945-1966) with the list, 1912
+  (1893-1916) with BendTorch's; 44.649 G against 44.830 G instructions, 8.55 G against 8.80 G cycles. 16 threads: 1472,
+  1469 and 1574 ms, inside each other's spread (1420-1793). The 181 M instructions are the softmax's own work (bend-ml
+  measured 15 M for 50 batches), so the 2.7% is real but small, and under the size at which a gap between two builds
+  means anything by itself.
+- `train 3` (two rows of 128 positions, 49,152 classes): one thread 41,664 ms (41,659-41,815) with the array version,
+  43,134 (42,559-43,220) with the list, 41,783 (41,716-41,805) with BendTorch's; 16 threads 10,576 (10,486-10,597),
+  12,236 (12,146-12,298) and 10,571 (10,536-10,595). The list version costs about 1.5 s on one thread (+3.5%) and 1.7 s
+  on 16 (+15.7%), the same absolute time, as a loss that runs on one thread should; under perf it runs 26.3 G more
+  instructions (+2.7%), so it is the work, not the build's schedule. The array version is BendTorch's own loss's time
+  to within 0.3% on both thread counts.
+- So the published array version removes all of the list version's cost from a SmolLM2 step, and BendTorch's own loss
+  costs the same as tensor-array's. BendTorch keeps its own (its tree sum is what keeps the loss within the tolerance
+  of PyTorch's at 49,152 classes). Raw outputs and scripts in my private notes.
+
+## v1.3.0: the release run (2026-11-01)
+
+- Since 11805b9 only the docs, the README's mutants figure and these notes changed, so the gates were run again at
+  48eb980 (the code of the release) on a quiet machine: laws and check, bits, corpus (sha256 a9b9fa1cffdef55c, the same
+  bits on 1 and 16 threads), check-js, gpu (SiLU 4 ulps, cross-entropy 4, attention 176,128, at small sizes 7,680, full
+  172,032 and full at small sizes 8,192 through CUDA's exp; every case 0 with `exp_cr`), bits-smol, smol, mutate (149
+  mutants, 149 as expected: 146 caught, the 3 known equivalent ones survive), `make package CORE=bendtorch
+  VERSION=1.3.0.0`. All passed, with the same numbers as the run at 11805b9.

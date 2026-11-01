@@ -3,15 +3,17 @@
 # query heads and 3 key/value heads of 64; MLP width 1536). Prints, for each case, the largest distance in ulps between the two results over every
 # output (forward y, backward dX and the gradient; for the optimizer, the weights, the zeroed gradient and the moments):
 #   SiLU, Mul2, Mat.sum2 and Mat.dup, RMSNorm, RoPE, Attention, SGD, momentum, AdamW, MSE (loss and gradient),
-#   Embedding (rows and gradient), CrossEntropy (loss and gradient), attention at small and odd sizes
-# With `+RTS --gpu off -RTS` or without CUDA every case is 0 (the same bits). On the GPU, SiLU, attention and cross-entropy take
-# CUDA's float exp, whose last bit can differ from the host's: 1 ulp is accepted for an exponential (my decision,
-# 2026-10-18), and the differences that follow from it downstream are what this test shows; every other case is 0.
-#   gpu_layers_test        every case, one line          gpu_layers_test <k>   case k alone (0..11, in the order above)
+#   Embedding (rows and gradient), CrossEntropy (loss and gradient), attention at small and odd sizes, GroupNorm,
+#   FullAttention at SmolLM2's sizes and at small sizes
+# With `+RTS --gpu off -RTS` or without CUDA every case is 0 (the same bits). On the GPU, SiLU, attention, full attention
+# and cross-entropy take CUDA's float exp, whose last bit can differ from the host's: 1 ulp is accepted for an
+# exponential (my decision, 2026-10-18), and the differences that follow from it downstream are what this test shows;
+# every other case is 0.
+#   gpu_layers_test        every case, one line          gpu_layers_test <k>   case k alone (0..15, in the order above)
 import Base
 import ../torch/main.bend as T
 import ../torch/gpu.bend as G
-import bend-ml-tensor-array@0.1.14.0/main.bend as TA
+import bend-ml-tensor-array@0.1.18.0/main.bend as TA
 
 # deterministic values in [-1, 1), no specials (softmax and the norms would carry a NaN through a whole row)
 def val(+i: U32, +seed: U32) -> F32:
@@ -157,6 +159,29 @@ def attn() -> U32:
 def attn_small() -> U32:
   max4(attn_o0(), attn_o1(), attn_o2(), attn_o3())
 
+def attnf() -> U32:
+  # gpu.bend's run first, for the reason attn() gives
+  c_att(512n, 576n, 192n, run(~Unit, ~T.Two<TA.Mat<512n, 576n>, T.Two<TA.Mat<512n, 192n>, TA.Mat<512n, 192n>>>, ~TA.Mat<512n, 576n>, ~T.AttnS, ~G.FullAttention(512n, 576n, 192n, 8n, 64n, 3n, 3n, 64n, 0.125, {==}, {==}, {==}), Unit{}, qkv(512n, 576n, 192n, 151), mat(512n, 576n, 154), Unit{}), run(~Unit, ~T.Two<TA.Mat<512n, 576n>, T.Two<TA.Mat<512n, 192n>, TA.Mat<512n, 192n>>>, ~TA.Mat<512n, 576n>, ~T.AttnS, ~T.FullAttention(512n, 576n, 192n, 8n, 64n, 3n, 3n, 64n, 0.125, {==}, {==}, {==}), Unit{}, qkv(512n, 576n, 192n, 151), mat(512n, 576n, 154), Unit{}))
+
+
+# ---- full attention (every key visible): the same sizes, the fourth and the last two cases in the same order ----
+
+def attnf_o0() -> U32:
+  c_att(14n, 16n, 8n, run(~Unit, ~T.Two<TA.Mat<14n, 16n>, T.Two<TA.Mat<14n, 8n>, TA.Mat<14n, 8n>>>, ~TA.Mat<14n, 16n>, ~T.AttnS, ~G.FullAttention(14n, 16n, 8n, 2n, 7n, 2n, 2n, 4n, 0.5, {==}, {==}, {==}), Unit{}, qkv(14n, 16n, 8n, 121), mat(14n, 16n, 124), Unit{}), run(~Unit, ~T.Two<TA.Mat<14n, 16n>, T.Two<TA.Mat<14n, 8n>, TA.Mat<14n, 8n>>>, ~TA.Mat<14n, 16n>, ~T.AttnS, ~T.FullAttention(14n, 16n, 8n, 2n, 7n, 2n, 2n, 4n, 0.5, {==}, {==}, {==}), Unit{}, qkv(14n, 16n, 8n, 121), mat(14n, 16n, 124), Unit{}))
+
+def attnf_o1() -> U32:
+  c_att(3n, 6n, 2n, run(~Unit, ~T.Two<TA.Mat<3n, 6n>, T.Two<TA.Mat<3n, 2n>, TA.Mat<3n, 2n>>>, ~TA.Mat<3n, 6n>, ~T.AttnS, ~G.FullAttention(3n, 6n, 2n, 3n, 1n, 1n, 3n, 2n, 0.5, {==}, {==}, {==}), Unit{}, qkv(3n, 6n, 2n, 125), mat(3n, 6n, 128), Unit{}), run(~Unit, ~T.Two<TA.Mat<3n, 6n>, T.Two<TA.Mat<3n, 2n>, TA.Mat<3n, 2n>>>, ~TA.Mat<3n, 6n>, ~T.AttnS, ~T.FullAttention(3n, 6n, 2n, 3n, 1n, 1n, 3n, 2n, 0.5, {==}, {==}, {==}), Unit{}, qkv(3n, 6n, 2n, 125), mat(3n, 6n, 128), Unit{}))
+
+def attnf_o2() -> U32:
+  c_att(2n, 15n, 15n, run(~Unit, ~T.Two<TA.Mat<2n, 15n>, T.Two<TA.Mat<2n, 15n>, TA.Mat<2n, 15n>>>, ~TA.Mat<2n, 15n>, ~T.AttnS, ~G.FullAttention(2n, 15n, 15n, 1n, 2n, 3n, 1n, 5n, 0.5, {==}, {==}, {==}), Unit{}, qkv(2n, 15n, 15n, 129), mat(2n, 15n, 132), Unit{}), run(~Unit, ~T.Two<TA.Mat<2n, 15n>, T.Two<TA.Mat<2n, 15n>, TA.Mat<2n, 15n>>>, ~TA.Mat<2n, 15n>, ~T.AttnS, ~T.FullAttention(2n, 15n, 15n, 1n, 2n, 3n, 1n, 5n, 0.5, {==}, {==}, {==}), Unit{}, qkv(2n, 15n, 15n, 129), mat(2n, 15n, 132), Unit{}))
+
+def attnf_o3() -> U32:
+  c_att(66n, 6n, 3n, run(~Unit, ~T.Two<TA.Mat<66n, 6n>, T.Two<TA.Mat<66n, 3n>, TA.Mat<66n, 3n>>>, ~TA.Mat<66n, 6n>, ~T.AttnS, ~G.FullAttention(66n, 6n, 3n, 2n, 33n, 1n, 2n, 3n, 0.5, {==}, {==}, {==}), Unit{}, qkv(66n, 6n, 3n, 133), mat(66n, 6n, 136), Unit{}), run(~Unit, ~T.Two<TA.Mat<66n, 6n>, T.Two<TA.Mat<66n, 3n>, TA.Mat<66n, 3n>>>, ~TA.Mat<66n, 6n>, ~T.AttnS, ~T.FullAttention(66n, 6n, 3n, 2n, 33n, 1n, 2n, 3n, 0.5, {==}, {==}, {==}), Unit{}, qkv(66n, 6n, 3n, 133), mat(66n, 6n, 136), Unit{}))
+
+def attnf_small() -> U32:
+  max4(attnf_o0(), attnf_o1(), attnf_o2(), attnf_o3())
+
+
 # ---- the optimizer step on a 1536 x 576 matrix: weights, gradient (zeroed) and moments ----
 
 def c_st(+r: Nat, +c: Nat, a: T.OptState<TA.Mat<r, c>>, b: T.OptState<TA.Mat<r, c>>) -> U32:
@@ -239,18 +264,50 @@ def ce1(+n: Nat, +c: Nat, +ls: List<&2, Nat>, +s: U32) -> U32:
 def ce() -> U32:
   max4(u32_max(ce1(64n, 49152n, idl(64n, 0, 49152, 91), 91), ce1(9n, 1000n, idl(9n, 0, 1000, 92), 92)), u32_max(ce1(7n, 5n, [3n, 9n, 0n, 4n, 1n, 2n, 2n], 93), ce1(5n, 6n, [5n, 0n, 3n], 94)), ce1(3n, 1n, [0n, 0n, 0n], 95), ce1(6n, 13n, idl(6n, 0, 13, 96), 96))
 
+# ---- GroupNorm: y, dx and the gain's and bias's gradients (added into gradients that are not zero); 8 images of 64
+# pixels in 8 groups of 16 channels, and 3 images of 5 pixels in 3 groups of 2 ----
+
+def c_gn(+m: Nat, +d: Nat, a: RR<T.LN<d>, TA.Mat<m, d>, TA.Mat<m, d>>, b: RR<T.LN<d>, TA.Mat<m, d>, TA.Mat<m, d>>) -> U32:
+  match a b:
+    case RR{y1, d1, T.LN{g1, b1}} RR{y2, d2, T.LN{g2, b2}}: max4(dm(m, d, y1, y2), dm(m, d, d1, d2), dm(1n, d, g1, g2), dm(1n, d, b1, b2))
+
+def lnp(+d: Nat, +s: U32) -> T.LN<d>:
+  T.LN{mat(1n, d, s), mat(1n, d, (s + 1 : U32))}
+
+def gn1(+s: U32) -> U32:
+  c_gn(15n, 6n, run(~T.LN<6n>, ~TA.Mat<15n, 6n>, ~TA.Mat<15n, 6n>, ~TA.Mat<15n, 6n>, ~T.GroupNorm(3n, 5n, 3n, 2n, 0.00001), lnp(6n, s), mat(15n, 6n, (s + 2 : U32)), mat(15n, 6n, (s + 3 : U32)), lnp(6n, (s + 4 : U32))), run(~T.LN<6n>, ~TA.Mat<15n, 6n>, ~TA.Mat<15n, 6n>, ~TA.Mat<15n, 6n>, ~G.GroupNorm(3n, 5n, 3n, 2n, 0.00001), lnp(6n, s), mat(15n, 6n, (s + 2 : U32)), mat(15n, 6n, (s + 3 : U32)), lnp(6n, (s + 4 : U32))))
+
+def gn() -> U32:
+  u32_max(c_gn(512n, 128n, run(~T.LN<128n>, ~TA.Mat<512n, 128n>, ~TA.Mat<512n, 128n>, ~TA.Mat<512n, 128n>, ~T.GroupNorm(8n, 64n, 8n, 16n, 0.00001), lnp(128n, 101), mat(512n, 128n, 103), mat(512n, 128n, 104), lnp(128n, 105)), run(~T.LN<128n>, ~TA.Mat<512n, 128n>, ~TA.Mat<512n, 128n>, ~TA.Mat<512n, 128n>, ~G.GroupNorm(8n, 64n, 8n, 16n, 0.00001), lnp(128n, 101), mat(512n, 128n, 103), mat(512n, 128n, 104), lnp(128n, 105))), gn1(111))
+
 # every case, on one line
 def all_cases() -> IO(Unit):
-  IO.print(U32.show(silu()) ++ " " ++ U32.show(mul2()) ++ " " ++ U32.show(sumdup()) ++ " " ++ U32.show(rms()) ++ " " ++ U32.show(rope()) ++ " " ++ U32.show(attn()) ++ " " ++ U32.show(step(T.SGD{0.01}, 0n)) ++ " " ++ U32.show(step(T.Momentum{0.01, 0.9}, 1n)) ++ " " ++ U32.show(step(T.Opt.at(T.CAdamW{0.001, 0.9, 0.999, 0.00000001, 0.01, 0.1, 0.001}, 0.1, 0.001), 2n)) ++ " " ++ U32.show(mse()) ++ " " ++ U32.show(emb()) ++ " " ++ U32.show(ce()) ++ " " ++ U32.show(attn_small()))
+  IO.print(U32.show(silu()) ++ " " ++ U32.show(mul2()) ++ " " ++ U32.show(sumdup()) ++ " " ++ U32.show(rms()) ++ " " ++ U32.show(rope()) ++ " " ++ U32.show(attn()) ++ " " ++ U32.show(step(T.SGD{0.01}, 0n)) ++ " " ++ U32.show(step(T.Momentum{0.01, 0.9}, 1n)) ++ " " ++ U32.show(step(T.Opt.at(T.CAdamW{0.001, 0.9, 0.999, 0.00000001, 0.01, 0.1, 0.001}, 0.1, 0.001), 2n)) ++ " " ++ U32.show(mse()) ++ " " ++ U32.show(emb()) ++ " " ++ U32.show(ce()) ++ " " ++ U32.show(attn_small()) ++ " " ++ U32.show(gn()) ++ " " ++ U32.show(attnf()) ++ " " ++ U32.show(attnf_small()))
 
-# case k alone (0 = SiLU .. 11 = CrossEntropy, 12 = attention at small sizes). In the line above, a case's bangs can follow host work in the same
+# case k alone (0 = SiLU .. 11 = CrossEntropy, 12 = attention at small sizes, 13 = GroupNorm, 14 = full attention at
+# SmolLM2's sizes, 15 = full attention at small sizes). In the line above, a case's bangs can follow host work in the same
 # evaluation and then run on the CPU threads: under nsys, the whole line made 15 bangs on the device, and cross-entropy
 # read 0 ulps there against 4 alone. So make gpu runs each case as its own program (nsys: every case's bangs on the
 # device, 2026-10-21).
+def one_15(k: Nat) -> U32:
+  match k:
+    case 0n: attnf_small()
+    case 1n+q: 4294967295
+
+def one_14(k: Nat) -> U32:
+  match k:
+    case 0n: attnf()
+    case 1n+q: one_15(q)
+
+def one_13(k: Nat) -> U32:
+  match k:
+    case 0n: gn()
+    case 1n+q: one_14(q)
+
 def one_12(k: Nat) -> U32:
   match k:
     case 0n: attn_small()
-    case 1n+q: 4294967295
+    case 1n+q: one_13(q)
 
 def one_11(k: Nat) -> U32:
   match k:

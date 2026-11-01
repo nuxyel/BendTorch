@@ -6,8 +6,8 @@
   <a href="https://github.com/nuxyel/BendTorch/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/nuxyel/BendTorch/ci.yml?branch=main&style=flat-square&label=ci&labelColor=4d4a44&color=7e9a5e" alt="CI"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-8b83b5?style=flat-square&labelColor=4d4a44" alt="MIT license"></a>
   <a href="https://bend-lang.com"><img src="https://img.shields.io/badge/Bend-2.0.39-8b83b5?style=flat-square&labelColor=4d4a44" alt="Bend 2.0.39"></a>
-  <img src="https://img.shields.io/badge/laws%20proved-24-7e9a5e?style=flat-square&labelColor=4d4a44" alt="24 laws proved">
-  <img src="https://img.shields.io/badge/planted%20bugs-98%2F98%20as%20expected-7e9a5e?style=flat-square&labelColor=4d4a44" alt="98 planted bugs, 98 as expected">
+  <img src="https://img.shields.io/badge/laws%20proved-29-7e9a5e?style=flat-square&labelColor=4d4a44" alt="29 laws proved">
+  <img src="https://img.shields.io/badge/planted%20bugs-149%2F149%20as%20expected-7e9a5e?style=flat-square&labelColor=4d4a44" alt="149 planted bugs, 149 as expected">
 </p>
 
 **BendTorch** trains neural networks in [Bend 2](https://bend-lang.com) with general pieces: layers with typed forward
@@ -70,6 +70,7 @@ $ bend tests/bad_seq.bend      # Linear(784, 128) followed by Linear(64, 10)
 | `causal_grad` | the backward pass sends no gradient to a key or value after the query's position: row i of the scores' gradient is computed over exactly i + 1 positions |
 | `kv_of_group`, `gqa_head`, `kv_cols` | with `g` query heads per key/value head, query head `j·g + i` reads key/value head `j`; `kv_cols` says it of the columns both passes of attention read, which come from one function |
 | `attn_par_fwd`, `attn_par_bwd` | attention's tree of parallel sequences gives exactly what running them one after another gives, at every depth and however the sequences are split: the parallel passes are the sequential ones |
+| `full_keys`, `full`, `full_grad` | `FullAttention`, the same layer without the mask, reads every key for every query: the query at position i gets t scores, its softmax runs over all t positions, and its row of the scores' gradient sums over all t; `attn_par_fwd_full` and `attn_par_bwd_full` are the tree laws for its passes |
 | `seq_chain`, `fork_sum`, `both_sum`, `residual` | the `Seq`, `Fork`, `Both` and `Residual` combinators' own code, run on linear layers, gives a backward pass that is the adjoint of the forward pass: the chain rule through `Seq`, the sum of the input gradients through `Fork`, each side on its own through `Both`, and through `Residual` the gradient of the skip connection plus the layer's |
 | `bc_sym` | broadcasting does not depend on the order of the operands: `x + y` and `y + x` accept the same shapes |
 | `sum_numel`, `cat_numel`, `mat_numel` | summing over an axis, joining two tensors and viewing a matrix as a tensor keep the count of numbers right, for every shape |
@@ -82,12 +83,13 @@ them again with Bend's kernel proved in Lean, with no `@unsafe`, no `?TODO` and 
 explains each proof. The linear laws are about an exact model where numbers are `Nat`; the F32 code computes the same
 formulas and is tested, not proved, to do so.
 
-98 deliberate faults planted in the code and the specification (`scripts/mutate.py`) each behave as expected: 96 are
-caught by a law or a test, and two survive by design, because they still compute the right result. One is right by
-accident (a one-cell array wraps every index to 0), and a bounds check catches the same fault; the other only changes
-a GPU block size, and any block size that divides a row gives the same sum, bit for bit: the law `block_sum` proves it.
+149 deliberate faults planted in the code and the specification (`scripts/mutate.py`) each behave as expected: 146
+are caught by a law or a test, and three survive by design, because they still compute the right result. One is right
+by accident (a one-cell array wraps every index to 0), and a bounds check catches the same fault; one only changes a
+GPU block size, and any block size that divides a row gives the same sum, bit for bit: the law `block_sum` proves it;
+the third lets packed AdamW write past n into cells that hold zeros and stay zero.
 
-<p align="center"><img src="docs/media/mutants.webp" alt="98 planted bugs: 96 caught, 2 survive by design" width="80%"></p>
+<p align="center"><img src="docs/media/mutants.webp" alt="149 planted faults: 146 caught, 3 survive by design" width="80%"></p>
 
 ## 03 · It trains, and it computes what PyTorch computes
 
@@ -158,7 +160,9 @@ The learning rate decides it. At 1e-4, the 135M's rate and `cfg()`'s default, th
 2.492, in BendTorch and in PyTorch alike: too high for the 1.7B with two sequences a batch and no warmup. At 1e-5 (the
 rate `scripts/smol.sh 1.7b` writes into the 1.7B's `cfg()`, `LR=` to set another, and the same rate in the twin) it
 falls from 2.039 to 1.874, and every evaluation is within the tolerance of the twin's. One run, idle machine: 2.5x
-PyTorch's time, at 0.92x its peak memory (22.6 GB against 24.5 GB).
+PyTorch's time, at 0.92x its peak memory (22.6 GB against 24.5 GB). That run used an allocator fix to Bend's C
+runtime ([bendlang/bend#1869](https://github.com/bendlang/bend/pull/1869), merged but not in a release yet); on stock
+Bend 2.0.39 two steps of the 1.7B peak at 24.1 GB, and I have not run the full fine-tune on it.
 
 The demos' linear layers, their optimizer step and the element-wise layers are the fast ones of
 [`torch/fast.bend`](torch/fast.bend), whose parallel blocks share their arrays instead of copying them (outside the
@@ -175,14 +179,14 @@ against PyTorch's.
 
 ## 05 · Use it
 
-Four packages on BendHub, all at version 1.2.0.0. Import the files you need in your own Bend program:
+Four packages on BendHub, all at version 1.3.0.0. Import the files you need in your own Bend program:
 
 ```python
-import bendtorch@1.2.0.0/main.bend as T          # layers, combinators, losses, optimizers, Train
-import bendtorch@1.2.0.0/tensor.bend as TT       # general tensors: any rank, broadcasting, their gradients
-import bendtorch-fast@1.2.0.0/main.bend as F     # the same layers and bits, in parallel on the CPU
-import bendtorch-gpu@1.2.0.0/main.bend as G      # the layers on one CUDA GPU (all but GELUErf)
-import bendtorch-load@1.2.0.0/main.bend as L     # weights from flat binary and safetensors files, checkpoints
+import bendtorch@1.3.0.0/main.bend as T          # layers, combinators, losses, optimizers, Train
+import bendtorch@1.3.0.0/tensor.bend as TT       # general tensors: any rank, broadcasting, their gradients
+import bendtorch-fast@1.3.0.0/main.bend as F     # the same layers and bits, in parallel on the CPU
+import bendtorch-gpu@1.3.0.0/main.bend as G      # the layers on one CUDA GPU (all but GELUErf)
+import bendtorch-load@1.3.0.0/main.bend as L     # weights from flat binary and safetensors files, checkpoints
 ```
 
 `bendtorch` holds the laws and their proofs. The other three are outside the proofs on purpose: `-fast` and `-gpu` share
@@ -198,7 +202,7 @@ Linux x86_64, clang, Python 3.14, `curl`. The Python venv with PyTorch takes abo
 make setup   # Bend 2.0.39 (SHA256-checked), Lean 4.34.0, the Python venv of reference/; no sudo
 make data    # MNIST and Tiny Shakespeare into data/, the twins' initial weights and batches (seed 0)
 make check   # the laws (--verdict), the rejected programs, every layer, the MLP, MNIST, the Llama and a SmolLM2-sized block against PyTorch (~2 min)
-make mutate  # the 98 deliberate faults
+make mutate  # the 149 deliberate faults
 make bench   # BendTorch against PyTorch on MNIST, the tiny Llama and the block (~6 min)
 make check-js  # the same tests on the JavaScript build, run with Bun; the outputs must be the native build's bits
 ```
@@ -227,6 +231,8 @@ The full list, each with its measurement or reason, is in [`docs/limitations.md`
   `@unsafe` `Array.fork`, and loading uses a temporary foreign reader; the tests check they give `main.bend`'s bits.
 - **Slower than PyTorch** wherever products dominate, and on the GPU slower than 16 CPU threads at these sizes: most of a
   GPU step is the runtime (filling new arrays on one lane, a fixed cost between kernels), not the work.
+- **No convolution yet**: images go through `Linear` and attention layers only; `GroupNorm` is in (both lanes), Conv2d
+  is the next milestone ([#15](https://github.com/nuxyel/BendTorch/issues/15)).
 - **Matrices only**, F32 training (BF16 storage, int8 inference), one CUDA GPU; SmolLM2-1.7B trains in 32 GB only with AdamW's moments packed in BF16, at 24.1 GB of peak memory.
 
 ## Where things are

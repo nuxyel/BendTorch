@@ -16,8 +16,8 @@
 # below that reach it, and no file with laws imports this one (`make laws` checks both). All of it is Bend.
 
 import Base
-import bend-ml-tensor-array@0.1.14.0/main.bend as TA
-import bend-ml-tensor-fork@0.1.2.0/main.bend as TF
+import bend-ml-tensor-array@0.1.18.0/main.bend as TA
+import bend-ml-tensor-fork@0.1.5.0/main.bend as TF
 import ./main.bend as T
 
 # =====================================================================================================
