@@ -227,8 +227,9 @@ target and FMA were timed on 2026-10-18, `NOTES.md`).
 
 Status 2026-11-01: AdamW's two paths are in blocks and were timed in the idle window of 2026-10-26 (`train 3` on 135M,
 16 threads, -2.3%, the same bits; NOTES 2026-10-26), RMSNorm stays (0.5% of the step), and the cross entropy over the
-array is published in bend-ml-tensor-array 0.1.17.0. Its timing inside the MNIST demo and `train 3` waits for an idle
-window.
+array is published in bend-ml-tensor-array 0.1.17.0, timed inside the MNIST demo and `train 3` in the idle window of
+2026-11-01 (NOTES): the same bits as the list version, `train 3` 1.5 s faster on one thread and 1.7 s on 16 (+15.7% for
+the list), MNIST within 3%; BendTorch's own cross-entropy, which the demos use, runs at the array version's time.
 
 Found by timing BendTorch v1.1.1's pieces alone at 1 and 16 threads (the same bits on both):
 
@@ -243,7 +244,7 @@ Found by timing BendTorch v1.1.1's pieces alone at 1 and 16 threads (the same bi
   layer's split, the optimizer or the setup) before changing anything.
 - **Cross entropy and the MNIST step**: bend-ml's `Mat.softmax_ce` walks its rows as lists, one after another; over
   an `Array` the same rows give the same bits in 3.4x fewer cycles. That change belongs to bend-ml; time it here
-  inside the MNIST demo and `train 3` before it is published.
+  inside the MNIST demo and `train 3` before it is published. Done: published in 0.1.17.0, timed on 2026-11-01 (NOTES).
 
 ## Next milestone: convolution and GroupNorm (added 2026-10-28, from #15)
 
