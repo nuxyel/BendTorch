@@ -1807,3 +1807,14 @@ Six new laws and one rewritten, all by `--verdict`, about the code the demos exe
   172,032 and full at small sizes 8,192 through CUDA's exp; every case 0 with `exp_cr`), bits-smol, smol, mutate (149
   mutants, 149 as expected: 146 caught, the 3 known equivalent ones survive), `make package CORE=bendtorch
   VERSION=1.3.0.0`. All passed, with the same numbers as the run at 11805b9.
+
+## v1.3.0 on BendHub (2026-11-01)
+
+- Published from `build/packages/` (`make package CORE=bendtorch VERSION=1.3.0.0` at the tag v1.3.0): `bendtorch@1.3.0.0`
+  `0x36ea31ed290fa4b30d529f2a3ef7c48f`, `bendtorch-fast@1.3.0.0` `0x262e539f65210ab30c4bcb8167815e98`,
+  `bendtorch-gpu@1.3.0.0` `0x4c5cda5550959e621d91895fcad928df`, `bendtorch-load@1.3.0.0`
+  `0x740c8b0b33caef82367f13ef8a1ef41a`: the core and `-gpu` carry GroupNorm and FullAttention.
+- From a clean folder importing the published packages: the core checks and `--verdict` passes; the satellites check
+  with the same defs outside the proofs as `torch/` (64, 131, 22); `fast_test` and `gpu_test` print 0 on 1 and 16
+  threads; `test_infra` and `test_dtype` pass; the tiny Llama's `train 50` gives `bench/bits.txt`'s digest on 1 and 16
+  threads. The READMEs import 1.3.0.0.
