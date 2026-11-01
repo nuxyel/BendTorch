@@ -5,8 +5,8 @@ Every finding, measurement and decision, by date. Newest at the bottom.
 ## Pinned versions
 
 - Bend **2.0.37** (`bend version`), Lean **4.34.0** for `--verdict`.
-- `bend-ml-tensor-array@0.1.14.0`, `bend-ml-nat-lemmas@0.1.1.0` (BendHub); outside the proofs `bend-ml-tensor-fork@0.1.2.0`
-  (`fast.bend`), `bend-ml-tensor-gpu@0.1.2.1` (`gpu.bend`) and `bend-ml-binary-read@0.1.0.0` (`load.bend`). Updated 2026-10-19.
+- `bend-ml-tensor-array@0.1.18.0`, `bend-ml-nat-lemmas@0.1.2.0` (BendHub); outside the proofs `bend-ml-tensor-fork@0.1.5.0`
+  (`fast.bend`), `bend-ml-tensor-gpu@0.1.5.0` (`gpu.bend`) and `bend-ml-binary-read@0.2.0.0` (`load.bend`). Updated 2026-10-31.
 - Python 3.14.7, torch 2.14.1+cpu, numpy 2.5.4 (`reference/requirements.txt`).
 - Data: MNIST from the PyTorch mirror (`scripts/mnist.sh`); Tiny Shakespeare from karpathy/char-rnn, SHA256
   `86c4e6aa…c565ed` (`scripts/tiny.sh`).

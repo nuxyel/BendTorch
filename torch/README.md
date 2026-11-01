@@ -30,7 +30,7 @@ not meet, does not compile ([`tests/`](../tests/)). Layers are passed as templat
 time, so `Seq`, `Fork`, `Both` and `Residual` compose any layers whose types meet, with no closure called twice and no
 cost at run time.
 
-- Bend: **2.0.39** · License: MIT · Depends on `bend-ml-tensor-array@0.1.14.0` (the matrices and their products) and
+- Bend: **2.0.39** · License: MIT · Depends on `bend-ml-tensor-array@0.1.18.0` (the matrices and their products) and
   `bend-ml-nat-lemmas@0.1.2.0`.
 - `bend PROOF.bend --verdict` (from the repository's root) → `ALL PROOFS CHECK`, with no `@unsafe`, no `?TODO` and no
   axioms.
