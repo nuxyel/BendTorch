@@ -1782,24 +1782,25 @@ def col2im(+n: Nat, +h: Nat, +w: Nat, +c: Nat, +k: Nat, +p: Nat, +s: Nat, dp: TA
     case TA.Mat{d}:
       gi_fin(n, h, w, c, k, p, s, TG.run1_new(~EIC, ~lf_gi, TG.depth(Nat.mul(Nat.mul(n, Nat.mul(h, w)), c)), eic(n, h, w, c, k, p, s), d, nn(Unit{}), nn(Unit{}), nn(Unit{}), TA.cap_depth(Nat.mul(Nat.mul(n, Nat.mul(h, w)), c))))
 
-def conv_b2(+n: Nat, +h: Nat, +w: Nat, +c: Nat, +co: Nat, +k: Nat, +p: Nat, +s1: Nat, b: T.Bwd<T.Lin<Nat.mul(c, Nat.mul(k, k)), co>, TA.Mat<Nat.mul(n, Nat.mul(T.ocount(h, p, k, Nat.add(1n, s1)), T.ocount(w, p, k, Nat.add(1n, s1)))), Nat.mul(c, Nat.mul(k, k))>>) -> T.Bwd<T.Lin<Nat.mul(c, Nat.mul(k, k)), co>, TA.Mat<Nat.mul(n, Nat.mul(h, w)), c>>:
+def conv_b2(+n: Nat, +c: Nat, +co: Nat, +k: Nat, +hs: Nat, +ws: Nat, +p: Nat, +s1: Nat, b: T.Bwd<T.Lin<T.ckk(c, k), co>, TA.Mat<Nat.mul(n, T.cohw(k, hs, ws, p, s1)), T.ckk(c, k)>>) -> T.Bwd<T.Lin<T.ckk(c, k), co>, TA.Mat<Nat.mul(n, T.chw(k, hs, ws, p)), c>>:
   match b:
     case T.Bwd{prm, dx, gg}:
-      T.Bwd{prm, col2im(n, h, w, c, k, p, Nat.add(1n, s1), dx), gg}
+      T.Bwd{prm, col2im(n, T.cimg(k, hs, p), T.cimg(k, ws, p), c, k, p, Nat.add(1n, s1), dx), gg}
 
 # Conv2d: device im2col, then the device Linear's products; the backward is the device Linear's, then device col2im.
 # The parameters are main.bend's Lin<c·k·k, co>, so lin_step, lin_zeros, lin_dump, lin_load and lin_store serve it as
-# they serve Linear.
-def Conv2d(+n: Nat, +h: Nat, +w: Nat, +c: Nat, +co: Nat, +k: Nat, +p: Nat, +s1: Nat, +par: Nat) -> T.Layer<T.Lin<Nat.mul(c, Nat.mul(k, k)), co>, TA.Mat<Nat.mul(n, Nat.mul(h, w)), c>, TA.Mat<Nat.mul(n, Nat.mul(T.ocount(h, p, k, Nat.add(1n, s1)), T.ocount(w, p, k, Nat.add(1n, s1)))), co>, TA.Mat<Nat.mul(n, Nat.mul(T.ocount(h, p, k, Nat.add(1n, s1)), T.ocount(w, p, k, Nat.add(1n, s1)))), Nat.mul(c, Nat.mul(k, k))>>:
+# they serve Linear. The image's size is the kernel plus a surplus (`hs`/`ws`, main.bend's `cimg`), so a window bigger
+# than its image cannot be written here either.
+def Conv2d(+n: Nat, +c: Nat, +co: Nat, +k: Nat, +hs: Nat, +ws: Nat, +p: Nat, +s1: Nat, +par: Nat) -> T.Layer<T.Lin<T.ckk(c, k), co>, TA.Mat<Nat.mul(n, T.chw(k, hs, ws, p)), c>, TA.Mat<Nat.mul(n, T.cohw(k, hs, ws, p, s1)), co>, TA.Mat<Nat.mul(n, T.cohw(k, hs, ws, p, s1)), T.ckk(c, k)>>:
   T.Layer{
-    prm => x => lin_fwd(Nat.mul(n, Nat.mul(T.ocount(h, p, k, Nat.add(1n, s1)), T.ocount(w, p, k, Nat.add(1n, s1)))), Nat.mul(c, Nat.mul(k, k)), co, prm, im2col(n, h, w, c, k, p, Nat.add(1n, s1), x)),
-    prm => st => dy => gg => conv_b2(n, h, w, c, co, k, p, s1, lin_bwd(Nat.mul(n, Nat.mul(T.ocount(h, p, k, Nat.add(1n, s1)), T.ocount(w, p, k, Nat.add(1n, s1)))), Nat.mul(c, Nat.mul(k, k)), co, prm, st, dy, gg)),
-    op => prm => gg => st => lin_step(Nat.mul(c, Nat.mul(k, k)), co, op, prm, gg, st),
-    u => T.lin_zeros(Nat.mul(c, Nat.mul(k, k)), co),
-    prm => T.lin_dump(Nat.mul(c, Nat.mul(k, k)), co, prm),
-    prm => xs => off => T.lin_load(Nat.mul(c, Nat.mul(k, k)), co, prm, xs, off),
-    prm => xs => off => T.lin_store(Nat.mul(c, Nat.mul(k, k)), co, prm, xs, off),
-    u => U32.from_nat(Nat.mul(co, Nat.add(1n, Nat.mul(c, Nat.mul(k, k)))))}
+    prm => x => lin_fwd(Nat.mul(n, T.cohw(k, hs, ws, p, s1)), T.ckk(c, k), co, prm, im2col(n, T.cimg(k, hs, p), T.cimg(k, ws, p), c, k, p, Nat.add(1n, s1), x)),
+    prm => st => dy => gg => conv_b2(n, c, co, k, hs, ws, p, s1, lin_bwd(Nat.mul(n, T.cohw(k, hs, ws, p, s1)), T.ckk(c, k), co, prm, st, dy, gg)),
+    op => prm => gg => st => lin_step(T.ckk(c, k), co, op, prm, gg, st),
+    u => T.lin_zeros(T.ckk(c, k), co),
+    prm => T.lin_dump(T.ckk(c, k), co, prm),
+    prm => xs => off => T.lin_load(T.ckk(c, k), co, prm, xs, off),
+    prm => xs => off => T.lin_store(T.ckk(c, k), co, prm, xs, off),
+    u => U32.from_nat(Nat.mul(co, Nat.add(1n, T.ckk(c, k))))}
 
 # ---- main.bend's names for the same layers (#13) ----
 #

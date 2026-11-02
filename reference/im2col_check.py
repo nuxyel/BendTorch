@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """im2col against torch's unfold.
 
-  ../bend-lab/reference/.venv-lucidrains/bin/python reference/im2col_check.py
+  reference/.venv/bin/python reference/im2col_check.py
 
 `demo/im2col_probe.bend` prints the gathered matrix for n=1, h=w=4, c=2, k=3,
 p=1, s=1 as raw 32-bit words (Mat.print). This builds the same x and compares

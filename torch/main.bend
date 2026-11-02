@@ -3285,21 +3285,45 @@ def im2col(+n: Nat, +h: Nat, +w: Nat, +c: Nat, +k: Nat, +p: Nat, +s: Nat, x: TA.
 # lin_zeros and the PL/PA plumbing: a Train sees a parameter tree it already knows. The stride is given as s - 1
 # (1n+s below), so it is never 0; the patch matrix is kept only in the forward's state, which is what the backward
 # needs, and it is not rebuilt.
-def conv_b2(+n: Nat, +h: Nat, +w: Nat, +c: Nat, +co: Nat, +k: Nat, +p: Nat, +s1: Nat, b: Bwd<Lin<Nat.mul(c, Nat.mul(k, k)), co>, TA.Mat<Nat.mul(n, Nat.mul(ocount(h, p, k, Nat.add(1n, s1)), ocount(w, p, k, Nat.add(1n, s1)))), Nat.mul(c, Nat.mul(k, k))>>) -> Bwd<Lin<Nat.mul(c, Nat.mul(k, k)), co>, TA.Mat<Nat.mul(n, Nat.mul(h, w)), c>>:
+#
+# The image's size is written as the kernel plus a surplus: the caller passes `hs`/`ws` with h + 2p = k + hs and
+# w + 2p = k + ws, and the image follows, h = k + hs - 2p (cimg). A window bigger than its image is therefore
+# unwritable: k <= h + 2p holds by construction, and no call site needs a lemma (the UNet's k = 3, s = 2, p = 1 at
+# 64 x 64 writes hs = ws = 63). The one condition left is the padding's, 2p <= k + hs; a caller that breaks it gets a
+# smaller image than it asked for, and its own Mat's size refuses the mismatch.
+
+# the image's shape from the surplus: h = k + hs - 2p, and the output count, (h + 2p - k)/s + 1, which is hs/s + 1 once
+# the surplus is the padded image's
+def cimg(+k: Nat, +hs: Nat, +p: Nat) -> Nat:
+  Nat.sub(Nat.add(k, hs), Nat.mul(2n, p))
+
+def ckk(+c: Nat, +k: Nat) -> Nat:
+  Nat.mul(c, Nat.mul(k, k))
+
+def chw(+k: Nat, +hs: Nat, +ws: Nat, +p: Nat) -> Nat:
+  Nat.mul(cimg(k, hs, p), cimg(k, ws, p))
+
+def coh(+k: Nat, +hs: Nat, +p: Nat, +s1: Nat) -> Nat:
+  ocount(cimg(k, hs, p), p, k, Nat.add(1n, s1))
+
+def cohw(+k: Nat, +hs: Nat, +ws: Nat, +p: Nat, +s1: Nat) -> Nat:
+  Nat.mul(coh(k, hs, p, s1), coh(k, ws, p, s1))
+
+def conv_b2(+n: Nat, +c: Nat, +co: Nat, +k: Nat, +hs: Nat, +ws: Nat, +p: Nat, +s1: Nat, b: Bwd<Lin<ckk(c, k), co>, TA.Mat<Nat.mul(n, cohw(k, hs, ws, p, s1)), ckk(c, k)>>) -> Bwd<Lin<ckk(c, k), co>, TA.Mat<Nat.mul(n, chw(k, hs, ws, p)), c>>:
   match b:
     case Bwd{prm, dx, gg}:
-      Bwd{prm, col2im(n, h, w, c, k, p, Nat.add(1n, s1), dx), gg}
+      Bwd{prm, col2im(n, cimg(k, hs, p), cimg(k, ws, p), c, k, p, Nat.add(1n, s1), dx), gg}
 
-def Conv2d(+n: Nat, +h: Nat, +w: Nat, +c: Nat, +co: Nat, +k: Nat, +p: Nat, +s1: Nat, +par: Nat) -> Layer<Lin<Nat.mul(c, Nat.mul(k, k)), co>, TA.Mat<Nat.mul(n, Nat.mul(h, w)), c>, TA.Mat<Nat.mul(n, Nat.mul(ocount(h, p, k, Nat.add(1n, s1)), ocount(w, p, k, Nat.add(1n, s1)))), co>, TA.Mat<Nat.mul(n, Nat.mul(ocount(h, p, k, Nat.add(1n, s1)), ocount(w, p, k, Nat.add(1n, s1)))), Nat.mul(c, Nat.mul(k, k))>>:
+def Conv2d(+n: Nat, +c: Nat, +co: Nat, +k: Nat, +hs: Nat, +ws: Nat, +p: Nat, +s1: Nat, +par: Nat) -> Layer<Lin<ckk(c, k), co>, TA.Mat<Nat.mul(n, chw(k, hs, ws, p)), c>, TA.Mat<Nat.mul(n, cohw(k, hs, ws, p, s1)), co>, TA.Mat<Nat.mul(n, cohw(k, hs, ws, p, s1)), ckk(c, k)>>:
   Layer{
-    prm => x => lin_fwd(Nat.mul(n, Nat.mul(ocount(h, p, k, Nat.add(1n, s1)), ocount(w, p, k, Nat.add(1n, s1)))), Nat.mul(c, Nat.mul(k, k)), co, par, prm, im2col(n, h, w, c, k, p, Nat.add(1n, s1), x)),
-    prm => st => dy => gg => conv_b2(n, h, w, c, co, k, p, s1, lin_bwd(Nat.mul(n, Nat.mul(ocount(h, p, k, Nat.add(1n, s1)), ocount(w, p, k, Nat.add(1n, s1)))), Nat.mul(c, Nat.mul(k, k)), co, par, prm, st, dy, gg)),
-    op => prm => gg => st => lin_step(Nat.mul(c, Nat.mul(k, k)), co, op, prm, gg, st),
-    u => lin_zeros(Nat.mul(c, Nat.mul(k, k)), co),
-    prm => lin_dump(Nat.mul(c, Nat.mul(k, k)), co, prm),
-    prm => xs => off => lin_load(Nat.mul(c, Nat.mul(k, k)), co, prm, xs, off),
-    prm => xs => off => lin_store(Nat.mul(c, Nat.mul(k, k)), co, prm, xs, off),
-    u => U32.from_nat(Nat.mul(co, Nat.add(1n, Nat.mul(c, Nat.mul(k, k)))))}
+    prm => x => lin_fwd(Nat.mul(n, cohw(k, hs, ws, p, s1)), ckk(c, k), co, par, prm, im2col(n, cimg(k, hs, p), cimg(k, ws, p), c, k, p, Nat.add(1n, s1), x)),
+    prm => st => dy => gg => conv_b2(n, c, co, k, hs, ws, p, s1, lin_bwd(Nat.mul(n, cohw(k, hs, ws, p, s1)), ckk(c, k), co, par, prm, st, dy, gg)),
+    op => prm => gg => st => lin_step(ckk(c, k), co, op, prm, gg, st),
+    u => lin_zeros(ckk(c, k), co),
+    prm => lin_dump(ckk(c, k), co, prm),
+    prm => xs => off => lin_load(ckk(c, k), co, prm, xs, off),
+    prm => xs => off => lin_store(ckk(c, k), co, prm, xs, off),
+    u => U32.from_nat(Nat.mul(co, Nat.add(1n, ckk(c, k))))}
 
 def hit(b: Bool) -> F32:
   match b:

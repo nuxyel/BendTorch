@@ -271,22 +271,33 @@ def c_lin(+i: Nat, +o: Nat, a: T.Lin<i, o>, b: T.Lin<i, o>) -> U32:
   match a b:
     case T.Lin{w1, b1} T.Lin{w2, b2}: u32_max(dm(o, i, w1, w2), dm(1n, o, b1, b2))
 
-def c_conv(+n: Nat, +h: Nat, +w: Nat, +c: Nat, +co: Nat, +k: Nat, +p: Nat, +s1: Nat, a: RR<T.Lin<Nat.mul(c, Nat.mul(k, k)), co>, TA.Mat<Nat.mul(n, Nat.mul(h, w)), c>, TA.Mat<Nat.mul(n, Nat.mul(T.ocount(h, p, k, Nat.add(1n, s1)), T.ocount(w, p, k, Nat.add(1n, s1)))), co>>, b: RR<T.Lin<Nat.mul(c, Nat.mul(k, k)), co>, TA.Mat<Nat.mul(n, Nat.mul(h, w)), c>, TA.Mat<Nat.mul(n, Nat.mul(T.ocount(h, p, k, Nat.add(1n, s1)), T.ocount(w, p, k, Nat.add(1n, s1)))), co>>) -> U32:
+# the image is the kernel plus a surplus (main.bend's `cimg`): h = k + hs - 2p, and oh = hs/s + 1
+def c_conv(+n: Nat, +c: Nat, +co: Nat, +k: Nat, +hs: Nat, +ws: Nat, +p: Nat, +s1: Nat, a: RR<T.Lin<T.ckk(c, k), co>, TA.Mat<Nat.mul(n, T.chw(k, hs, ws, p)), c>, TA.Mat<Nat.mul(n, T.cohw(k, hs, ws, p, s1)), co>>, b: RR<T.Lin<T.ckk(c, k), co>, TA.Mat<Nat.mul(n, T.chw(k, hs, ws, p)), c>, TA.Mat<Nat.mul(n, T.cohw(k, hs, ws, p, s1)), co>>) -> U32:
   match a b:
-    case RR{y1, d1, g1} RR{y2, d2, g2}: max3(dm(Nat.mul(n, Nat.mul(T.ocount(h, p, k, Nat.add(1n, s1)), T.ocount(w, p, k, Nat.add(1n, s1)))), co, y1, y2), dm(Nat.mul(n, Nat.mul(h, w)), c, d1, d2), c_lin(Nat.mul(c, Nat.mul(k, k)), co, g1, g2))
+    case RR{y1, d1, g1} RR{y2, d2, g2}: max3(dm(Nat.mul(n, T.cohw(k, hs, ws, p, s1)), co, y1, y2), dm(Nat.mul(n, T.chw(k, hs, ws, p)), c, d1, d2), c_lin(T.ckk(c, k), co, g1, g2))
 
 # 2 images of 5 x 3, 3 channels, 2 output channels, 3 x 3, padding 1, stride 1: a small odd shape with a padded
 # border (oh = 5, ow = 3, so 30 patch rows of 27 numbers and 30 image cells)
 def conv_small() -> U32:
-  c_conv(2n, 5n, 3n, 3n, 2n, 3n, 1n, 0n, run(~T.Lin<27n, 2n>, ~TA.Mat<30n, 3n>, ~TA.Mat<30n, 2n>, ~TA.Mat<30n, 27n>, ~T.Conv2d(2n, 5n, 3n, 3n, 2n, 3n, 1n, 0n, 0n), T.Lin{mat(2n, 27n, 171), mat(1n, 2n, 172)}, mat(30n, 3n, 173), mat(30n, 2n, 174), T.Lin{mat(2n, 27n, 175), mat(1n, 2n, 176)}), run(~T.Lin<27n, 2n>, ~TA.Mat<30n, 3n>, ~TA.Mat<30n, 2n>, ~TA.Mat<30n, 27n>, ~G.Conv2d(2n, 5n, 3n, 3n, 2n, 3n, 1n, 0n, 0n), T.Lin{mat(2n, 27n, 171), mat(1n, 2n, 172)}, mat(30n, 3n, 173), mat(30n, 2n, 174), T.Lin{mat(2n, 27n, 175), mat(1n, 2n, 176)}))
+  c_conv(2n, 3n, 2n, 3n, 4n, 2n, 1n, 0n, run(~T.Lin<27n, 2n>, ~TA.Mat<30n, 3n>, ~TA.Mat<30n, 2n>, ~TA.Mat<30n, 27n>, ~T.Conv2d(2n, 3n, 2n, 3n, 4n, 2n, 1n, 0n, 0n), T.Lin{mat(2n, 27n, 171), mat(1n, 2n, 172)}, mat(30n, 3n, 173), mat(30n, 2n, 174), T.Lin{mat(2n, 27n, 175), mat(1n, 2n, 176)}), run(~T.Lin<27n, 2n>, ~TA.Mat<30n, 3n>, ~TA.Mat<30n, 2n>, ~TA.Mat<30n, 27n>, ~G.Conv2d(2n, 3n, 2n, 3n, 4n, 2n, 1n, 0n, 0n), T.Lin{mat(2n, 27n, 171), mat(1n, 2n, 172)}, mat(30n, 3n, 173), mat(30n, 2n, 174), T.Lin{mat(2n, 27n, 175), mat(1n, 2n, 176)}))
 
 # 2 images of 32 x 32, 3 channels, 16 output channels, 3 x 3, padding 1, stride 1: CIFAR's shape (2048 patch rows of
 # 27 numbers, 2048 image cells)
 def conv_big() -> U32:
-  c_conv(2n, 32n, 32n, 3n, 16n, 3n, 1n, 0n, run(~T.Lin<27n, 16n>, ~TA.Mat<2048n, 3n>, ~TA.Mat<2048n, 16n>, ~TA.Mat<2048n, 27n>, ~T.Conv2d(2n, 32n, 32n, 3n, 16n, 3n, 1n, 0n, 0n), T.Lin{mat(16n, 27n, 181), mat(1n, 16n, 182)}, mat(2048n, 3n, 183), mat(2048n, 16n, 184), T.Lin{mat(16n, 27n, 185), mat(1n, 16n, 186)}), run(~T.Lin<27n, 16n>, ~TA.Mat<2048n, 3n>, ~TA.Mat<2048n, 16n>, ~TA.Mat<2048n, 27n>, ~G.Conv2d(2n, 32n, 32n, 3n, 16n, 3n, 1n, 0n, 0n), T.Lin{mat(16n, 27n, 181), mat(1n, 16n, 182)}, mat(2048n, 3n, 183), mat(2048n, 16n, 184), T.Lin{mat(16n, 27n, 185), mat(1n, 16n, 186)}))
+  c_conv(2n, 3n, 16n, 3n, 31n, 31n, 1n, 0n, run(~T.Lin<27n, 16n>, ~TA.Mat<2048n, 3n>, ~TA.Mat<2048n, 16n>, ~TA.Mat<2048n, 27n>, ~T.Conv2d(2n, 3n, 16n, 3n, 31n, 31n, 1n, 0n, 0n), T.Lin{mat(16n, 27n, 181), mat(1n, 16n, 182)}, mat(2048n, 3n, 183), mat(2048n, 16n, 184), T.Lin{mat(16n, 27n, 185), mat(1n, 16n, 186)}), run(~T.Lin<27n, 16n>, ~TA.Mat<2048n, 3n>, ~TA.Mat<2048n, 16n>, ~TA.Mat<2048n, 27n>, ~G.Conv2d(2n, 3n, 16n, 3n, 31n, 31n, 1n, 0n, 0n), T.Lin{mat(16n, 27n, 181), mat(1n, 16n, 182)}, mat(2048n, 3n, 183), mat(2048n, 16n, 184), T.Lin{mat(16n, 27n, 185), mat(1n, 16n, 186)}))
+
+
+# 2 images of 7 x 5 and 7 x 6, 3 channels, 2 out, 3 x 3, padding 1, stride 2 (the review's shape): h + 2p - k is 6 for
+# the 7 x 5 and 5 for the 7 x 6, so the odd surplus floors the last window and col2im's guards skip that candidate.
+# Both are inside the Conv2d case, so the number of cases (and the zeros the Makefile and mutate.py expect) is the same.
+def conv_stride() -> U32:
+  max3(
+    c_conv(2n, 3n, 2n, 3n, 6n, 4n, 1n, 1n, run(~T.Lin<27n, 2n>, ~TA.Mat<70n, 3n>, ~TA.Mat<24n, 2n>, ~TA.Mat<24n, 27n>, ~T.Conv2d(2n, 3n, 2n, 3n, 6n, 4n, 1n, 1n, 0n), T.Lin{mat(2n, 27n, 191), mat(1n, 2n, 192)}, mat(70n, 3n, 193), mat(24n, 2n, 194), T.Lin{mat(2n, 27n, 195), mat(1n, 2n, 196)}), run(~T.Lin<27n, 2n>, ~TA.Mat<70n, 3n>, ~TA.Mat<24n, 2n>, ~TA.Mat<24n, 27n>, ~G.Conv2d(2n, 3n, 2n, 3n, 6n, 4n, 1n, 1n, 0n), T.Lin{mat(2n, 27n, 191), mat(1n, 2n, 192)}, mat(70n, 3n, 193), mat(24n, 2n, 194), T.Lin{mat(2n, 27n, 195), mat(1n, 2n, 196)})),
+    c_conv(2n, 3n, 2n, 3n, 6n, 5n, 1n, 1n, run(~T.Lin<27n, 2n>, ~TA.Mat<84n, 3n>, ~TA.Mat<24n, 2n>, ~TA.Mat<24n, 27n>, ~T.Conv2d(2n, 3n, 2n, 3n, 6n, 5n, 1n, 1n, 0n), T.Lin{mat(2n, 27n, 201), mat(1n, 2n, 202)}, mat(84n, 3n, 203), mat(24n, 2n, 204), T.Lin{mat(2n, 27n, 205), mat(1n, 2n, 206)}), run(~T.Lin<27n, 2n>, ~TA.Mat<84n, 3n>, ~TA.Mat<24n, 2n>, ~TA.Mat<24n, 27n>, ~G.Conv2d(2n, 3n, 2n, 3n, 6n, 5n, 1n, 1n, 0n), T.Lin{mat(2n, 27n, 201), mat(1n, 2n, 202)}, mat(84n, 3n, 203), mat(24n, 2n, 204), T.Lin{mat(2n, 27n, 205), mat(1n, 2n, 206)})),
+    c_conv(2n, 3n, 2n, 3n, 6n, 4n, 1n, 1n, run(~T.Lin<27n, 2n>, ~TA.Mat<70n, 3n>, ~TA.Mat<24n, 2n>, ~TA.Mat<24n, 27n>, ~T.Conv2d(2n, 3n, 2n, 3n, 6n, 4n, 1n, 1n, 0n), T.Lin{mat(2n, 27n, 191), mat(1n, 2n, 192)}, mat(70n, 3n, 193), mat(24n, 2n, 194), T.Lin{mat(2n, 27n, 195), mat(1n, 2n, 196)}), run(~T.Lin<27n, 2n>, ~TA.Mat<70n, 3n>, ~TA.Mat<24n, 2n>, ~TA.Mat<24n, 27n>, ~G.Conv2d(2n, 3n, 2n, 3n, 6n, 4n, 1n, 1n, 0n), T.Lin{mat(2n, 27n, 191), mat(1n, 2n, 192)}, mat(70n, 3n, 193), mat(24n, 2n, 194), T.Lin{mat(2n, 27n, 195), mat(1n, 2n, 196)})))
 
 def conv2d() -> U32:
-  u32_max(conv_small(), conv_big())
+  u32_max(conv_small(), u32_max(conv_big(), conv_stride()))
 
 # ---- GroupNorm: y, dx and the gain's and bias's gradients (added into gradients that are not zero); 8 images of 64
 # pixels in 8 groups of 16 channels, and 3 images of 5 pixels in 3 groups of 2 ----

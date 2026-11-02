@@ -59,6 +59,8 @@ check: laws build ## the laws, then every layer, the tensor operations, the MLP,
 	$(PY) reference/test_reader.py .scratch/reader_test
 	$(PY) reference/test_safetensors.py .scratch/safetensors_test
 	$(PY) reference/test_ops.py .scratch/ops_test
+	$(PY) reference/conv2d_check.py
+	$(PY) reference/im2col_check.py
 	$(PY) reference/test_tensor.py .scratch/tensor_test
 	$(PY) reference/check_imap.py .scratch/imap_check
 	$(PY) reference/test_mlp.py .scratch/mlp_test

@@ -1,11 +1,20 @@
 #!/usr/bin/env python3
-"""Conv2d (forward and all three gradients) against torch.
+"""Conv2d (forward and all three gradients) against torch, on three shapes.
 
-  ../bend-lab/reference/.venv-lucidrains/bin/python reference/conv2d_check.py
+  reference/.venv/bin/python reference/conv2d_check.py
 
-`demo/conv2d_probe.bend` runs n=1, h=w=4, c=2, co=3, k=3, p=1, stride 1 and prints
-y, dX, dW and db as raw words. This builds the same tensors, runs F.conv2d and its
-autograd, and compares all four.
+`demo/conv2d_probe.bend` prints y, dX, dW and db as raw words for each of three
+cases and this builds the same tensors, runs F.conv2d and its autograd, and
+compares all four:
+
+  c0  1 x 4 x 4, 2 channels, 3 out, 3 x 3, padding 1, stride 1  — a padded border
+  c1  1 x 7 x 5, the same kernel, padding 1, stride 2           — h + 2p - k = 6, even
+  c2  1 x 7 x 6, the same kernel, padding 1, stride 2           — h + 2p - k = 5, odd: the
+      last window floors, and col2im's guards skip the candidate that runs off the end
+
+The odd surplus (c2) is the case the review asked for: at stride 2 the last
+window starts past the padded edge, so col2im must skip it and the forward must
+not read it. `make check` runs this.
 """
 import os
 import subprocess
@@ -17,6 +26,13 @@ import torch.nn.functional as F
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BEND = os.path.expanduser("~/.bend/bin/bend")
+
+# (tag, h, w, c, co, k, p, stride, x_start, w_start, b_start, dy_start)
+CASES = (
+    ("c0", 4, 4, 2, 3, 3, 1, 1, 0, 5, 11, 17),
+    ("c1", 7, 5, 2, 3, 3, 1, 2, 3, 7, 13, 19),
+    ("c2", 7, 6, 2, 3, 3, 1, 2, 9, 21, 25, 29),
+)
 
 
 def values(n, start=0):
@@ -38,32 +54,32 @@ def main():
     for line in out.stdout.strip().splitlines():
         blocks[line.split()[0]] = words(line)
 
-    got_y = blocks["y"].reshape(16, 3)
-    got_dx = blocks["dx"].reshape(16, 2)
-    got_dw = blocks["dw"].reshape(3, 18)
-    got_db = blocks["db"].reshape(1, 3)
+    ok = True
+    for tag, h, w, c, co, k, p, stride, xs, ws, bs, ds in CASES:
+        oh = (h + 2 * p - k) // stride + 1
+        ow = (w + 2 * p - k) // stride + 1
+        rows, orows, ckk = h * w, oh * ow, c * k * k
 
-    x = torch.from_numpy(values(32)).reshape(1, 4, 4, 2).permute(0, 3, 1, 2).contiguous().requires_grad_(True)
-    w = torch.from_numpy(values(54, 5)).reshape(3, 2, 3, 3).requires_grad_(True)
-    b = torch.from_numpy(values(3, 11)).reshape(1, 3).requires_grad_(True)
-    dy = torch.from_numpy(values(48, 17)).reshape(16, 3)
+        got = {name: blocks[f"{tag}.{name}"] for name in ("y", "dx", "dw", "db")}
+        x = torch.from_numpy(values(rows * c, xs)).reshape(1, h, w, c).permute(0, 3, 1, 2).contiguous()
+        x.requires_grad_(True)
+        wt = torch.from_numpy(values(co * ckk, ws)).reshape(co, c, k, k).requires_grad_(True)
+        bt = torch.from_numpy(values(co, bs)).reshape(co).requires_grad_(True)
+        dy = torch.from_numpy(values(orows * co, ds)).reshape(1, oh, ow, co).permute(0, 3, 1, 2)
 
-    y = F.conv2d(x, w, b.reshape(3), stride=1, padding=1)                 # (1, 3, 4, 4)
-    want_y = y[0].permute(1, 2, 0).reshape(16, 3).detach().numpy()
-    y.backward(dy.reshape(1, 4, 4, 3).permute(0, 3, 1, 2))
-    want_dx = x.grad[0].permute(1, 2, 0).reshape(16, 2).numpy()
-    want_dw = w.grad.reshape(3, 18).numpy()
-    want_db = b.grad.reshape(1, 3).numpy()
-
-    gaps = {
-        "y": np.abs(got_y - want_y).max(),
-        "dx": np.abs(got_dx - want_dx).max(),
-        "dW": np.abs(got_dw - want_dw).max(),
-        "db": np.abs(got_db - want_db).max(),
-    }
-    for k, v in gaps.items():
-        print(f"conv2d {k}: max |Bend - torch| {v:.3e}")
-    ok = all(v < 1e-6 for v in gaps.values())
+        y = F.conv2d(x, wt, bt, stride=stride, padding=p)
+        want_y = y[0].permute(1, 2, 0).reshape(orows, co).detach().numpy()
+        y.backward(dy)
+        gaps = {
+            "y": np.abs(got["y"].reshape(orows, co) - want_y).max(),
+            "dx": np.abs(got["dx"].reshape(rows, c) - x.grad[0].permute(1, 2, 0).reshape(rows, c).numpy()).max(),
+            "dW": np.abs(got["dw"].reshape(co, ckk) - wt.grad.reshape(co, ckk).numpy()).max(),
+            "db": np.abs(got["db"].reshape(co) - bt.grad.reshape(co).numpy()).max(),
+        }
+        line = "  ".join(f"{k} {v:.3e}" for k, v in gaps.items())
+        bad = [k for k, v in gaps.items() if not v < 1e-6]
+        print(f"{tag}  {h}x{w} k{k} p{p} s{stride}  {line}  {'FAIL ' + ','.join(bad) if bad else 'ok'}")
+        ok &= not bad
     print("PASS" if ok else "FAIL")
     sys.exit(0 if ok else 1)
 
