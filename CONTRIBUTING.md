@@ -27,10 +27,14 @@ make data    # MNIST and Tiny Shakespeare (not committed), the twins' weights an
 make laws    # the proofs, by bend and again by --verdict; tests/bad_*.bend must be rejected with their expected error
 make check   # the laws, then every layer, the MLP, MNIST and the tiny Llama against PyTorch
 make mutate  # deliberate faults, each caught by a law or a test (or listed with the reason it is not)
+make affected  # what your change needs, and why: the checks and the mutants CI will run for it
 make bench   # BendTorch against PyTorch on MNIST and the tiny Llama, 1 and 16 threads
 ```
 
-A pull request should pass `make check`. If it touches `torch/`, `LAWS.bend` or the tests, also run `make mutate`.
+A pull request should pass `make check`. If it touches `torch/`, `LAWS.bend` or the tests, also run `make mutate`, or
+at least the mutants `make affected` lists. CI runs on every pull request what the change reads
+(`scripts/affected.py`, from each check's recipe and each file's imports; the run's summary says why each one runs),
+and a pull request to `main` runs everything. A first-time contributor's run waits for my approval.
 
 ## Rules for code
 
