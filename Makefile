@@ -23,7 +23,7 @@ LLAMA_BEND ?= ../llama.bend
 ST135 = $(LLAMA_BEND)/data/smollm2-135m/hf/model.safetensors
 FAST_DEFS := ph_leafs ph_mat opt_mat mat_step lin_step2 lin_step map zip Mat.dup Mat.sum2 lin_fwd lin_b2 lin_bwd LinearF linf_bwd LinearFirstF lnb_b2 LinearNBF acti_f3 ActIn SiLU add2_f Add2 mul2_f2 mul2_f mul2_b2 Mul2 Residual Embedding Linear LinearFirst LinearNB
 
-.PHONY: setup data check-rts laws build check check-js reader bits mutate bench lint smol finetune smol-gen smol-gpu mutate-smol cuda-toolkit gpu mixed-long adamw16-long dw memory corpus bits-smol package own
+.PHONY: setup data check-rts laws build check affected affected-check check-js reader bits mutate bench lint smol finetune smol-gen smol-gpu mutate-smol cuda-toolkit gpu mixed-long adamw16-long dw memory corpus bits-smol package own
 
 setup:            ## install the pinned Bend and Lean if missing, create the Python venv
 	scripts/setup.sh
@@ -196,6 +196,12 @@ bits: build-tiny_llama build-mnist build-mlp_test build-tiny_rt  ## the exact ou
 
 mutate:           ## break the code and the specification on purpose; every mutant must be caught (scripts/mutate.py; ONLY=<file of names> runs those)
 	$(PY) scripts/mutate.py $(if $(ONLY),--only $(ONLY))
+
+affected:         ## what a change needs and why: the targets and mutants CI runs for it, and the local gates (scripts/affected.py; BASE=origin/devel)
+	python3 scripts/affected.py show $(BASE)
+
+affected-check:   ## the selection's own tests: each mutant's gate is seen to read its file, each gate is a target's test, a negative control
+	python3 scripts/affected.py self-check
 
 bench:            ## MNIST epoch and tiny-Llama step times, Bend against PyTorch, on 1 and 16 threads (scripts/bench.sh)
 	scripts/bench.sh
