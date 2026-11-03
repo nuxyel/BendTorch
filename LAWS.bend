@@ -377,7 +377,8 @@ law im2col_rows:
 # LAW (conv_roundtrip): with a 1 x 1 kernel, no padding and a stride of 1, a patch is one cell: im2col reads the image
 # cell at the patch's own coordinates, (b, oy, ox, ch), and col2im writes that number back into it (its scatter is p_src
 # itself, in c2_go). So for k = 1, s = 1 and p = 0 the round trip col2im(im2col(x)) = x is the identity, cell for cell,
-# into the cell it came from. The numbers at every kernel size are tested against PyTorch (reference/im2col_check.py).
+# into the cell it came from. The kernel sizes that are covered against PyTorch are the ones in
+# reference/im2col_check.py and reference/conv2d_check.py.
 law conv_roundtrip:
   for +b: Nat
   for +iy: Nat

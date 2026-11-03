@@ -291,11 +291,9 @@ def conv_big() -> U32:
 # the 7 x 5 and 5 for the 7 x 6, so the odd surplus floors the last window and col2im's guards skip that candidate.
 # Both are inside the Conv2d case, so the number of cases (and the zeros the Makefile and mutate.py expect) is the same.
 def conv_stride() -> U32:
-  max3(
+  u32_max(
     c_conv(2n, 3n, 2n, 3n, 6n, 4n, 1n, 1n, run(~T.Lin<27n, 2n>, ~TA.Mat<70n, 3n>, ~TA.Mat<24n, 2n>, ~TA.Mat<24n, 27n>, ~T.Conv2d(2n, 3n, 2n, 3n, 6n, 4n, 1n, 1n, 0n), T.Lin{mat(2n, 27n, 191), mat(1n, 2n, 192)}, mat(70n, 3n, 193), mat(24n, 2n, 194), T.Lin{mat(2n, 27n, 195), mat(1n, 2n, 196)}), run(~T.Lin<27n, 2n>, ~TA.Mat<70n, 3n>, ~TA.Mat<24n, 2n>, ~TA.Mat<24n, 27n>, ~G.Conv2d(2n, 3n, 2n, 3n, 6n, 4n, 1n, 1n, 0n), T.Lin{mat(2n, 27n, 191), mat(1n, 2n, 192)}, mat(70n, 3n, 193), mat(24n, 2n, 194), T.Lin{mat(2n, 27n, 195), mat(1n, 2n, 196)})),
-    c_conv(2n, 3n, 2n, 3n, 6n, 5n, 1n, 1n, run(~T.Lin<27n, 2n>, ~TA.Mat<84n, 3n>, ~TA.Mat<24n, 2n>, ~TA.Mat<24n, 27n>, ~T.Conv2d(2n, 3n, 2n, 3n, 6n, 5n, 1n, 1n, 0n), T.Lin{mat(2n, 27n, 201), mat(1n, 2n, 202)}, mat(84n, 3n, 203), mat(24n, 2n, 204), T.Lin{mat(2n, 27n, 205), mat(1n, 2n, 206)}), run(~T.Lin<27n, 2n>, ~TA.Mat<84n, 3n>, ~TA.Mat<24n, 2n>, ~TA.Mat<24n, 27n>, ~G.Conv2d(2n, 3n, 2n, 3n, 6n, 5n, 1n, 1n, 0n), T.Lin{mat(2n, 27n, 201), mat(1n, 2n, 202)}, mat(84n, 3n, 203), mat(24n, 2n, 204), T.Lin{mat(2n, 27n, 205), mat(1n, 2n, 206)})),
-    c_conv(2n, 3n, 2n, 3n, 6n, 4n, 1n, 1n, run(~T.Lin<27n, 2n>, ~TA.Mat<70n, 3n>, ~TA.Mat<24n, 2n>, ~TA.Mat<24n, 27n>, ~T.Conv2d(2n, 3n, 2n, 3n, 6n, 4n, 1n, 1n, 0n), T.Lin{mat(2n, 27n, 191), mat(1n, 2n, 192)}, mat(70n, 3n, 193), mat(24n, 2n, 194), T.Lin{mat(2n, 27n, 195), mat(1n, 2n, 196)}), run(~T.Lin<27n, 2n>, ~TA.Mat<70n, 3n>, ~TA.Mat<24n, 2n>, ~TA.Mat<24n, 27n>, ~G.Conv2d(2n, 3n, 2n, 3n, 6n, 4n, 1n, 1n, 0n), T.Lin{mat(2n, 27n, 191), mat(1n, 2n, 192)}, mat(70n, 3n, 193), mat(24n, 2n, 194), T.Lin{mat(2n, 27n, 195), mat(1n, 2n, 196)})))
-
+    c_conv(2n, 3n, 2n, 3n, 6n, 5n, 1n, 1n, run(~T.Lin<27n, 2n>, ~TA.Mat<84n, 3n>, ~TA.Mat<24n, 2n>, ~TA.Mat<24n, 27n>, ~T.Conv2d(2n, 3n, 2n, 3n, 6n, 5n, 1n, 1n, 0n), T.Lin{mat(2n, 27n, 201), mat(1n, 2n, 202)}, mat(84n, 3n, 203), mat(24n, 2n, 204), T.Lin{mat(2n, 27n, 205), mat(1n, 2n, 206)}), run(~T.Lin<27n, 2n>, ~TA.Mat<84n, 3n>, ~TA.Mat<24n, 2n>, ~TA.Mat<24n, 27n>, ~G.Conv2d(2n, 3n, 2n, 3n, 6n, 5n, 1n, 1n, 0n), T.Lin{mat(2n, 27n, 201), mat(1n, 2n, 202)}, mat(84n, 3n, 203), mat(24n, 2n, 204), T.Lin{mat(2n, 27n, 205), mat(1n, 2n, 206)})))
 def conv2d() -> U32:
   u32_max(conv_small(), u32_max(conv_big(), conv_stride()))
 

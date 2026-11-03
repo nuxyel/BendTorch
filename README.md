@@ -6,7 +6,7 @@
   <a href="https://github.com/nuxyel/BendTorch/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/nuxyel/BendTorch/ci.yml?branch=main&style=flat-square&label=ci&labelColor=4d4a44&color=7e9a5e" alt="CI"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-8b83b5?style=flat-square&labelColor=4d4a44" alt="MIT license"></a>
   <a href="https://bend-lang.com"><img src="https://img.shields.io/badge/Bend-2.0.39-8b83b5?style=flat-square&labelColor=4d4a44" alt="Bend 2.0.39"></a>
-  <img src="https://img.shields.io/badge/laws%20proved-35-7e9a5e?style=flat-square&labelColor=4d4a44" alt="35 laws proved">
+  <img src="https://img.shields.io/badge/laws%20proved-34-7e9a5e?style=flat-square&labelColor=4d4a44" alt="34 laws proved">
   <img src="https://img.shields.io/badge/planted%20bugs-159%2F159%20as%20expected-7e9a5e?style=flat-square&labelColor=4d4a44" alt="159 planted bugs, 159 as expected">
 </p>
 
@@ -234,8 +234,10 @@ The full list, each with its measurement or reason, is in [`docs/limitations.md`
   GPU step is the runtime (filling new arrays on one lane, a fixed cost between kernels), not the work.
 - **Convolution is one layer**: `Conv2d` is `im2col` then `Linear`, in both lanes, with the parameters typed
   `Lin<c·k·k, co>` so the optimizer step, the zero parameters and the checkpoints are the linear layers' own. It has a
-  row law and a round-trip law at a 1 x 1 kernel; GroupNorm is in both lanes too. A UNet still needs attention masks
-  ([#17](https://github.com/nuxyel/BendTorch/issues/17)) and adaLN ([#19](https://github.com/nuxyel/BendTorch/issues/19)).
+  row law and a round-trip law at a 1 x 1 kernel; GroupNorm is in both lanes too, and full attention shipped in v1.3.0
+  ([#17](https://github.com/nuxyel/BendTorch/issues/17) closed). A UNet still needs RoPE2d
+  ([#18](https://github.com/nuxyel/BendTorch/issues/18)) and adaLN ([#19](https://github.com/nuxyel/BendTorch/issues/19));
+  an unconditional UNet needs neither.
 - **Matrices only**, F32 training (BF16 storage, int8 inference), one CUDA GPU; SmolLM2-1.7B trains in 32 GB only with AdamW's moments packed in BF16, at 24.1 GB of peak memory.
 
 ## Where things are
