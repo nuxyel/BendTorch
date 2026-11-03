@@ -1899,3 +1899,16 @@ Six new laws and one rewritten, all by `--verdict`, about the code the demos exe
   along x, the candidates along y starting one row late (the GPU layers gate). The scatter mutant survived
   `conv2d_check` at first: its three cases all pad by 1, so the first gathered cell is padding and reading the next one
   there changes nothing; `im2col_check`'s unpadded round trips catch it. `make mutate`: 167 mutants, 167 as expected.
+
+## v2.0.0: the release run (2026-11-03)
+
+- In since v1.3.0: the optimizer configuration in the `Train` with the guard (#27, for #24), adeerkhan's Conv2d (#22,
+  for #15), the conv probes rebuilt with the demos, Conv2d's eight mutants, the CI job's limit at 90 minutes and
+  `CHANGELOG.md`. A major release: `Train.step`'s arguments and the record's fields change; Conv2d is new names only.
+- Gates at 44c6b85 (the code of the release; after it only the CHANGELOG's date): laws and check, bits, corpus (sha256
+  a9b9fa1cffdef55c, 1.3.0's, the same bits on 1 and 16 threads), gpu (SiLU 4 ulps, cross-entropy 4, attention 176,128,
+  at small sizes 7,680, full 172,032 and full at small sizes 8,192 through CUDA's exp, as at 1.3.0; all 17 cases 0 with
+  `exp_cr`, Conv2d's among them), bits-smol, smol, check-js (`cfg_test` on the JavaScript lane), mutate with
+  `LLAMA_BEND` set (167 mutants, 167 as expected, none skipped: 164 caught, the 3 known equivalent ones survive),
+  `make package CORE=bendtorch VERSION=2.0.0.0` over local copies. All passed; `bench/bits.txt` does not move. The
+  READMEs import 2.0.0.0.
