@@ -37,6 +37,7 @@ OPS, MLP = numeric("ops_test", "test_ops.py"), numeric("mlp_test", "test_mlp.py"
 TEN = numeric("tensor_test", "test_tensor.py")
 IMAP = numeric("imap_check", "check_imap.py")
 ST = numeric("safetensors_test", "test_safetensors.py")
+CFG = numeric("cfg_test", "test_cfg.py")
 
 
 ST135 = Path(os.environ.get("LLAMA_BEND", "../llama.bend")) / "data/smollm2-135m/hf/model.safetensors"
@@ -406,6 +407,29 @@ MUTANTS = [
      "(c > 0.0 : F32)", "(c > -1.0 : F32)", INFRA, "caught"),
     ("adam config: a rejected configuration starts at 0, not NaN", "torch/main.bend",
      "    case False{}:\n      (0.0 / 0.0 : F32)", "    case False{}:\n      0.0", INFRA, "caught"),
+    ("train config: a step of another kind runs on a NoMom state (Opt.mat's silent no-op, #24)", "torch/main.bend",
+     "    case _ NoMom{}: Guarded{SGD{nan()}, NoMom{}}", "    case _ NoMom{}: Guarded{Opt.at(cfg, q1, q2), NoMom{}}", CFG,
+     "caught"),
+    ("train config: SGD runs on AdamW's moments", "torch/main.bend",
+     "    case _ TwoMom{m, v}: Guarded{nan_adam(), TwoMom{m, v}}", "    case _ TwoMom{m, v}: Guarded{Opt.at(cfg, q1, q2), TwoMom{m, v}}",
+     CFG, "caught"),
+    ("train config: a step skips OptCfg.ok", "torch/main.bend",
+     "    case CAdamW{lr, b1, b2, eps, wd, c1, c2} TwoMom{m, v}: guard_ok(P, OptCfg.ok(cfg),",
+     "    case CAdamW{lr, b1, b2, eps, wd, c1, c2} TwoMom{m, v}: guard_ok(P, True{},", CFG, "caught"),
+    ("train config: Train.with_cfg keeps the old configuration", "torch/main.bend",
+     "    case Train{p, g, st, c, p1, p2, l}: Train{p, g, st, cfg, p1, p2, l}",
+     "    case Train{p, g, st, c, p1, p2, l}: Train{p, g, st, c, p1, p2, l}", CFG, "caught"),
+    ("train config: Train.with_cfg restarts 1 - b^t", "torch/main.bend",
+     "    case Train{p, g, st, c, p1, p2, l}: Train{p, g, st, cfg, p1, p2, l}",
+     "    case Train{p, g, st, c, p1, p2, l}: Train{p, g, st, cfg, 0.0, 0.0, l}", CFG, "caught"),
+    ("train config: Train.new keeps a fixed configuration", "torch/main.bend",
+     "OptState.new(~P, ~X, ~Y, ~S, ~m, cfg), cfg, q, q, 0.0}",
+     "OptState.new(~P, ~X, ~Y, ~S, ~m, cfg), CAdamW{0.01, 0.9, 0.999, 0.00000001, 0.01, 0.1, 0.001}, q, q, 0.0}", CFG,
+     "caught"),
+    ("train config: a restored Adam state takes a fixed configuration, not the Train's", "torch/main.bend",
+     "    case Tuple{xs, p2}: Train{p, g, TwoMom{mm, vv}, cfg, p1, p2, 0.0}",
+     "    case Tuple{xs, p2}: Train{p, g, TwoMom{mm, vv}, CAdamW{0.01, 0.9, 0.999, 0.00000001, 0.01, 0.1, 0.001}, p1, p2, 0.0}",
+     CFG, "caught"),
     ("momentum: the update ignores the buffer", "torch/main.bend",
      "(x + (F32.neg(lr) * nb : F32) : F32)", "(x + (F32.neg(lr) * y : F32) : F32)", MLP, "caught"),
     ("adamw: no decoupled weight decay", "torch/main.bend",
