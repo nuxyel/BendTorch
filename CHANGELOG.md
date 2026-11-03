@@ -5,7 +5,7 @@ the packages are or in how they are used, MINOR for a new capability, PATCH for 
 four BendHub packages (`bendtorch`, `bendtorch-fast`, `bendtorch-gpu`, `bendtorch-load`) carry the release's number
 with a fourth digit (`2.0.0.0`). The engineering log behind each entry, measurement by measurement, is `NOTES.md`.
 
-## 2.0.0 (unreleased)
+## 2.0.0 (2026-11-03)
 
 A major release, with two changes. The optimizer configuration has one owner, the training state: until 1.3.0 a
 `Train` was made with one configuration and every step was given another, and the step's won; now `Train.new` takes the
