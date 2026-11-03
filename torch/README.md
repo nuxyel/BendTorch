@@ -44,8 +44,8 @@ cost at run time.
   `bend-ml-nat-lemmas@0.1.2.0`.
 - `bend PROOF.bend --verdict` (from the repository's root) → `ALL PROOFS CHECK`, with no `@unsafe`, no `?TODO` and no
   axioms.
-- On BendHub as `bendtorch@1.3.0.0`: `import bendtorch@1.3.0.0/main.bend as T`, and
-  `import bendtorch@1.3.0.0/tensor.bend as TT` for the general tensors (below); `fast.bend`, `gpu.bend` and `load.bend`
+- On BendHub as `bendtorch@2.0.0.0`: `import bendtorch@2.0.0.0/main.bend as T`, and
+  `import bendtorch@2.0.0.0/tensor.bend as TT` for the general tensors (below); `fast.bend`, `gpu.bend` and `load.bend`
   are the packages `bendtorch-fast`, `bendtorch-gpu` and `bendtorch-load`. The programs in `demo/` import the local copy
   (`import ../torch/main.bend as T`).
 
