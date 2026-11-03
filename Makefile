@@ -23,7 +23,7 @@ LLAMA_BEND ?= ../llama.bend
 ST135 = $(LLAMA_BEND)/data/smollm2-135m/hf/model.safetensors
 FAST_DEFS := ph_leafs ph_mat opt_mat mat_step lin_step2 lin_step map zip Mat.dup Mat.sum2 lin_fwd lin_b2 lin_bwd LinearF linf_bwd LinearFirstF lnb_b2 LinearNBF acti_f3 ActIn SiLU add2_f Add2 mul2_f2 mul2_f mul2_b2 Mul2 Residual Embedding Linear LinearFirst LinearNB
 
-.PHONY: setup data laws build check check-js reader bits mutate bench lint smol finetune smol-gen smol-gpu mutate-smol cuda-toolkit gpu mixed-long adamw16-long dw memory corpus bits-smol package own
+.PHONY: setup data check-rts laws build check check-js reader bits mutate bench lint smol finetune smol-gen smol-gpu mutate-smol cuda-toolkit gpu mixed-long adamw16-long dw memory corpus bits-smol package own
 
 setup:            ## install the pinned Bend and Lean if missing, create the Python venv
 	scripts/setup.sh
@@ -32,9 +32,11 @@ data:             ## MNIST and Tiny Shakespeare into data/, the twins' initial w
 	scripts/mnist.sh
 	scripts/tiny.sh
 
-laws:             ## the proofs (LAWS.bend, PROOF.bend) by bend and again by --verdict; tests/bad_*.bend rejected with their expected error
+check-rts:        ## no Bend runtime option outside +RTS ... -RTS in any tracked file (scripts/check_rts.py, standard library only)
 	$(PY) scripts/check_rts.py --self-test
 	$(PY) scripts/check_rts.py
+
+laws: check-rts   ## the proofs (LAWS.bend, PROOF.bend) by bend and again by --verdict; tests/bad_*.bend rejected with their expected error
 	! grep -n -E '^[^#]*(@unsafe|\?TODO)' torch/*.bend LAWS.bend PROOF.bend demo/*.bend
 	bend torch/main.bend --check-only
 	bend PROOF.bend --check-only | tail -2 | head -1 | grep -qx "ALL PROOFS CHECK"
@@ -49,37 +51,94 @@ laws:             ## the proofs (LAWS.bend, PROOF.bend) by bend and again by --v
 	! grep -n 'exp_cr' LAWS.bend PROOF.bend torch/*.bend
 	for f in tests/bad_*.bend; do want=$$(sed -n 's/^# expect: //p' $$f); bend $$f --check-only 2>&1 | grep -qF -- "$$want" && echo "rejected as it must be: $$f" || { echo "NOT REJECTED AS EXPECTED: $$f (wanted: $$want)"; exit 1; }; done
 
-build:            ## compile the test and demo programs into .scratch/
-	mkdir -p .scratch
-	for d in $(DEMOS); do bend demo/$$d.bend -o .scratch/$$d || exit 1; done
+build: $(addprefix build-,$(DEMOS))  ## compile the test and demo programs into .scratch/
 
-check: laws build ## the laws, then every layer, the tensor operations, the MLP, MNIST, the tiny Llama and a SmolLM2-sized block against PyTorch
+# one demo: no file is named build-<demo>, so make builds it on every run (a binary older than an import it reads
+# would test old code), and once per run however many checks read it
+build-%:
+	@mkdir -p .scratch
+	bend demo/$*.bend -o .scratch/$*
+
+# make check's tests, one target each, so that scripts/affected.py can run those a change reads; make check runs
+# them all, in this order, after building every demo
+CHECKS := check-infra check-cfg check-reader check-safetensors check-ops check-conv2d check-im2col check-tensor check-imap check-mlp check-mnist check-tiny check-tiny-rt check-dtype check-tiny-mixed check-tiny-bf16opt check-block check-fast check-gpu-test check-gpu-layers check-fullattn check-fullattn-lane check-depth check-loop
+.PHONY: $(CHECKS)
+
+check: laws build $(CHECKS)  ## the laws, then every layer, the tensor operations, the MLP, MNIST, the tiny Llama and a SmolLM2-sized block against PyTorch
+
+check-infra: build-infra_test
 	$(PY) reference/test_infra.py .scratch/infra_test
+
+check-cfg: build-cfg_test
 	$(PY) reference/test_cfg.py .scratch/cfg_test
+
+check-reader: build-reader_test
 	$(PY) reference/test_reader.py .scratch/reader_test
+
+check-safetensors: build-safetensors_test
 	$(PY) reference/test_safetensors.py .scratch/safetensors_test
+
+check-ops: build-ops_test
 	$(PY) reference/test_ops.py .scratch/ops_test
+
+check-conv2d: build-conv2d_probe
 	$(PY) reference/conv2d_check.py .scratch/conv2d_probe
+
+check-im2col: build-im2col_probe
 	$(PY) reference/im2col_check.py .scratch/im2col_probe
+
+check-tensor: build-tensor_test
 	$(PY) reference/test_tensor.py .scratch/tensor_test
+
+check-imap: build-imap_check
 	$(PY) reference/check_imap.py .scratch/imap_check
+
+check-mlp: build-mlp_test
 	$(PY) reference/test_mlp.py .scratch/mlp_test
+
+check-mnist: build-mnist
 	$(PY) reference/test_mnist.py .scratch/mnist
+
+check-tiny: build-tiny_llama
 	$(PY) reference/test_tiny.py .scratch/tiny_llama 20
+
+check-tiny-rt: build-tiny_rt
 	$(PY) reference/test_tiny_rt.py .scratch/tiny_rt 20
+
+check-dtype: build-dtype_test
 	$(PY) reference/test_dtype.py .scratch/dtype_test
+
+check-tiny-mixed: build-tiny_mixed build-tiny_llama
 	$(PY) reference/test_tiny_mixed.py .scratch/tiny_mixed .scratch/tiny_llama 20
+
+check-tiny-bf16opt: build-tiny_bf16opt build-tiny_llama
 	$(PY) reference/test_tiny_bf16opt.py .scratch/tiny_bf16opt .scratch/tiny_llama 20
+
+check-block: build-smol_block
 	$(PY) reference/test_block.py .scratch/smol_block 4
 	$(PY) reference/test_block.py .scratch/smol_block 4 135m sgd
+
+check-fast: build-fast_test
 	for t in 1 16; do test "$$(.scratch/fast_test +RTS --threads $$t -RTS | tr '\n' ' ')" = "0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 " && echo "fast: torch/fast.bend's layers and optimizer step give main.bend's bits ($$t threads)" || { echo "fast: the bits differ ($$t threads)"; exit 1; }; done
 	.scratch/fast_test --threads 16 > /dev/null 2>&1; test $$? = 2 && echo "fast: fast_test refuses a bare --threads 16 (a runtime option outside +RTS ... -RTS)" || { echo "fast_test accepted a bare --threads"; exit 1; }
 	$(PY) scripts/rts_probe.py --min 1.8 .scratch/fast_test
+
+check-gpu-test: build-gpu_test
 	for t in 1 16; do test "$$(.scratch/gpu_test +RTS --threads $$t -RTS | tr '\n' ' ')" = "0 0 0 0 0 0 0 0 " && echo "gpu: torch/gpu.bend's layers give main.bend's bits ($$t CPU threads)" || { echo "gpu: the bits differ ($$t threads)"; exit 1; }; done
+
+check-gpu-layers: build-gpu_layers_test
 	for t in 1 16; do test "$$(.scratch/gpu_layers_test +RTS --gpu off --threads $$t -RTS | tr '\n' ' ')" = "0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 " && echo "gpu: torch/gpu.bend's element-wise layers, RMSNorm, GroupNorm, RoPE, attention, full attention, optimizer step, MSE, embedding, cross-entropy and Conv2d give main.bend's bits ($$t CPU threads)" || { echo "gpu: the bits differ ($$t threads)"; exit 1; }; done
+
+check-fullattn: build-fullattn_test
 	$(PY) reference/test_fullattn.py .scratch/fullattn_test
+
+check-fullattn-lane: build-fullattn_lane
 	for t in 1 16; do .scratch/fullattn_lane +RTS --gpu off --threads $$t -RTS > .scratch/fullattn_lane_$$t.txt || exit 1; test "$$(grep -c '^cpu ' .scratch/fullattn_lane_$$t.txt) $$(grep -c '^gpu ' .scratch/fullattn_lane_$$t.txt)" = "6 6" && test "$$(sed -n 's/^cpu //p' .scratch/fullattn_lane_$$t.txt)" = "$$(sed -n 's/^gpu //p' .scratch/fullattn_lane_$$t.txt)" && echo "fullattn: the device lane's dense y, P, G, dQ, dK and dV are the CPU lane's bits ($$t CPU threads)" || { echo "fullattn: the device lane's dense stages differ from the CPU lane's ($$t threads)"; exit 1; }; done
+
+check-depth: build-depth_check
 	test "$$(.scratch/depth_check)" = "0" && echo "depth: the scratch arrays' capacity is TA.cap_depth's for n = 0..4999" || { echo "depth: differs from TA.cap_depth"; exit 1; }
+
+check-loop: build-loop_test  # demo/loop_test.bend has no output to compare: it must compile (torch/README.md's loop)
 
 corpus:           ## release time only (M14): every layer, loss, optimizer step and tensor operation against bench/corpus/'s frozen PyTorch results (corpus-2: float64 and the sum of |terms|), 1 and 16 threads
 	mkdir -p .scratch
@@ -131,12 +190,12 @@ reader:           ## the weights reader: offsets past 4 GiB (a sparse 8 GiB file
 check-js:         ## the test programs compiled to JavaScript and run with Bun, against the same oracles; their outputs against bench/bits.txt
 	scripts/check_js.sh
 
-bits: build      ## the exact outputs of the Llama (training, generation) and MNIST, 1 and 16 threads, against bench/bits.txt
+bits: build-tiny_llama build-mnist build-mlp_test build-tiny_rt  ## the exact outputs of the Llama (training, generation) and MNIST, 1 and 16 threads, against bench/bits.txt
 	scripts/bits.sh check
 	scripts/bits.sh rt
 
-mutate:           ## break the code and the specification on purpose; every mutant must be caught (scripts/mutate.py)
-	$(PY) scripts/mutate.py
+mutate:           ## break the code and the specification on purpose; every mutant must be caught (scripts/mutate.py; ONLY=<file of names> runs those)
+	$(PY) scripts/mutate.py $(if $(ONLY),--only $(ONLY))
 
 bench:            ## MNIST epoch and tiny-Llama step times, Bend against PyTorch, on 1 and 16 threads (scripts/bench.sh)
 	scripts/bench.sh
