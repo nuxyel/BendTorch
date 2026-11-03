@@ -7,11 +7,13 @@ with a fourth digit (`2.0.0.0`). The engineering log behind each entry, measurem
 
 ## 2.0.0 (unreleased)
 
-A major release: the optimizer configuration has one owner, the training state. Until 1.3.0 a `Train` was made with
-one configuration and every step was given another, and the step's won; now `Train.new` takes the configuration once,
-every step runs under it, and a step whose configuration does not fit the state's buffers is refused. It breaks how the
-package is used (`Train.step`'s arguments and the record's fields), hence the major. Reported by @adeerkhan in #24;
-the change is #27.
+A major release, with two changes. The optimizer configuration has one owner, the training state: until 1.3.0 a
+`Train` was made with one configuration and every step was given another, and the step's won; now `Train.new` takes the
+configuration once, every step runs under it, and a step whose configuration does not fit the state's buffers is
+refused (#24, #27). And convolution: `Conv2d` on the CPU and GPU lanes, with `im2col` and `col2im` (#22), which with
+`GroupNorm` and `FullAttention` completes the layers an unconditional image model (a UNet) needs (#15). The first breaks
+how the package is used (`Train.step`'s arguments and the record's fields), hence the major; the second is new names
+only. Both by or with @adeerkhan.
 
 ### What was wrong in 1.3.0 (#24)
 
@@ -50,10 +52,33 @@ the change is #27.
   q2, refused) -> Opt`, `type Guarded<P>` with `Guarded.opt`, and `nan()`, `nan_mom()`, `nan_adam()`: the pieces of the
   guard, public so that the laws can speak about them.
 
+### Conv2d (#22, for #15)
+
+- `Conv2d(n, c, co, k, hs, ws, p, s1, par)`: a 2-D convolution of `n` images, `c` channels in and `co` out, a `k x k`
+  kernel, padding `p` and stride `1 + s1` (so it is never 0), images channels last. The image's size is written as the
+  kernel plus a surplus, `h + 2p = k + hs` (and `ws` for the width), so a window bigger than its image cannot be
+  written and no call site needs a lemma; a UNet's `k = 3`, `s = 2`, `p = 1` at 64 x 64 is `hs = ws = 63`.
+- It is `im2col` then `Linear`'s three products, so its parameters are `Lin<c·k·k, co>` and the optimizer, the zero
+  parameters and the checkpoints serve it unchanged; the patch matrix is the forward's state, not rebuilt in the
+  backward.
+- `im2col` and `col2im` in `bendtorch`, the gather and its scatter, channel-major inside a patch as PyTorch's `unfold`;
+  a padded cell reads 0 and no out-of-bounds cell is touched. In `bendtorch-gpu` both are cell bangs; a device
+  `col2im` leaf sums the patches that read its cell in the CPU lane's order, so the device gives the CPU's bits.
+- Laws `im2col_rows` (the gathered list holds `n·oh·ow·c·k·k` numbers) and `conv_roundtrip` (with a 1 x 1 kernel, no
+  padding and stride 1, `col2im(im2col(x)) = x` cell for cell). The general `k = s` round trip and Conv2d's adjoint law
+  are tested, not proved: #29.
+- Tests: `demo/conv2d_probe.bend` with `reference/conv2d_check.py` (y, dX, dW and db against `F.conv2d` and its
+  autograd at three shapes: a padded border, stride 2 with an even and an odd surplus, where the last window floors;
+  every difference 0), `demo/im2col_probe.bend` with `reference/im2col_check.py` (against `F.unfold`, and the round
+  trips at `k = 1` and `k = s = 2`), and case 16 of `demo/gpu_layers_test.bend` (2 images of 5 x 3 and of CIFAR's
+  32 x 32, 3 x 3, padding 1): the device lane gives the CPU lane's bits, 0 ulps, and 0 with `exp_cr` too.
+- The two probes are built with the demos and passed to their checks, so `make check` tests the current code (before,
+  a probe that already existed was not rebuilt).
+
 ### Laws
 
-Four new laws in `LAWS.bend`, proved in `PROOF.bend` and checked again by `bend PROOF.bend --verdict`, 33 laws in all
-(with `dtype.bend`'s `unpair_pair`):
+Six new laws in `LAWS.bend`, proved in `PROOF.bend` and checked again by `bend PROOF.bend --verdict`, 35 laws in all
+(with `dtype.bend`'s `unpair_pair`): Conv2d's two (above) and the guard's four:
 
 - `guard_nomom`, `guard_onemom`, `guard_twomom`, `guard_packed`: for every configuration and each kind of state (no
   buffers, one, two, two packed in BF16), the optimizer `Opt.guard` hands the step is
@@ -86,7 +111,7 @@ Four new laws in `LAWS.bend`, proved in `PROOF.bend` and checked again by `bend 
 
 ### Mutation testing
 
-`make mutate`: 159 mutants, 159 as expected (149 at 1.3.0); 156 caught, and the same three surviving by design.
+`make mutate`: 167 mutants, 167 as expected (149 at 1.3.0); 164 caught, and the same three surviving by design.
 
 - Seven new against `cfg_test`: the guard letting another family run on a `NoMom` state (1.3.0's silent no-op) and on
   a `TwoMom` state (SGD over AdamW's moments), the guard skipping `OptCfg.ok`, `Train.with_cfg` keeping the old
@@ -98,6 +123,12 @@ Four new laws in `LAWS.bend`, proved in `PROOF.bend` and checked again by `bend 
   guard refused that configuration at every step; an equivalent mutant is dead code, so `q_start` is gone and the
   mutant now lets the guard run a rejected configuration, against `test_infra`.
 - Updated: three checkpoint mutants spell the record's new field.
+- Eight new for Conv2d: on `main.bend`, the gather reading the padding cells, a patch's row taking the kernel's column
+  offset, the channel inside a patch read from the kernel's row, `col2im` adding padding cells into the image (against
+  `conv2d_check`), and `col2im`'s scatter starting one gathered cell late (against `im2col_check`: every case of
+  `conv2d_check` is padded, so its first gathered cell is padding and the shift there changes nothing); on the device
+  lane, the gather reading the padding, a cell's sum skipping its last candidate along x, and the candidates along y
+  starting one row late (against the GPU layers gate).
 
 ### Compatibility
 
@@ -109,8 +140,9 @@ Four new laws in `LAWS.bend`, proved in `PROOF.bend` and checked again by `bend 
   1 - b2^t); a 1.x checkpoint reads into 2.0.0. The configuration is not in the file: a checkpoint resumes under the
   configuration of the `Train` it is read into. One edge: a `Train` made with a configuration `OptCfg.ok` rejects and
   saved before its first step holds 0 for 1 - b^t where 1.3.0 held NaN; any step on it is still refused.
-- **Lanes**: `bendtorch-fast` and `bendtorch-gpu` are unchanged; their layers' optimizer steps receive the guard's
-  optimizer from the core's `Train.step`. `bendtorch-load`'s `train` carries the record's new field.
+- **Lanes**: `bendtorch-fast` is unchanged; `bendtorch-gpu` adds `im2col`, `col2im` and `Conv2d` and is otherwise
+  unchanged. Both lanes' optimizer steps receive the guard's optimizer from the core's `Train.step`. `bendtorch-load`'s
+  `train` carries the record's new field. `Conv2d` is new names only: nothing that worked before changes.
 - **Toolchain**: Bend 2.0.39, Lean 4.34.0, bend-ml-tensor-array 0.1.18.0, bend-ml-tensor-fork and bend-ml-tensor-gpu
   0.1.5.0, bend-ml-binary-read 0.2.0.0, all as in 1.3.0.
 
@@ -178,15 +210,16 @@ next step. Checkpoints need no change.
 
 ### Also in this release
 
-- `docs/design.md`, `docs/limitations.md`, `torch/README.md` (the API, the rule, the move from 1.x, the laws in plain
-  language) and the README (the example, 33 laws, 159 planted faults, the mutants figure rendered again from
-  `scripts/mutate.py`) describe the new design.
+- `docs/design.md`, `docs/limitations.md`, `torch/README.md` (the API, the rule, the move from 1.x, Conv2d, the laws in
+  plain language) and the README (the example, Conv2d in place of "no convolution yet", 35 laws, 167 planted faults, the
+  mutants figure rendered again from `scripts/mutate.py`) describe the new design.
 - `docs/media/mutants.mjs`: the figure's tally keeps its spaces under librsvg (`xml:space="preserve"`), and the header
   says how to render it without a browser.
 - CI: the job's limit is 90 minutes (the full run, with the mutants and the JavaScript lane, took 57 to 60 minutes at
   1.3.0, and the 2026-11-02 nightly passed every step and was cut at 60).
 
-Thanks to @adeerkhan for #24: the report, the repro and its measurements.
+Thanks to @adeerkhan for #22, Conv2d and its laws on both lanes, and for #24, the report, the repro and its
+measurements.
 
 ## Earlier releases
 
