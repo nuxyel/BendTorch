@@ -1912,3 +1912,20 @@ Six new laws and one rewritten, all by `--verdict`, about the code the demos exe
   `LLAMA_BEND` set (167 mutants, 167 as expected, none skipped: 164 caught, the 3 known equivalent ones survive),
   `make package CORE=bendtorch VERSION=2.0.0.0` over local copies. All passed; `bench/bits.txt` does not move. The
   READMEs import 2.0.0.0.
+
+## v2.0.0 on BendHub (2026-11-03)
+
+- Release PR #30, its full CI run green (163 mutants as expected, the 4 that need a CUDA device or SmolLM2's weights
+  skipped on the runner; all 167 ran here), merged as aa2d406, tagged v2.0.0.
+- Published from `build/packages/` (`make package CORE=bendtorch VERSION=2.0.0.0` at the tag): `bendtorch@2.0.0.0`
+  `0x9fcea48a66fe9c6efe7d054f27f7e989`, `bendtorch-fast@2.0.0.0` `0xa0b60eb85d843e953594a06d8990f25d`,
+  `bendtorch-gpu@2.0.0.0` `0x834e8b1233bf4139c7d28acb926bb23b`, `bendtorch-load@2.0.0.0`
+  `0xca731afb33db06f4eb255f46ef20dba3`: the core carries the configuration in the `Train`, the guard and Conv2d; `-gpu`
+  carries Conv2d's device lane.
+- From a clean folder importing the published packages: the core checks and `--verdict` passes; the satellites check
+  with the same defs outside the proofs as `torch/` (64, 135, 22; `-gpu` had 131 at 1.3.0); `fast_test` and `gpu_test`
+  print 0 on 1 and 16 threads; `test_infra` and `test_dtype` pass; the tiny Llama's `train 50` gives `bench/bits.txt`'s
+  digest on 1 and 16 threads. The check script stopped silently at first: a satellite's `--check-only` exits non-zero
+  (its `@unsafe` or foreign defs), and under `pipefail` that ended it before it compared the lists; it now reads the
+  list and ignores the status.
+- The GitHub release v2.0.0 carries the CHANGELOG's entry and these hashes.
