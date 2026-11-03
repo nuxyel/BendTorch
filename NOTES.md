@@ -1818,3 +1818,62 @@ Six new laws and one rewritten, all by `--verdict`, about the code the demos exe
   with the same defs outside the proofs as `torch/` (64, 131, 22); `fast_test` and `gpu_test` print 0 on 1 and 16
   threads; `test_infra` and `test_dtype` pass; the tiny Llama's `train 50` gives `bench/bits.txt`'s digest on 1 and 16
   threads. The READMEs import 1.3.0.0.
+
+## The optimizer configuration lives in the Train (2026-11-03, #24)
+
+- adeerkhan's #24: `Train.new(cfg)` used its configuration only to choose the buffers (and for `OptCfg.ok`), while
+  every `Train.step(cfg)` ran under its own argument, and nothing compared the two: three `Train`s made at three
+  learning rates and stepped at one gave one curve. I reproduced it on a Linear(4 -> 2) under MSE at 1.3.0 (made at
+  0.1 and stepped at 0.001 gives 0.001's bits) and found it worse: a configuration of another kind than the state's
+  buffers fell to `Opt.mat`'s last case, so a `Train` made for SGD or momentum and stepped with AdamW kept its loss at
+  0.272812 for 20 steps, no error and no NaN; one made for AdamW and stepped with SGD ran SGD with its moments frozen;
+  and a `c1` that disagrees with `b1` ran unchecked at the step, since `OptCfg.ok` only ran in `Train.new`.
+- I built four options on branches from 1a37d12 and ran every gate on each (check, gpu, check-js, bits, bits-smol,
+  mutate): (1) the record carries the configuration and the steps lose their argument; (2) the record carries it and a
+  step given another one is refused; (3) (2) plus a step without the argument, the old one to go later; (4) no API
+  change, the step checks its configuration against the state's buffers. The same program, written each option's way,
+  gives 1.3.0's bits where it should on every one. On (4) and (1) every gate passes but one mutant, below. Adding a field to the record breaks
+  every pattern on it (42 in the demos, 8 in `load.bend`, about 30 in `main.bend`), so (2) and (3) break callers as much
+  as (1) does and keep two sources; (4) breaks nothing but leaves the learning rate given to `Train.new` unread.
+  Getters instead of patterns would not help in Bend 2 (a `match` only inspects parameters, so every caller would need a
+  helper def for the getter's result), and indexing `OptState` by the kind would change `Layer`'s `step` type and with
+  it every layer: both dropped.
+- Taken: (1) with (4)'s check. `Train{p, g, st, cfg, p1, p2, loss}`; `Train.step` and
+  `Train.step_at` run under the record's configuration; `Train.with_cfg(P, cfg, state)` replaces it from the next step
+  on, for a schedule or a change mid-run, and keeps the moments and 1 - b^t. `Opt.guard` hands each step its
+  configuration's optimizer when the configuration is the state's kind (`OptCfg.kind`) and passes `OptCfg.ok`, and
+  otherwise the state kind's optimizer with every number NaN, `q_start`'s convention: a refused step makes the
+  parameters and every later loss NaN. A checkpoint's layout does not change: dump, save and restore carry the
+  configuration of the `Train` they are given, so a checkpoint resumes under the configuration of the state it is read
+  into.
+- (4)'s and (1)'s `make mutate` found that the guard makes `Train.new`'s own refusal redundant: `q_start` set 1 - b^t to NaN for a
+  configuration `OptCfg.ok` rejects, and with the guard refusing that configuration at every step, the mutant that
+  starts it at 0 instead survived (148 of 149 as expected). An equivalent mutant is dead code, so `q_start` is gone:
+  `Train.new` starts 1 - b^t at 0 for every configuration, and the guard is the one place a rejected configuration is
+  refused, whether it came from `Train.new` or `Train.with_cfg`. Its mutant moved to the guard, against `test_infra`.
+- Laws `guard_nomom`, `guard_onemom`, `guard_twomom`, `guard_packed`: for every configuration and each kind of state,
+  the guard's optimizer is `Opt.when(kind matches && OptCfg.ok, ...)`, by `bend` and `--verdict`. The guard is written
+  as that `Opt.when` so the five cases of each proof compute.
+- `demo/cfg_test.bend` and `reference/test_cfg.py`, in `make check` and on the JavaScript lane, against
+  `torch.optim.AdamW`: the sweep written the plain way gives three runs; a warmup and a mid-run change through
+  `Train.with_cfg` match PyTorch with `param_groups[0]["lr"]` set before each step (worst 0.027 of the tolerance); a
+  checkpoint read back resumes bit for bit under the configuration of the `Train` it is read into; a step of another
+  kind (SGD -> AdamW, AdamW -> SGD, momentum -> AdamW, AdamW -> AdamW with BF16 moments) or with a wrong `c1` is NaN from
+  the next step on, and a learning-rate change within AdamW is not refused. On the JavaScript lane NaN's sign bit is
+  set (0xFFC00000 against the native 0x7FC00000); the test reads a NaN as a NaN.
+- `make mutate`: 159 mutants, 159 as expected (the three survivors are the documented ones). Ten new: seven against `cfg_test` (the guard letting another kind run on a NoMom and on a
+  TwoMom state, skipping `OptCfg.ok`, `with_cfg` ignored or restarting 1 - b^t, `Train.new` or a restored Adam state
+  keeping a fixed configuration) and three against the laws (a NoMom state taking another kind, a packed state skipping
+  `OptCfg.ok`, AdamW's kind set to the packed state's).
+- Per-step cost, one thread pinned to CPU 3, the options shuffled in each round: the tiny Llama's AdamW step 0.817 ms
+  (0.803-0.853, 5 rounds) against 1.3.0's 0.821 (0.815-0.834), and an MNIST epoch 1.7 s on both, with the same bits.
+  On the smallest step there is (Linear(4 -> 2), 100,000 AdamW steps, instructions, 10 to 30 runs each) the guard alone
+  costs nothing measurable (+2 instructions a step, within the runs' spread), and carrying the configuration in the
+  record costs 182 (+1.3% of a 14,000-instruction step; the tiny Llama's step is 18 million). Option (2)'s comparison
+  would cost 694 a step there (+4.9%).
+- `make package CORE=bendtorch VERSION=2.0.0.0` (local, nothing published): the four packages check, `--verdict`
+  passes, and their tests give the repository's bits.
+- Not released. It changes how the package is used, so by bend-ml's `docs/VERSIONING.md` it is 2.0.0: `Train.step` and
+  `Train.step_at` lose the configuration, a pattern on the record gains `cfg` after `st`, and a program that gave each
+  step its own configuration calls `Train.with_cfg` before the step with the same numbers (the same bits). A consumer's
+  training loop moves in about five lines. `docs/media/mutants.webp` still shows 149 and is to be rendered again.
