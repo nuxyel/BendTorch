@@ -56,9 +56,6 @@ BY_HAND = {"reference/check_smol_hf.py", "reference/corpus_gen.py", "reference/n
 # the implementation, as opposed to what judges it (the tests, the twins, the laws and the specification): a mutant does
 # not run on a change elsewhere in the implementation (see `mutants`)
 IMPL = {"torch/main.bend", "torch/fast.bend", "torch/gpu.bend", "torch/load.bend", "torch/tensor.bend", "torch/dtype.bend"}
-# my call (2026-11-03): pushes and pull requests to devel run the mutants a change needs, but main.bend's 102 wait for
-# the full run when the only reason is a change to main.bend itself (a change to what judges them still runs them)
-OWN_FILE_FULL_ONLY = {"torch/main.bend"}
 
 
 def git(*args):
@@ -409,13 +406,13 @@ class World:
                 text = None
             head_text = open(os.path.join(ROOT, "scripts", "mutate.py")).read()
             if text is None or code(mutate_rest(text), "m.py") != code(mutate_rest(head_text), "m.py"):
-                return [(m[0], "scripts/mutate.py's machinery changed") for m in self.mut.MUTANTS], []
+                return [(m[0], "scripts/mutate.py's machinery changed") for m in self.mut.MUTANTS]
             with tempfile.TemporaryDirectory() as d:
                 p = os.path.join(d, "mutate.py")
                 open(p, "w").write(text)
                 base_mod = load_mutate(p, "mutate_base")
                 old = {m[0]: (m[1], m[2], m[3], gate_sig(m[4]), m[5]) for m in base_mod.MUTANTS}
-        out, deferred = [], []
+        out = []
         for name, path, before, after, gate, expected in self.mut.MUTANTS:
             judges = sorted(f for f in changed & self.gate_files[gate][1] if f not in IMPL)
             if judges:
@@ -423,11 +420,8 @@ class World:
             elif "scripts/mutate.py" in changed and old.get(name) != (path, before, after, gate_sig(gate), expected):
                 out.append((name, "new or edited in scripts/mutate.py"))
             elif path in changed:
-                if path in OWN_FILE_FULL_ONLY:
-                    deferred.append(name)
-                else:
-                    out.append((name, f"{path} changed"))
-        return out, deferred
+                out.append((name, f"{path} changed"))
+        return out
 
     def select(self, changed, base, head=None):
         """head: a commit, or None for the files on disk."""
@@ -449,8 +443,7 @@ class World:
         broad = any(p[0] in ("everything", "unknown") for p in places.values())
         units = list(self.ci_units) if broad else [u for u in self.ci_units if any(u in p[1] for p in places.values())]
         local = list(LOCAL) if broad else [t for t in LOCAL if any(t in p[2] for p in places.values())]
-        muts, deferred = self.mutants(set(changed), base)
-        return {"broad": broad, "places": places, "units": units, "local": local, "mutants": muts, "deferred": deferred}
+        return {"broad": broad, "places": places, "units": units, "local": local, "mutants": self.mutants(set(changed), base)}
 
 
 def content(ref, f):
@@ -526,8 +519,7 @@ def cmd_show(args):
         print("affected: every target (make check bits check-js)")
     else:
         print("affected: make " + (" ".join(sel["units"]) if sel["units"] else "(nothing)"))
-    print(f"affected: {len(sel['mutants'])} mutants" + (f", and {len(sel['deferred'])} of main.bend's in the full run"
-                                                         if sel["deferred"] else ""))
+    print(f"affected: {len(sel['mutants'])} mutants")
     for name, why in sel["mutants"]:
         print(f"  {name}  [{why}]")
     if sel["local"]:
@@ -665,7 +657,7 @@ def cmd_ci(args):
         open(listed, "w").write("".join(n + "\n" for n, _ in sel["mutants"]))
         summary.insert(0, (f"**Every target** (a file every run reads, or one nothing is seen to read): make {targets}"
                            if sel["broad"] else f"**Selected**: make {targets or '(nothing)'}") + ("; the JavaScript lane" if js else "")
-                       + f"; {mutants} mutants" + (f" ({len(sel['deferred'])} of main.bend's wait for the full run)" if sel["deferred"] else "") + ".")
+                       + f"; {mutants} mutants.")
         if sel["mutants"]:
             summary += ["", "Mutants:", "```"] + [f"{n}  [{r}]" for n, r in sel["mutants"]] + ["```"]
         if sel["local"]:
