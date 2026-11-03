@@ -1947,8 +1947,8 @@ Six new laws and one rewritten, all by `--verdict`, about the code the demos exe
   changed; one that touches only comments needs nothing. The workflow, the selector, the setup and data scripts, and a
   file nothing is seen to read call for every target. A mutant runs when its file changes, when what judges it changes
   (the test program, the reference script, the twin, the oracle, the laws, the specification), or when it or its gate
-  is new or edited in `scripts/mutate.py`; main.bend's 102 wait for the full run when only main.bend changed.
-  `make affected` prints the same choice locally, with the release gates that need this machine.
+  is new or edited in `scripts/mutate.py`. `make affected` prints the same choice locally, with the release gates that
+  need this machine.
 - Its own checks run in CI before the choice (`make affected-check`): every mutant's text is in its file and its gate
   is seen to read that file (167 of 167), every gate is a test a make target runs, the Makefile's diff and the comment
   filter pass 9 planted edits, and a negative control: without .bend imports, 125 of the 167 mutants' files are not
@@ -1962,10 +1962,16 @@ Six new laws and one rewritten, all by `--verdict`, about the code the demos exe
   night), a dispatch and `[full]` in a pushed commit's message run everything. The text rules, the self-check and the
   choice run before any setup, so a documentation change should finish in about a minute; the first runs will say.
 - Replayed over the 180 commits on `devel` since v1.0.0 with today's graph: 118 would run nothing (notes, READMEs,
-  docs, comments), 46 a selection (a median of one target and nine mutants), 16 every target (Bend's pins, the
-  workflow, and old Makefile lines no target holds now). On my machine, with each target timed once, that is 730
-  minutes against 945 for the old push runs, while the selection also runs the mutants and the JavaScript lane a change
-  reads, which pushes never ran. The loss: a code change waits as long as before or longer (main.bend: every target
-  and the JavaScript lane; mutate.py's machinery: all 167 mutants, about 42 minutes here).
+  docs, comments), 46 a selection (a median of one target and 15 mutants), 16 every target (Bend's pins, the
+  workflow, and old Makefile lines no target holds now). On my machine, with each target timed once, that is 923
+  minutes against 945 for the old push runs: about the same time in all, but two thirds of the commits wait for
+  nothing, and the rest run the mutants and the JavaScript lane they read, which pushes never ran. The loss: a code
+  change waits as long as before or longer (main.bend: every target, the JavaScript lane and its 102 mutants, about
+  26 minutes of them here; mutate.py's machinery: all 167 mutants, about 42 minutes).
+- A first version ran all 167 mutants whenever a file called for every target: 1179 minutes in the replay, more than
+  the old push runs, so a file every run reads now runs every target and leaves the mutants to their rule. Another kept
+  main.bend's 102 mutants for the full run when only main.bend changed (730 minutes); I dropped it: those 102 are most
+  of the mutants, and a change to main.bend that lets one of them survive (as `q_start` did in #27) should show on
+  its push, not on Sunday.
 - Limits: a file read through a path assembled at run time is not seen. If nothing else names it, it calls for every
   target; if something does, the weekly run and the release are the net.
