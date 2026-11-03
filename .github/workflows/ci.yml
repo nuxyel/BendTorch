@@ -22,7 +22,7 @@ jobs:
   check:
     name: ${{ (github.event_name == 'push') && 'quick' || 'full' }} (laws, tests against PyTorch, bits${{ (github.event_name == 'push') && '' || ', mutants, JavaScript' }})
     runs-on: ubuntu-24.04      # pinned; 4 vCPU, 16 GB RAM
-    timeout-minutes: 60
+    timeout-minutes: 90       # the full run took 57-60 min at 1.3.0 (the 2026-11-02 nightly passed every step and was cut at 60)
     env:
       FULL: ${{ github.event_name != 'push' }}
       SKIP_RTS_PROBE: 1        # 4 vCPU and noisy CPU time: the runtime's thread-count probe runs on the local machine
