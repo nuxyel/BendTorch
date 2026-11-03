@@ -1832,7 +1832,7 @@ Six new laws and one rewritten, all by `--verdict`, about the code the demos exe
   mutate): (1) the record carries the configuration and the steps lose their argument; (2) the record carries it and a
   step given another one is refused; (3) (2) plus a step without the argument, the old one to go later; (4) no API
   change, the step checks its configuration against the state's buffers. The same program, written each option's way,
-  gives 1.3.0's bits where it should on every one. On (4) and (1) every gate passes but one mutant, below. Adding a field to the record breaks
+  gives 1.3.0's bits where it should on every one, and every gate passes on each but one mutant, below. Adding a field to the record breaks
   every pattern on it (42 in the demos, 8 in `load.bend`, about 30 in `main.bend`), so (2) and (3) break callers as much
   as (1) does and keep two sources; (4) breaks nothing but leaves the learning rate given to `Train.new` unread.
   Getters instead of patterns would not help in Bend 2 (a `match` only inspects parameters, so every caller would need a
@@ -1846,7 +1846,7 @@ Six new laws and one rewritten, all by `--verdict`, about the code the demos exe
   parameters and every later loss NaN. A checkpoint's layout does not change: dump, save and restore carry the
   configuration of the `Train` they are given, so a checkpoint resumes under the configuration of the state it is read
   into.
-- (4)'s and (1)'s `make mutate` found that the guard makes `Train.new`'s own refusal redundant: `q_start` set 1 - b^t to NaN for a
+- `make mutate` found on all four that the guard makes `Train.new`'s own refusal redundant: `q_start` set 1 - b^t to NaN for a
   configuration `OptCfg.ok` rejects, and with the guard refusing that configuration at every step, the mutant that
   starts it at 0 instead survived (148 of 149 as expected). An equivalent mutant is dead code, so `q_start` is gone:
   `Train.new` starts 1 - b^t at 0 for every configuration, and the guard is the one place a rejected configuration is
