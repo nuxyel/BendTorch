@@ -1981,3 +1981,5 @@ Six new laws and one rewritten, all by `--verdict`, about the code the demos exe
   found through the API: the same choice, green in 38 minutes (167 mutants, 163 as expected and the 4 that need a CUDA
   device or SmolLM2's weights skipped). This entry was the first documentation-only push: its run chose nothing and
   took 31 seconds, checkout and text rules included.
+- The full tier by hand on `devel` (0931e99, a dispatch: everything, as the Sunday run and a release will): green in
+  58 minutes, `make check bits` 10, the 167 mutants 44 (163 as expected, the same 4 skipped), the JavaScript lane 4.
