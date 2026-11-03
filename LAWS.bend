@@ -323,3 +323,39 @@ law block_sum:
   for +k: Nat
   for +r: Nat
   {Spec.passes(Nat.add(r, p), Spec.blocks(0n, Nat.mul(Spec.pw(p), k), 0n)) == Spec.passes(r, Spec.blocks(p, k, 0n)) : List<&2, Spec.Sum>}
+
+# LAW (guard_nomom .. guard_packed): an optimizer step runs exactly when its configuration is the kind of state the
+# Train holds (OptCfg.kind: SGD's none, momentum's one buffer, Adam's or AdamW's two, AdamW's two packed in BF16) and
+# passes OptCfg.ok; for every other configuration Opt.guard hands the step the refused optimizer of the state's own
+# kind, every number NaN, so the parameters and every later loss are NaN (BendTorch #24: before, a configuration of
+# another kind could leave the parameters unchanged with no error). One law per kind of state, for every configuration.
+law guard_nomom:
+  for +cfg: T.OptCfg
+  for +q1: F32
+  for +q2: F32
+  {T.Guarded.opt(Unit, T.Opt.guard(Unit, cfg, q1, q2, T.NoMom{})) == T.Opt.when(Bool.and(U32.is_eq(T.OptCfg.kind(cfg), 0), T.OptCfg.ok(cfg)), cfg, q1, q2, T.SGD{T.nan()}) : T.Opt}
+
+law guard_onemom:
+  for -P: Type
+  for +cfg: T.OptCfg
+  for +q1: F32
+  for +q2: F32
+  for m: P
+  {T.Guarded.opt(P, T.Opt.guard(P, cfg, q1, q2, T.OneMom{m})) == T.Opt.when(Bool.and(U32.is_eq(T.OptCfg.kind(cfg), 1), T.OptCfg.ok(cfg)), cfg, q1, q2, T.nan_mom()) : T.Opt}
+
+law guard_twomom:
+  for -P: Type
+  for +cfg: T.OptCfg
+  for +q1: F32
+  for +q2: F32
+  for m: P
+  for v: P
+  {T.Guarded.opt(P, T.Opt.guard(P, cfg, q1, q2, T.TwoMom{m, v})) == T.Opt.when(Bool.and(U32.is_eq(T.OptCfg.kind(cfg), 2), T.OptCfg.ok(cfg)), cfg, q1, q2, T.nan_adam()) : T.Opt}
+
+law guard_packed:
+  for -P: Type
+  for +cfg: T.OptCfg
+  for +q1: F32
+  for +q2: F32
+  for t: T.PTree
+  {T.Guarded.opt(P, T.Opt.guard(P, cfg, q1, q2, T.Packed{t})) == T.Opt.when(Bool.and(U32.is_eq(T.OptCfg.kind(cfg), 3), T.OptCfg.ok(cfg)), cfg, q1, q2, T.nan_adam()) : T.Opt}

@@ -1072,5 +1072,44 @@ def Laws.block_sum(p, k, r):
     passes_add(r, p, row),
     Equal.cong(List<&2, Spec.Sum>, List<&2, Spec.Sum>, z => Spec.passes(r, z), Spec.passes(p, row), Spec.blocks(p, k, 0n), blocks_passes(p, k, 0n)))
 
+# =====================================================================================================
+# The step's guard (BendTorch #24)
+# =====================================================================================================
+
+# PROOF (guard_nomom .. guard_packed): case by case on the configuration, both sides compute. Where the kinds agree,
+# U32.is_eq gives True, Bool.and(True, ok) is ok, and Opt.guard's own case is that same Opt.when; where they differ,
+# Bool.and(False, ok) is False without reading ok, and Opt.when(False, ..) is the refused Opt Opt.guard's last cases give.
+def Laws.guard_nomom(cfg, q1, q2):
+  match cfg:
+    case T.CSGD{lr}: {==}
+    case T.CMomentum{lr, mu}: {==}
+    case T.CAdam{lr, b1, b2, eps, wd, c1, c2}: {==}
+    case T.CAdamW{lr, b1, b2, eps, wd, c1, c2}: {==}
+    case T.CAdamWBF16{lr, b1, b2, eps, wd, c1, c2, v16}: {==}
+
+def Laws.guard_onemom(P, cfg, q1, q2, m):
+  match cfg:
+    case T.CSGD{lr}: {==}
+    case T.CMomentum{lr, mu}: {==}
+    case T.CAdam{lr, b1, b2, eps, wd, c1, c2}: {==}
+    case T.CAdamW{lr, b1, b2, eps, wd, c1, c2}: {==}
+    case T.CAdamWBF16{lr, b1, b2, eps, wd, c1, c2, v16}: {==}
+
+def Laws.guard_twomom(P, cfg, q1, q2, m, v):
+  match cfg:
+    case T.CSGD{lr}: {==}
+    case T.CMomentum{lr, mu}: {==}
+    case T.CAdam{lr, b1, b2, eps, wd, c1, c2}: {==}
+    case T.CAdamW{lr, b1, b2, eps, wd, c1, c2}: {==}
+    case T.CAdamWBF16{lr, b1, b2, eps, wd, c1, c2, v16}: {==}
+
+def Laws.guard_packed(P, cfg, q1, q2, t):
+  match cfg:
+    case T.CSGD{lr}: {==}
+    case T.CMomentum{lr, mu}: {==}
+    case T.CAdam{lr, b1, b2, eps, wd, c1, c2}: {==}
+    case T.CAdamW{lr, b1, b2, eps, wd, c1, c2}: {==}
+    case T.CAdamWBF16{lr, b1, b2, eps, wd, c1, c2, v16}: {==}
+
 def main() -> Unit:
   Unit{}
