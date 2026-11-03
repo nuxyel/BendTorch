@@ -266,6 +266,8 @@ class Graph:
     def edges(self, f):
         if f in self.cache:
             return self.cache[f]
+        if f == "scripts/affected.py":
+            return set()  # it names files as its data (BY_HAND, IMPL), not as what it reads
         try:
             text = open(os.path.join(ROOT, f), encoding="utf-8").read()
         except (OSError, UnicodeDecodeError):
@@ -497,6 +499,8 @@ def describe(w, sel):
             lines.append(f"  {f}: a tool run by hand: nothing")
         elif kind == "comments":
             lines.append(f"  {f}: comments only: nothing")
+        elif not ci and not other:
+            lines.append(f"  {f}: only the text rules, which run on every change, or scripts/mutate.py read it: nothing more")
         else:
             lines.append(f"  {f}: {' '.join(ci) or '(no CI target)'}" + (f"; also {' '.join(other)}" if other else ""))
     if sel["broad"]:
