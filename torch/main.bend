@@ -545,30 +545,48 @@ def OptCfg.check(+cfg: OptCfg) -> IO(Unit):
 # NoMom, momentum on OneMom, Adam or AdamW on TwoMom, AdamW with BF16 moments on Packed) and passes OptCfg.ok; any
 # other step runs with NaN for every number of the state's own kind, so its parameters and every loss after it are NaN,
 # as Train.new does with a configuration OptCfg.ok rejects. Without it a step of another kind fell to Opt.mat's last
-# case and left the parameters unchanged, with no error (BendTorch #24).
+# case and left the parameters unchanged, with no error (BendTorch #24). The laws guard_nomom .. guard_packed state it.
 type Guarded<-P: Type> is Type:
   Guarded{o: Opt, st: OptState<P>}
+
+def Guarded.opt(-P: Type, r: Guarded<P>) -> Opt:
+  match r:
+    case Guarded{o, st}: o
+
+# the kind of state a configuration's optimizer keeps: 0 none (SGD), 1 one buffer (momentum), 2 two (Adam, AdamW),
+# 3 two packed in BF16 (AdamW with BF16 moments)
+def OptCfg.kind(+cfg: OptCfg) -> U32:
+  match cfg:
+    case CSGD{lr}: 0
+    case CMomentum{lr, mu}: 1
+    case CAdam{lr, b1, b2, eps, wd, c1, c2}: 2
+    case CAdamW{lr, b1, b2, eps, wd, c1, c2}: 2
+    case CAdamWBF16{lr, b1, b2, eps, wd, c1, c2, v16}: 3
 
 def nan() -> F32:
   (0.0 / 0.0 : F32)
 
+def nan_mom() -> Opt:
+  Momentum{nan(), nan()}
+
 def nan_adam() -> Opt:
   Adam{nan(), nan(), nan(), nan(), nan(), False{}, nan(), nan(), nan(), nan()}
 
-def guard_ok(-P: Type, ok: Bool, +o: Opt, st: OptState<P>) -> Guarded<P>:
+# the configuration's Opt when ok, the refused one when not
+def Opt.when(ok: Bool, +cfg: OptCfg, +q1: F32, +q2: F32, +no: Opt) -> Opt:
   match ok:
-    case True{}: Guarded{o, st}
-    case False{}: Guarded{nan_adam(), st}
+    case True{}: Opt.at(cfg, q1, q2)
+    case False{}: no
 
 def Opt.guard(-P: Type, +cfg: OptCfg, +q1: F32, +q2: F32, st: OptState<P>) -> Guarded<P>:
   match cfg st:
-    case CSGD{lr} NoMom{}: Guarded{SGD{lr}, NoMom{}}
-    case CMomentum{lr, mu} OneMom{m}: Guarded{Momentum{lr, mu}, OneMom{m}}
-    case CAdam{lr, b1, b2, eps, wd, c1, c2} TwoMom{m, v}: guard_ok(P, OptCfg.ok(cfg), Opt.at(cfg, q1, q2), TwoMom{m, v})
-    case CAdamW{lr, b1, b2, eps, wd, c1, c2} TwoMom{m, v}: guard_ok(P, OptCfg.ok(cfg), Opt.at(cfg, q1, q2), TwoMom{m, v})
-    case CAdamWBF16{lr, b1, b2, eps, wd, c1, c2, v16} Packed{t}: guard_ok(P, OptCfg.ok(cfg), Opt.at(cfg, q1, q2), Packed{t})
+    case CSGD{lr} NoMom{}: Guarded{Opt.when(OptCfg.ok(cfg), cfg, q1, q2, SGD{nan()}), NoMom{}}
+    case CMomentum{lr, mu} OneMom{m}: Guarded{Opt.when(OptCfg.ok(cfg), cfg, q1, q2, nan_mom()), OneMom{m}}
+    case CAdam{lr, b1, b2, eps, wd, c1, c2} TwoMom{m, v}: Guarded{Opt.when(OptCfg.ok(cfg), cfg, q1, q2, nan_adam()), TwoMom{m, v}}
+    case CAdamW{lr, b1, b2, eps, wd, c1, c2} TwoMom{m, v}: Guarded{Opt.when(OptCfg.ok(cfg), cfg, q1, q2, nan_adam()), TwoMom{m, v}}
+    case CAdamWBF16{lr, b1, b2, eps, wd, c1, c2, v16} Packed{t}: Guarded{Opt.when(OptCfg.ok(cfg), cfg, q1, q2, nan_adam()), Packed{t}}
     case _ NoMom{}: Guarded{SGD{nan()}, NoMom{}}
-    case _ OneMom{m}: Guarded{Momentum{nan(), nan()}, OneMom{m}}
+    case _ OneMom{m}: Guarded{nan_mom(), OneMom{m}}
     case _ TwoMom{m, v}: Guarded{nan_adam(), TwoMom{m, v}}
     case _ Packed{t}: Guarded{nan_adam(), Packed{t}}
 
