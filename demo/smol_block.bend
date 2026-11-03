@@ -222,8 +222,8 @@ def cfg() -> T.OptCfg:
 
 def then(tr: T.Train<P>, k: @+l: F32 -> T.Train<P> -> IO(T.Train<P>)) -> IO(T.Train<P>):
   match tr:
-    case T.Train{p, g, st, p1, p2, +l}:
-      k(l, T.Train{p, g, st, p1, p2, l})
+    case T.Train{p, g, st, oc, p1, p2, +l}:
+      k(l, T.Train{p, g, st, oc, p1, p2, l})
 
 # k steps from input `step`, printing each step's loss
 def tloop(k: Nat, +step: U32, +opt: T.OptCfg, tr: T.Train<P>) -> IO(T.Train<P>):
@@ -231,7 +231,7 @@ def tloop(k: Nat, +step: U32, +opt: T.OptCfg, tr: T.Train<P>) -> IO(T.Train<P>):
     case 0n:
       IO.pure(T.Train<P>, tr)
     case 1n+q:
-      then(T.Train.step(~P, ~A(8n, D()), ~A(8n, D()), ~S(8n), ~A(8n, D()), ~Block(~8n), ~mse, opt, tr, input(step), target(step)), +l => tr2 => IO.bind(Unit, T.Train<P>, T.F32.print("loss", l), u => tloop(q, (step + 1 : U32), opt, tr2)))
+      then(T.Train.step(~P, ~A(8n, D()), ~A(8n, D()), ~S(8n), ~A(8n, D()), ~Block(~8n), ~mse, tr, input(step), target(step)), +l => tr2 => IO.bind(Unit, T.Train<P>, T.F32.print("loss", l), u => tloop(q, (step + 1 : U32), opt, tr2)))
 
 # one step to warm up (the optimizer's buffers are made then), then k timed steps
 def train(+k: Nat, +opt: T.OptCfg) -> IO(Unit):

@@ -284,20 +284,20 @@ def grads(+ids: List<&2, Nat>) -> IO(Unit):
 # ---- training ----
 
 def step_with(+cfg: T.OptCfg, +ids: List<&2, Nat>, tr: T.Train<P>) -> T.Train<P>:
-  T.Train.step(~P, ~X, ~Y(2n), ~S(2n), ~List<&2, Nat>, ~Model(~2n), ~ce, cfg, tr, xs_of(ids), ys_of(ids))
+  T.Train.step(~P, ~X, ~Y(2n), ~S(2n), ~List<&2, Nat>, ~Model(~2n), ~ce, tr, xs_of(ids), ys_of(ids))
 
 # k more steps from batch `step`; prints the loss of the step before (0 before the first)
 def tloop(k: Nat, +step: U32, +cfg: T.OptCfg, tr: T.Train<P>) -> IO(T.Train<P>):
   match k tr:
-    case 0n T.Train{p, g, st, p1, p2, +l}:
+    case 0n T.Train{p, g, st, oc, p1, p2, +l}:
       do IO<T.Train<P>>:
         T.F32.print("loss", l)
-        return T.Train{p, g, st, p1, p2, l}
-    case 1n+q T.Train{p, g, st, p1, p2, +l}:
+        return T.Train{p, g, st, oc, p1, p2, l}
+    case 1n+q T.Train{p, g, st, oc, p1, p2, +l}:
       do IO<T.Train<P>>:
         T.F32.print("loss", l)
         ids : List<&2, Nat> <- load_batch(step)
-        tloop(q, (step + 1 : U32), cfg, step_with(cfg, ids, T.Train{p, g, st, p1, p2, l}))
+        tloop(q, (step + 1 : U32), cfg, step_with(cfg, ids, T.Train{p, g, st, oc, p1, p2, l}))
 
 def cfg() -> T.OptCfg:
   T.CAdamW{0.003, 0.9, 0.999, 0.00000001, 0.01, 0.1, 0.001}
@@ -309,7 +309,7 @@ def train_run(+k: Nat, p: P) -> IO(T.Train<P>):
 
 def finish(tr: T.Train<P>) -> IO(Unit):
   match tr:
-    case T.Train{p, g, st, p1, p2, l}:
+    case T.Train{p, g, st, oc, p1, p2, l}:
       print_params("final", p)
 
 def train(+k: Nat) -> IO(Unit):
@@ -469,7 +469,7 @@ def show_gen(+voc: List<&2, U32>, r: Gen) -> IO(Unit):
 
 def sample2(+n: Nat, +win: List<&2, Nat>, +voc: List<&2, U32>, tr: T.Train<P>) -> IO(Unit):
   match tr:
-    case T.Train{p, g, st, p1, p2, l}:
+    case T.Train{p, g, st, oc, p1, p2, l}:
       show_gen(voc, gen(n, p, win, Nil{}))
 
 # trains for k steps, then continues the last 16 characters of the prompt by n characters, greedily
@@ -500,7 +500,7 @@ def sample_m(mk: Maybe<&2, Nat>, mn: Maybe<&2, Nat>, +prompt: String) -> IO(Unit
 
 def draw2(+n: Nat, +seed: U32, +win: List<&2, Nat>, +voc: List<&2, U32>, tr: T.Train<P>) -> IO(Unit):
   match tr:
-    case T.Train{p, g, st, p1, p2, l}:
+    case T.Train{p, g, st, oc, p1, p2, l}:
       show_gen(voc, gen_d(n, p, seed, 0, win, Nil{}))
 
 # trains for k steps, then continues the last 16 characters of the prompt by n characters, drawing each one
