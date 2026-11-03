@@ -518,8 +518,8 @@ def beta_ok(+b: F32, +c: F32) -> Bool:
   +d = ((1.0 - b : F32) - c : F32)
   Bool.and(Bool.and((c > 0.0 : F32), (c <= 1.0 : F32)), ((d * d : F32) <= 0.0000000000000142108547152020037174224853515625 : F32))
 
-# True unless an Adam configuration's c1, c2 disagree with its b1, b2. Train.new poisons the state of a configuration
-# that fails (every loss after the first is NaN); a program checks it first with OptCfg.check to stop with a message.
+# True unless an Adam configuration's c1, c2 disagree with its b1, b2. Every step refuses a configuration that fails
+# (Opt.guard: every loss after the first is NaN); a program checks it first with OptCfg.check to stop with a message.
 def OptCfg.ok(+cfg: OptCfg) -> Bool:
   match cfg:
     case CAdam{lr, b1, b2, eps, wd, c1, c2}:
@@ -959,17 +959,10 @@ def OptState.new(~P: Type, ~X: Type, ~Y: Type, ~S: Type, ~m: Layer<P, X, Y, S>, 
     case CAdamWBF16{lr, b1, b2, eps, wd, c1, c2, v16}: Packed{PNew{v16}}
     case _: TwoMom{Layer.zeros(P, X, Y, S, m), Layer.zeros(P, X, Y, S, m)}
 
-# 1 - b^t starts at 0; a configuration OptCfg.ok rejects starts at NaN, so every loss after the first is NaN.
-def q_start(ok: Bool) -> F32:
-  match ok:
-    case True{}:
-      0.0
-    case False{}:
-      (0.0 / 0.0 : F32)
-
+# 1 - b^t starts at 0. A configuration OptCfg.ok rejects is kept as given: every step refuses it (Opt.guard), so every
+# loss after the first is NaN, as with one given later through Train.with_cfg.
 def Train.new(~P: Type, ~X: Type, ~Y: Type, ~S: Type, ~m: Layer<P, X, Y, S>, +cfg: OptCfg, p: P) -> Train<P>:
-  +q = q_start(OptCfg.ok(cfg))
-  Train{p, Layer.zeros(P, X, Y, S, m), OptState.new(~P, ~X, ~Y, ~S, ~m, cfg), cfg, q, q, 0.0}
+  Train{p, Layer.zeros(P, X, Y, S, m), OptState.new(~P, ~X, ~Y, ~S, ~m, cfg), cfg, 0.0, 0.0, 0.0}
 
 def ts5(-P: Type, +cfg: OptCfg, +l: F32, +p1: F32, +p2: F32, r: Step<P>) -> Train<P>:
   match r:
