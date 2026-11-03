@@ -44,9 +44,14 @@ def words(line):
 
 
 def main():
-    binary = os.path.join(ROOT, ".scratch", "conv2d_probe")
-    if not os.path.exists(binary):
-        subprocess.run([BEND, "demo/conv2d_probe.bend", "-o", binary], cwd=ROOT, check=True)
+    # the probe to test: the argument (make check builds it with the demos, mutate.py builds each mutant's), else
+    # .scratch/conv2d_probe, built when missing (an existing one is not rebuilt, so pass the binary after a change)
+    if len(sys.argv) > 1:
+        binary = os.path.abspath(sys.argv[1])
+    else:
+        binary = os.path.join(ROOT, ".scratch", "conv2d_probe")
+        if not os.path.exists(binary):
+            subprocess.run([BEND, "demo/conv2d_probe.bend", "-o", binary], cwd=ROOT, check=True)
     out = subprocess.run([binary], cwd=ROOT, capture_output=True, text=True)
     if out.returncode != 0:
         raise SystemExit(out.stdout + out.stderr)
