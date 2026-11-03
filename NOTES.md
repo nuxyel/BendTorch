@@ -1876,4 +1876,6 @@ Six new laws and one rewritten, all by `--verdict`, about the code the demos exe
 - Not released. It changes how the package is used, so by bend-ml's `docs/VERSIONING.md` it is 2.0.0: `Train.step` and
   `Train.step_at` lose the configuration, a pattern on the record gains `cfg` after `st`, and a program that gave each
   step its own configuration calls `Train.with_cfg` before the step with the same numbers (the same bits). A consumer's
-  training loop moves in about five lines. `docs/media/mutants.webp` still shows 149 and is to be rendered again.
+  training loop moves in about five lines. `docs/media/mutants.webp` rendered again from `mutate.py` (159, 156, 3), with
+  `rsvg-convert` over the decompressed fonts, since headless Brave did not start here; the tally's text keeps its spaces
+  with `xml:space="preserve"`, which a browser renders the same.
