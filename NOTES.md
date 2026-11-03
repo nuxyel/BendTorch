@@ -1879,3 +1879,23 @@ Six new laws and one rewritten, all by `--verdict`, about the code the demos exe
   training loop moves in about five lines. `docs/media/mutants.webp` rendered again from `mutate.py` (159, 156, 3), with
   `rsvg-convert` over the decompressed fonts, since headless Brave did not start here; the tally's text keeps its spaces
   with `xml:space="preserve"`, which a browser renders the same.
+
+## Conv2d merged, its probes rebuilt, its mutants (2026-11-03, #22, #15)
+
+- adeerkhan's #22 rebased onto `devel` after #27 (a876e57; the conflicts were `LAWS.bend`, where both added laws at the
+  end, and the README's badges). Gated here on the RTX 4050 at a876e57: check, gpu (the 17 cases, Conv2d's 0 on the
+  device), check-js, bits, bits-smol, mutate (159 of 159 as expected, none skipped). Merged as d79012c. #15 closed: with
+  Conv2d, GroupNorm and FullAttention its layers are in; the general `k = s` round trip and Conv2d's adjoint law, still
+  tested rather than stated, are #29. The laws badge says 35: `LAWS.bend`'s 34 and `dtype.bend`'s `unpair_pair`.
+- `reference/conv2d_check.py` and `reference/im2col_check.py` built their probe only when `.scratch/` had none, and
+  the probes were not in `DEMOS`, so once built, `make check` tested the first build: a change to Conv2d's code went
+  unchecked until `.scratch/` was cleared (CI, from a fresh checkout, always built them). Both now take the probe as
+  their argument, the Makefile builds the two with the demos and passes them, and run by hand without one they still
+  build it when missing.
+- Eight Conv2d mutants, none of the 159 touching it before: on `main.bend`, the gather reading the padding cells, a
+  patch's row taking the kernel's column offset, the channel inside a patch read from the kernel's row, `col2im`
+  adding padding cells into the image (against `conv2d_check`), and `col2im`'s scatter starting one gathered cell late
+  (against `im2col_check`); on the device lane, the gather reading the padding, a cell's sum skipping its last candidate
+  along x, the candidates along y starting one row late (the GPU layers gate). The scatter mutant survived
+  `conv2d_check` at first: its three cases all pad by 1, so the first gathered cell is padding and reading the next one
+  there changes nothing; `im2col_check`'s unpadded round trips catch it. `make mutate`: 167 mutants, 167 as expected.
