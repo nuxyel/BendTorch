@@ -120,15 +120,15 @@ def accum(+dir: String, +labels: List<&2, Nat>) -> IO(Unit):
 # prints the loss of the step before (0 before the first) and runs k more steps
 def train(k: Nat, +dir: String, +cfg: T.OptCfg, +tag: String, +labels: List<&2, Nat>, tr: T.Train<P>) -> IO(Unit):
   match k tr:
-    case 0n T.Train{p, g, st, p1, p2, +l}:
+    case 0n T.Train{p, g, st, oc, p1, p2, +l}:
       do IO<Unit>:
         T.F32.print(tag ++ ".loss", l)
         print_params(tag, p)
-    case 1n+q T.Train{p, g, st, p1, p2, +l}:
+    case 1n+q T.Train{p, g, st, oc, p1, p2, +l}:
       do IO<Unit>:
         T.F32.print(tag ++ ".loss", l)
         x : TA.Mat<5n, 7n> <- T.Mat.load(5n, 7n, dir ++ "/x.bin", 0)
-        train(q, dir, cfg, tag, labels, T.Train.step(~P, ~TA.Mat<5n, 7n>, ~TA.Mat<5n, 3n>, ~S, ~List<&2, Nat>, ~Model(), ~ce, cfg, T.Train{p, g, st, p1, p2, l}, x, labels))
+        train(q, dir, cfg, tag, labels, T.Train.step(~P, ~TA.Mat<5n, 7n>, ~TA.Mat<5n, 3n>, ~S, ~List<&2, Nat>, ~Model(), ~ce, T.Train{p, g, st, oc, p1, p2, l}, x, labels))
 
 def run_opt(+dir: String, +labels: List<&2, Nat>, +cfg: T.OptCfg, +tag: String) -> IO(Unit):
   do IO<Unit>:

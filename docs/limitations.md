@@ -42,7 +42,9 @@ Numbers marked "busy machine" were taken with other jobs running and are a first
   cannot take `1 - 0.999` accurately, and with it computed the tiny Llama drifted from float64 38x as far as PyTorch over
   100 steps (0.50x with the constants). `OptCfg.check` stops a program whose `c1`, `c2` disagree with its betas, but
   only where the program calls it; `Train.new` cannot stop a pure computation, so without the call a wrong configuration
-  shows up as NaN losses from the second step. Adam/AdamW checkpoints written before 2026-10-18 cannot be resumed.
+  shows up as NaN losses from the second step. The same holds for a configuration given to `Train.with_cfg` and for one
+  of another family than the state's buffers: the step is refused with NaN, not stopped. Adam/AdamW checkpoints written
+  before 2026-10-18 cannot be resumed.
 - Edge cases accepted for now, to be compared later:
   - attention gives 0 where PyTorch gives NaN at a position that cannot see a -inf in V (PyTorch's 0 · inf);
   - RMSNorm's dX and LayerNorm's output and dX stay finite where the squares overflow F32, where PyTorch gives NaN.
@@ -115,8 +117,13 @@ Numbers marked "busy machine" were taken with other jobs running and are a first
 ## Features
 
 - The layers work on matrices: a tensor is a `Mat<r, c>`, with batches and heads folded into rows and columns.
-- No convolution yet: images go through `Linear` and attention layers only. `GroupNorm` is in (`main.bend` and
-  `gpu.bend`); Conv2d is the next milestone (`docs/plan.md`, [#15](https://github.com/nuxyel/BendTorch/issues/15)).
+- Convolution is `Conv2d`, `im2col` then `Linear`'s three products, in `main.bend` and, with the gather and scatter as
+  bangs, in `gpu.bend`: the patch matrix is `n·oh·ow` rows of `c·k·k`, the parameters are `Lin<c·k·k, co>`, so the
+  optimizer, the checkpoint code and the layer plumbing serve it unchanged. The image is written as the kernel plus a
+  surplus (`h + 2p = k + hs`), so a window bigger than its image cannot be written and no call site needs a lemma. What
+  is still tested rather than stated: the general `k = s` round trip of `col2im(im2col(x))` is compared with PyTorch at
+  three shapes (`reference/conv2d_check.py`), and the adjoint law is [#15](https://github.com/nuxyel/BendTorch/issues/15)'s
+  remaining piece.
 - No `.pt` loading: weights come from a flat binary file in the twins' layout or from a `model.safetensors`
   (`torch/load.bend`, through the temporary foreign reader). The exact GELU
   (`GELUErf`) runs on the CPU and in JavaScript; it is not in `gpu.bend`.

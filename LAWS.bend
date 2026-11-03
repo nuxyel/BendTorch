@@ -323,3 +323,68 @@ law block_sum:
   for +k: Nat
   for +r: Nat
   {Spec.passes(Nat.add(r, p), Spec.blocks(0n, Nat.mul(Spec.pw(p), k), 0n)) == Spec.passes(r, Spec.blocks(p, k, 0n)) : List<&2, Spec.Sum>}
+
+# LAW (guard_nomom .. guard_packed): an optimizer step runs exactly when its configuration is the kind of state the
+# Train holds (OptCfg.kind: SGD's none, momentum's one buffer, Adam's or AdamW's two, AdamW's two packed in BF16) and
+# passes OptCfg.ok; for every other configuration Opt.guard hands the step the refused optimizer of the state's own
+# kind, every number NaN, so the parameters and every later loss are NaN (BendTorch #24: before, a configuration of
+# another kind could leave the parameters unchanged with no error). One law per kind of state, for every configuration.
+law guard_nomom:
+  for +cfg: T.OptCfg
+  for +q1: F32
+  for +q2: F32
+  {T.Guarded.opt(Unit, T.Opt.guard(Unit, cfg, q1, q2, T.NoMom{})) == T.Opt.when(Bool.and(U32.is_eq(T.OptCfg.kind(cfg), 0), T.OptCfg.ok(cfg)), cfg, q1, q2, T.SGD{T.nan()}) : T.Opt}
+
+law guard_onemom:
+  for -P: Type
+  for +cfg: T.OptCfg
+  for +q1: F32
+  for +q2: F32
+  for m: P
+  {T.Guarded.opt(P, T.Opt.guard(P, cfg, q1, q2, T.OneMom{m})) == T.Opt.when(Bool.and(U32.is_eq(T.OptCfg.kind(cfg), 1), T.OptCfg.ok(cfg)), cfg, q1, q2, T.nan_mom()) : T.Opt}
+
+law guard_twomom:
+  for -P: Type
+  for +cfg: T.OptCfg
+  for +q1: F32
+  for +q2: F32
+  for m: P
+  for v: P
+  {T.Guarded.opt(P, T.Opt.guard(P, cfg, q1, q2, T.TwoMom{m, v})) == T.Opt.when(Bool.and(U32.is_eq(T.OptCfg.kind(cfg), 2), T.OptCfg.ok(cfg)), cfg, q1, q2, T.nan_adam()) : T.Opt}
+
+law guard_packed:
+  for -P: Type
+  for +cfg: T.OptCfg
+  for +q1: F32
+  for +q2: F32
+  for t: T.PTree
+  {T.Guarded.opt(P, T.Opt.guard(P, cfg, q1, q2, T.Packed{t})) == T.Opt.when(Bool.and(U32.is_eq(T.OptCfg.kind(cfg), 3), T.OptCfg.ok(cfg)), cfg, q1, q2, T.nan_adam()) : T.Opt}
+
+# LAW (im2col_rows): im2col's gathered matrix has n·oh·ow rows and c·k·k columns, so its flat list holds n·oh·ow·c·k·k
+# numbers, every one of them the value of an image cell or 0 outside a padded window. The Mat's type carries the two
+# factors; this law says the list behind it is that long, for every input, kernel, padding and stride.
+law im2col_rows:
+  for +n: Nat
+  for +h: Nat
+  for +w: Nat
+  for +c: Nat
+  for +k: Nat
+  for +p: Nat
+  for +s: Nat
+  for d: Array<F32>
+  {List.length(&2, F32, T.im2col_n(n, h, w, c, k, p, s, d)) == Nat.mul(Nat.mul(n, Nat.mul(T.ocount(h, p, k, s), T.ocount(w, p, k, s))), Nat.mul(c, Nat.mul(k, k))) : Nat}
+
+# LAW (conv_roundtrip): with a 1 x 1 kernel, no padding and a stride of 1, a patch is one cell: im2col reads the image
+# cell at the patch's own coordinates, (b, oy, ox, ch), and col2im writes that number back into it (its scatter is p_src
+# itself, in c2_go). So for k = 1, s = 1 and p = 0 the round trip col2im(im2col(x)) = x is the identity, cell for cell,
+# into the cell it came from. The kernel sizes that are covered against PyTorch are the ones in
+# reference/im2col_check.py and reference/conv2d_check.py.
+law conv_roundtrip:
+  for +b: Nat
+  for +iy: Nat
+  for +ix: Nat
+  for +ch: Nat
+  for +h: Nat
+  for +w: Nat
+  for +c: Nat
+  {T.p_src(ch, b, iy, ix, h, w, c, 1n, 0n, 1n) == U32.from_nat(Nat.add(Nat.mul(Nat.add(Nat.mul(Nat.add(Nat.mul(b, h), iy), w), ix), c), ch)) : U32}

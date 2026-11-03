@@ -1807,3 +1807,108 @@ Six new laws and one rewritten, all by `--verdict`, about the code the demos exe
   172,032 and full at small sizes 8,192 through CUDA's exp; every case 0 with `exp_cr`), bits-smol, smol, mutate (149
   mutants, 149 as expected: 146 caught, the 3 known equivalent ones survive), `make package CORE=bendtorch
   VERSION=1.3.0.0`. All passed, with the same numbers as the run at 11805b9.
+
+## v1.3.0 on BendHub (2026-11-01)
+
+- Published from `build/packages/` (`make package CORE=bendtorch VERSION=1.3.0.0` at the tag v1.3.0): `bendtorch@1.3.0.0`
+  `0x36ea31ed290fa4b30d529f2a3ef7c48f`, `bendtorch-fast@1.3.0.0` `0x262e539f65210ab30c4bcb8167815e98`,
+  `bendtorch-gpu@1.3.0.0` `0x4c5cda5550959e621d91895fcad928df`, `bendtorch-load@1.3.0.0`
+  `0x740c8b0b33caef82367f13ef8a1ef41a`: the core and `-gpu` carry GroupNorm and FullAttention.
+- From a clean folder importing the published packages: the core checks and `--verdict` passes; the satellites check
+  with the same defs outside the proofs as `torch/` (64, 131, 22); `fast_test` and `gpu_test` print 0 on 1 and 16
+  threads; `test_infra` and `test_dtype` pass; the tiny Llama's `train 50` gives `bench/bits.txt`'s digest on 1 and 16
+  threads. The READMEs import 1.3.0.0.
+
+## The optimizer configuration lives in the Train (2026-11-03, #24)
+
+- adeerkhan's #24: `Train.new(cfg)` used its configuration only to choose the buffers (and for `OptCfg.ok`), while
+  every `Train.step(cfg)` ran under its own argument, and nothing compared the two: three `Train`s made at three
+  learning rates and stepped at one gave one curve. I reproduced it on a Linear(4 -> 2) under MSE at 1.3.0 (made at
+  0.1 and stepped at 0.001 gives 0.001's bits) and found it worse: a configuration of another kind than the state's
+  buffers fell to `Opt.mat`'s last case, so a `Train` made for SGD or momentum and stepped with AdamW kept its loss at
+  0.272812 for 20 steps, no error and no NaN; one made for AdamW and stepped with SGD ran SGD with its moments frozen;
+  and a `c1` that disagrees with `b1` ran unchecked at the step, since `OptCfg.ok` only ran in `Train.new`.
+- I built four options on branches from 1a37d12 and ran every gate on each (check, gpu, check-js, bits, bits-smol,
+  mutate): (1) the record carries the configuration and the steps lose their argument; (2) the record carries it and a
+  step given another one is refused; (3) (2) plus a step without the argument, the old one to go later; (4) no API
+  change, the step checks its configuration against the state's buffers. The same program, written each option's way,
+  gives 1.3.0's bits where it should on every one, and every gate passes on each but one mutant, below. Adding a field to the record breaks
+  every pattern on it (42 in the demos, 8 in `load.bend`, about 30 in `main.bend`), so (2) and (3) break callers as much
+  as (1) does and keep two sources; (4) breaks nothing but leaves the learning rate given to `Train.new` unread.
+  Getters instead of patterns would not help in Bend 2 (a `match` only inspects parameters, so every caller would need a
+  helper def for the getter's result), and indexing `OptState` by the kind would change `Layer`'s `step` type and with
+  it every layer: both dropped.
+- Taken: (1) with (4)'s check. `Train{p, g, st, cfg, p1, p2, loss}`; `Train.step` and
+  `Train.step_at` run under the record's configuration; `Train.with_cfg(P, cfg, state)` replaces it from the next step
+  on, for a schedule or a change mid-run, and keeps the moments and 1 - b^t. `Opt.guard` hands each step its
+  configuration's optimizer when the configuration is the state's kind (`OptCfg.kind`) and passes `OptCfg.ok`, and
+  otherwise the state kind's optimizer with every number NaN, `q_start`'s convention: a refused step makes the
+  parameters and every later loss NaN. A checkpoint's layout does not change: dump, save and restore carry the
+  configuration of the `Train` they are given, so a checkpoint resumes under the configuration of the state it is read
+  into.
+- `make mutate` found on all four that the guard makes `Train.new`'s own refusal redundant: `q_start` set 1 - b^t to NaN for a
+  configuration `OptCfg.ok` rejects, and with the guard refusing that configuration at every step, the mutant that
+  starts it at 0 instead survived (148 of 149 as expected). An equivalent mutant is dead code, so `q_start` is gone:
+  `Train.new` starts 1 - b^t at 0 for every configuration, and the guard is the one place a rejected configuration is
+  refused, whether it came from `Train.new` or `Train.with_cfg`. Its mutant moved to the guard, against `test_infra`.
+- Laws `guard_nomom`, `guard_onemom`, `guard_twomom`, `guard_packed`: for every configuration and each kind of state,
+  the guard's optimizer is `Opt.when(kind matches && OptCfg.ok, ...)`, by `bend` and `--verdict`. The guard is written
+  as that `Opt.when` so the five cases of each proof compute.
+- `demo/cfg_test.bend` and `reference/test_cfg.py`, in `make check` and on the JavaScript lane, against
+  `torch.optim.AdamW`: the sweep written the plain way gives three runs; a warmup and a mid-run change through
+  `Train.with_cfg` match PyTorch with `param_groups[0]["lr"]` set before each step (worst 0.027 of the tolerance); a
+  checkpoint read back resumes bit for bit under the configuration of the `Train` it is read into; a step of another
+  kind (SGD -> AdamW, AdamW -> SGD, momentum -> AdamW, AdamW -> AdamW with BF16 moments) or with a wrong `c1` is NaN from
+  the next step on, and a learning-rate change within AdamW is not refused. On the JavaScript lane NaN's sign bit is
+  set (0xFFC00000 against the native 0x7FC00000); the test reads a NaN as a NaN.
+- `make mutate`: 159 mutants, 159 as expected (the three survivors are the documented ones). Ten new: seven against `cfg_test` (the guard letting another kind run on a NoMom and on a
+  TwoMom state, skipping `OptCfg.ok`, `with_cfg` ignored or restarting 1 - b^t, `Train.new` or a restored Adam state
+  keeping a fixed configuration) and three against the laws (a NoMom state taking another kind, a packed state skipping
+  `OptCfg.ok`, AdamW's kind set to the packed state's).
+- Per-step cost, one thread pinned to CPU 3, the options shuffled in each round: the tiny Llama's AdamW step 0.817 ms
+  (0.803-0.853, 5 rounds) against 1.3.0's 0.821 (0.815-0.834), and an MNIST epoch 1.7 s on both, with the same bits.
+  On the smallest step there is (Linear(4 -> 2), 100,000 AdamW steps, instructions, 10 to 30 runs each) the guard alone
+  costs nothing measurable (+2 instructions a step, within the runs' spread), and carrying the configuration in the
+  record costs 182 (+1.3% of a 14,000-instruction step; the tiny Llama's step is 18 million). Option (2)'s comparison
+  would cost 694 a step there (+4.9%).
+- `make package CORE=bendtorch VERSION=2.0.0.0` (local, nothing published): the four packages check, `--verdict`
+  passes, and their tests give the repository's bits.
+- Not released. It changes how the package is used, so by bend-ml's `docs/VERSIONING.md` it is 2.0.0: `Train.step` and
+  `Train.step_at` lose the configuration, a pattern on the record gains `cfg` after `st`, and a program that gave each
+  step its own configuration calls `Train.with_cfg` before the step with the same numbers (the same bits). A consumer's
+  training loop moves in about five lines. `docs/media/mutants.webp` rendered again from `mutate.py` (159, 156, 3), with
+  `rsvg-convert` over the decompressed fonts, since headless Brave did not start here; the tally's text keeps its spaces
+  with `xml:space="preserve"`, which a browser renders the same.
+
+## Conv2d merged, its probes rebuilt, its mutants (2026-11-03, #22, #15)
+
+- adeerkhan's #22 rebased onto `devel` after #27 (a876e57; the conflicts were `LAWS.bend`, where both added laws at the
+  end, and the README's badges). Gated here on the RTX 4050 at a876e57: check, gpu (the 17 cases, Conv2d's 0 on the
+  device), check-js, bits, bits-smol, mutate (159 of 159 as expected, none skipped). Merged as d79012c. #15 closed: with
+  Conv2d, GroupNorm and FullAttention its layers are in; the general `k = s` round trip and Conv2d's adjoint law, still
+  tested rather than stated, are #29. The laws badge says 35: `LAWS.bend`'s 34 and `dtype.bend`'s `unpair_pair`.
+- `reference/conv2d_check.py` and `reference/im2col_check.py` built their probe only when `.scratch/` had none, and
+  the probes were not in `DEMOS`, so once built, `make check` tested the first build: a change to Conv2d's code went
+  unchecked until `.scratch/` was cleared (CI, from a fresh checkout, always built them). Both now take the probe as
+  their argument, the Makefile builds the two with the demos and passes them, and run by hand without one they still
+  build it when missing.
+- Eight Conv2d mutants, none of the 159 touching it before: on `main.bend`, the gather reading the padding cells, a
+  patch's row taking the kernel's column offset, the channel inside a patch read from the kernel's row, `col2im`
+  adding padding cells into the image (against `conv2d_check`), and `col2im`'s scatter starting one gathered cell late
+  (against `im2col_check`); on the device lane, the gather reading the padding, a cell's sum skipping its last candidate
+  along x, the candidates along y starting one row late (the GPU layers gate). The scatter mutant survived
+  `conv2d_check` at first: its three cases all pad by 1, so the first gathered cell is padding and reading the next one
+  there changes nothing; `im2col_check`'s unpadded round trips catch it. `make mutate`: 167 mutants, 167 as expected.
+
+## v2.0.0: the release run (2026-11-03)
+
+- In since v1.3.0: the optimizer configuration in the `Train` with the guard (#27, for #24), adeerkhan's Conv2d (#22,
+  for #15), the conv probes rebuilt with the demos, Conv2d's eight mutants, the CI job's limit at 90 minutes and
+  `CHANGELOG.md`. A major release: `Train.step`'s arguments and the record's fields change; Conv2d is new names only.
+- Gates at 44c6b85 (the code of the release; after it only the CHANGELOG's date): laws and check, bits, corpus (sha256
+  a9b9fa1cffdef55c, 1.3.0's, the same bits on 1 and 16 threads), gpu (SiLU 4 ulps, cross-entropy 4, attention 176,128,
+  at small sizes 7,680, full 172,032 and full at small sizes 8,192 through CUDA's exp, as at 1.3.0; all 17 cases 0 with
+  `exp_cr`, Conv2d's among them), bits-smol, smol, check-js (`cfg_test` on the JavaScript lane), mutate with
+  `LLAMA_BEND` set (167 mutants, 167 as expected, none skipped: 164 caught, the 3 known equivalent ones survive),
+  `make package CORE=bendtorch VERSION=2.0.0.0` over local copies. All passed; `bench/bits.txt` does not move. The
+  READMEs import 2.0.0.0.

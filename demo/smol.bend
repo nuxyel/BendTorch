@@ -765,20 +765,20 @@ def cfg() -> T.OptCfg:
   T.CAdamW{0.0001, 0.9, 0.999, 0.00000001, 0.01, 0.1, 0.001}
 
 def step_with(+ids: List<&2, Nat>, tr: T.Train<P>) -> T.Train<P>:
-  T.Train.step(~P, ~X, ~Y(2n), ~S(2n), ~List<&2, Nat>, ~Model(~2n), ~ce, cfg(), tr, xs_of(ids), ys_of(ids))
+  T.Train.step(~P, ~X, ~Y(2n), ~S(2n), ~List<&2, Nat>, ~Model(~2n), ~ce, tr, xs_of(ids), ys_of(ids))
 
 # k more steps from batch `step`; prints the loss of the step before (0 before the first)
 def tloop(k: Nat, +step: U32, tr: T.Train<P>) -> IO(T.Train<P>):
   match k tr:
-    case 0n T.Train{p, g, st, p1, p2, +l}:
+    case 0n T.Train{p, g, st, oc, p1, p2, +l}:
       do IO<T.Train<P>>:
         T.F32.print("loss", l)
-        return T.Train{p, g, st, p1, p2, l}
-    case 1n+q T.Train{p, g, st, p1, p2, +l}:
+        return T.Train{p, g, st, oc, p1, p2, l}
+    case 1n+q T.Train{p, g, st, oc, p1, p2, +l}:
       do IO<T.Train<P>>:
         T.F32.print("loss", l)
         ids : List<&2, Nat> <- load_batch(step)
-        tloop(q, (step + 1 : U32), step_with(ids, T.Train{p, g, st, p1, p2, l}))
+        tloop(q, (step + 1 : U32), step_with(ids, T.Train{p, g, st, oc, p1, p2, l}))
 
 # ---- fine-tuning: training on ft_train.bin, the mean loss on ft_eval.bin's held-out batches every few steps ----
 
@@ -814,25 +814,25 @@ def ev_loop(k: Nat, +e: U32, +acc: F32, p: P) -> IO(PE):
         ids : List<&2, Nat> <- load_from("ft_eval.bin", e)
         ev_then(ev_one(p, ids), p2 => +l => ev_loop(q, (e + 1 : U32), (acc + l : F32), p2))
 
-def ev_print(r: PE, g: P, st: T.OptState<P>, +p1: F32, +p2: F32, +l: F32, k: T.Train<P> -> IO(T.Train<P>)) -> IO(T.Train<P>):
+def ev_print(r: PE, g: P, st: T.OptState<P>, +oc: T.OptCfg, +p1: F32, +p2: F32, +l: F32, k: T.Train<P> -> IO(T.Train<P>)) -> IO(T.Train<P>):
   match r:
     case PE{p, s}:
       do IO<T.Train<P>>:
         T.F32.print("eval", (s / F32.from_nat(FT_EVAL()) : F32))
-        k(T.Train{p, g, st, p1, p2, l})
+        k(T.Train{p, g, st, oc, p1, p2, l})
 
 # after a step: its loss, then the held-out loss when do_eval
 def ft_after(do_eval: Bool, tr: T.Train<P>, k: T.Train<P> -> IO(T.Train<P>)) -> IO(T.Train<P>):
   match do_eval tr:
-    case True{} T.Train{p, g, st, +p1, +p2, +l}:
+    case True{} T.Train{p, g, st, oc, +p1, +p2, +l}:
       do IO<T.Train<P>>:
         T.F32.print("loss", l)
         r : PE <- ev_loop(FT_EVAL(), 0, 0.0, p)
-        ev_print(r, g, st, p1, p2, l, k)
-    case False{} T.Train{p, g, st, +p1, +p2, +l}:
+        ev_print(r, g, st, oc, p1, p2, l, k)
+    case False{} T.Train{p, g, st, oc, +p1, +p2, +l}:
       do IO<T.Train<P>>:
         T.F32.print("loss", l)
-        k(T.Train{p, g, st, p1, p2, l})
+        k(T.Train{p, g, st, oc, p1, p2, l})
 
 def ft_loop(k: Nat, +step: U32, +every: U32, tr: T.Train<P>) -> IO(T.Train<P>):
   match k:
@@ -848,7 +848,7 @@ def ft_save(skip: Bool, +out: String, tr: T.Train<P>) -> IO(Unit):
   match skip tr:
     case True{} _:
       IO.pure(Unit, Unit{})
-    case False{} T.Train{p, g, st, p1, p2, l}:
+    case False{} T.Train{p, g, st, oc, p1, p2, l}:
       do IO<Unit>:
         p3 : P <- T.Params.save(~P, ~X, ~Y(2n), ~S(2n), ~Model(~2n), out, p)
         IO.print("saved " ++ out)

@@ -1072,5 +1072,164 @@ def Laws.block_sum(p, k, r):
     passes_add(r, p, row),
     Equal.cong(List<&2, Spec.Sum>, List<&2, Spec.Sum>, z => Spec.passes(r, z), Spec.passes(p, row), Spec.blocks(p, k, 0n), blocks_passes(p, k, 0n)))
 
+# =====================================================================================================
+# The step's guard (BendTorch #24)
+# =====================================================================================================
+
+# PROOF (guard_nomom .. guard_packed): case by case on the configuration, both sides compute. Where the kinds agree,
+# U32.is_eq gives True, Bool.and(True, ok) is ok, and Opt.guard's own case is that same Opt.when; where they differ,
+# Bool.and(False, ok) is False without reading ok, and Opt.when(False, ..) is the refused Opt Opt.guard's last cases give.
+def Laws.guard_nomom(cfg, q1, q2):
+  match cfg:
+    case T.CSGD{lr}: {==}
+    case T.CMomentum{lr, mu}: {==}
+    case T.CAdam{lr, b1, b2, eps, wd, c1, c2}: {==}
+    case T.CAdamW{lr, b1, b2, eps, wd, c1, c2}: {==}
+    case T.CAdamWBF16{lr, b1, b2, eps, wd, c1, c2, v16}: {==}
+
+def Laws.guard_onemom(P, cfg, q1, q2, m):
+  match cfg:
+    case T.CSGD{lr}: {==}
+    case T.CMomentum{lr, mu}: {==}
+    case T.CAdam{lr, b1, b2, eps, wd, c1, c2}: {==}
+    case T.CAdamW{lr, b1, b2, eps, wd, c1, c2}: {==}
+    case T.CAdamWBF16{lr, b1, b2, eps, wd, c1, c2, v16}: {==}
+
+def Laws.guard_twomom(P, cfg, q1, q2, m, v):
+  match cfg:
+    case T.CSGD{lr}: {==}
+    case T.CMomentum{lr, mu}: {==}
+    case T.CAdam{lr, b1, b2, eps, wd, c1, c2}: {==}
+    case T.CAdamW{lr, b1, b2, eps, wd, c1, c2}: {==}
+    case T.CAdamWBF16{lr, b1, b2, eps, wd, c1, c2, v16}: {==}
+
+def Laws.guard_packed(P, cfg, q1, q2, t):
+  match cfg:
+    case T.CSGD{lr}: {==}
+    case T.CMomentum{lr, mu}: {==}
+    case T.CAdam{lr, b1, b2, eps, wd, c1, c2}: {==}
+    case T.CAdamW{lr, b1, b2, eps, wd, c1, c2}: {==}
+    case T.CAdamWBF16{lr, b1, b2, eps, wd, c1, c2, v16}: {==}
+
 def main() -> Unit:
   Unit{}
+
+# =====================================================================================================
+# Convolution's gather: the length of what im2col_n returns
+# =====================================================================================================
+
+# reverse.go keeps every cell: the accumulator is handed forward, so the two lengths add
+def rev_go_len(xs: List<&2, F32>, +acc: List<&2, F32>) -> {List.length(&2, F32, List.reverse.go(&2, F32, xs, acc)) == Nat.add(List.length(&2, F32, xs), List.length(&2, F32, acc)) : Nat}:
+  match xs:
+    case Nil{}:
+      {==}
+    case Con{x, +xt}:
+      Equal.trans(Nat, List.length(&2, F32, List.reverse.go(&2, F32, Con{x, xt}, acc)), Nat.add(List.length(&2, F32, xt), Nat.add(1n, List.length(&2, F32, acc))), Nat.add(Nat.add(1n, List.length(&2, F32, xt)), List.length(&2, F32, acc)),
+        rev_go_len(xt, Con{x, acc}),
+        Equal.trans(Nat, Nat.add(List.length(&2, F32, xt), Nat.add(1n, List.length(&2, F32, acc))), Nat.add(1n, Nat.add(List.length(&2, F32, xt), List.length(&2, F32, acc))), Nat.add(Nat.add(1n, List.length(&2, F32, xt)), List.length(&2, F32, acc)),
+          Equal.sym(Nat, Nat.add(1n, Nat.add(List.length(&2, F32, xt), List.length(&2, F32, acc))), Nat.add(List.length(&2, F32, xt), Nat.add(1n, List.length(&2, F32, acc))), NL.add_succ(List.length(&2, F32, xt), List.length(&2, F32, acc))),
+          Equal.sym(Nat, Nat.add(Nat.add(1n, List.length(&2, F32, xt)), List.length(&2, F32, acc)), Nat.add(1n, Nat.add(List.length(&2, F32, xt), List.length(&2, F32, acc))), NL.add_assoc(1n, List.length(&2, F32, xt), List.length(&2, F32, acc)))))
+
+# reverse keeps the length
+def rev_len(+xs: List<&2, F32>) -> {List.length(&2, F32, List.reverse(&2, F32, xs)) == List.length(&2, F32, xs) : Nat}:
+  Equal.trans(Nat, List.length(&2, F32, List.reverse.go(&2, F32, xs, Nil{})), Nat.add(List.length(&2, F32, xs), 0n), List.length(&2, F32, xs),
+    rev_go_len(xs, Nil{}),
+    NL.add_zero(List.length(&2, F32, xs)))
+
+# gather conses one number per step of its fuel, onto the accumulator it carries. The fuel is split as 0, 1 and 2 + rest:
+# gather's own cases are 0, 1 and 1 + rest, and a symbolic 1 + rest does not tell 1 from 1 + rest, so the step is taken
+# from 2 + rest, where the 1 + rest case is the only one that can match.
+def gather_len(+left: Nat, +j: Nat, +n: Nat, +h: Nat, +w: Nat, +c: Nat, +k: Nat, +p: Nat, +s: Nat, +oh: Nat, +ow: Nat, +ckk: Nat, rc: Array<F32> & F32, +acc: List<&2, F32>) -> {List.length(&2, F32, T.gl_out(T.gather(left, j, n, h, w, c, k, p, s, oh, ow, ckk, rc, acc))) == Nat.add(left, List.length(&2, F32, acc)) : Nat}:
+  match left rc:
+    case 0n Tuple{d, v}:
+      rev_len(acc)
+    case 1n Tuple{d, v}:
+      rev_len(Con{v, acc})
+    case 2n+rest Tuple{d, +v}:
+      Equal.trans(Nat, List.length(&2, F32, T.gl_out(T.gather(1n+rest, (j + 1n : Nat), n, h, w, c, k, p, s, oh, ow, ckk, T.p_rc(Bool.and(Nat.is_lt(Nat.div((j + 1n : Nat), ckk), Nat.mul(n, Nat.mul(oh, ow))), T.p_ok(Nat.mod((j + 1n : Nat), ckk), Nat.div(Nat.mod(Nat.div((j + 1n : Nat), ckk), Nat.mul(oh, ow)), ow), Nat.mod(Nat.mod(Nat.div((j + 1n : Nat), ckk), Nat.mul(oh, ow)), ow), h, w, k, p, s)), d, T.p_src(Nat.mod((j + 1n : Nat), ckk), Nat.div(Nat.div((j + 1n : Nat), ckk), Nat.mul(oh, ow)), Nat.div(Nat.mod(Nat.div((j + 1n : Nat), ckk), Nat.mul(oh, ow)), ow), Nat.mod(Nat.mod(Nat.div((j + 1n : Nat), ckk), Nat.mul(oh, ow)), ow), h, w, c, k, p, s)), Con{v, acc}))), Nat.add(1n+rest, Nat.add(1n, List.length(&2, F32, acc))), Nat.add(2n+rest, List.length(&2, F32, acc)),
+        gather_len(1n+rest, (j + 1n : Nat), n, h, w, c, k, p, s, oh, ow, ckk, T.p_rc(Bool.and(Nat.is_lt(Nat.div((j + 1n : Nat), ckk), Nat.mul(n, Nat.mul(oh, ow))), T.p_ok(Nat.mod((j + 1n : Nat), ckk), Nat.div(Nat.mod(Nat.div((j + 1n : Nat), ckk), Nat.mul(oh, ow)), ow), Nat.mod(Nat.mod(Nat.div((j + 1n : Nat), ckk), Nat.mul(oh, ow)), ow), h, w, k, p, s)), d, T.p_src(Nat.mod((j + 1n : Nat), ckk), Nat.div(Nat.div((j + 1n : Nat), ckk), Nat.mul(oh, ow)), Nat.div(Nat.mod(Nat.div((j + 1n : Nat), ckk), Nat.mul(oh, ow)), ow), Nat.mod(Nat.mod(Nat.div((j + 1n : Nat), ckk), Nat.mul(oh, ow)), ow), h, w, c, k, p, s)), Con{v, acc}),
+        Equal.trans(Nat, Nat.add(1n+rest, Nat.add(1n, List.length(&2, F32, acc))), Nat.add(1n, Nat.add(1n+rest, List.length(&2, F32, acc))), Nat.add(Nat.add(1n, 1n+rest), List.length(&2, F32, acc)),
+          Equal.sym(Nat, Nat.add(1n, Nat.add(1n+rest, List.length(&2, F32, acc))), Nat.add(1n+rest, Nat.add(1n, List.length(&2, F32, acc))), NL.add_succ(1n+rest, List.length(&2, F32, acc))),
+          Equal.sym(Nat, Nat.add(Nat.add(1n, 1n+rest), List.length(&2, F32, acc)), Nat.add(1n, Nat.add(1n+rest, List.length(&2, F32, acc))), NL.add_assoc(1n, 1n+rest, List.length(&2, F32, acc)))))
+
+# PROOF (im2col_rows): im2col_n gathers one number per step, over the whole flat count n·oh·ow·c·k·k.
+def Laws.im2col_rows(n, h, w, c, k, p, s, d):
+  Equal.trans(Nat, List.length(&2, F32, T.im2col_n(n, h, w, c, k, p, s, d)), Nat.add(Nat.mul(Nat.mul(n, Nat.mul(T.ocount(h, p, k, s), T.ocount(w, p, k, s))), Nat.mul(c, Nat.mul(k, k))), 0n), Nat.mul(Nat.mul(n, Nat.mul(T.ocount(h, p, k, s), T.ocount(w, p, k, s))), Nat.mul(c, Nat.mul(k, k))),
+    gather_len(Nat.mul(Nat.mul(n, Nat.mul(T.ocount(h, p, k, s), T.ocount(w, p, k, s))), Nat.mul(c, Nat.mul(k, k))), 0n, n, h, w, c, k, p, s, T.ocount(h, p, k, s), T.ocount(w, p, k, s), Nat.mul(c, Nat.mul(k, k)), T.p_rc(T.p_ok(0n, 0n, 0n, h, w, k, p, s), d, T.p_src(0n, 0n, 0n, 0n, h, w, c, k, p, s)), Nil{}),
+    NL.add_zero(Nat.mul(Nat.mul(n, Nat.mul(T.ocount(h, p, k, s), T.ocount(w, p, k, s))), Nat.mul(c, Nat.mul(k, k)))))
+
+# =====================================================================================================
+# The gather's round trip at a 1 x 1 kernel
+# =====================================================================================================
+
+# i div 1 is i and i mod 1 is 0: Nat.divmod.go(i, 0, d, 0) counts i whole blocks and carries nothing over
+def divmod_one(+i: Nat, +d: Nat) -> {Nat.divmod.go(i, 0n, d, 0n) == (Nat.add(d, i), 0n) : Nat & Nat}:
+  match i:
+    case 0n:
+      Equal.sym(Nat & Nat, (Nat.add(d, 0n), 0n), (d, 0n), Equal.cong(Nat, Nat & Nat, s => (s, 0n), Nat.add(d, 0n), d, NL.add_zero(d)))
+    case 1n+p:
+      Equal.trans(Nat & Nat, Nat.divmod.go(1n+p, 0n, d, 0n), (Nat.add(1n+d, p), 0n), (Nat.add(d, 1n+p), 0n),
+        divmod_one(p, 1n+d),
+        Equal.cong(Nat, Nat & Nat, s => (s, 0n), Nat.add(1n+d, p), Nat.add(d, 1n+p),
+          Equal.trans(Nat, Nat.add(1n+d, p), Nat.add(Nat.add(d, 1n), p), Nat.add(d, 1n+p),
+            Equal.cong(Nat, Nat, s => Nat.add(s, p), Nat.add(1n, d), Nat.add(d, 1n), NL.add_comm(1n, d)),
+            Equal.sym(Nat, Nat.add(d, 1n+p), Nat.add(Nat.add(d, 1n), p), NL.add_assoc(d, 1n, p)))))
+
+def mod_one(+i: Nat) -> {Nat.mod(i, 1n) == 0n : Nat}:
+  Equal.cong(Nat & Nat, Nat, s => Pair.snd(Nat, Nat, s), Nat.divmod.go(i, 0n, 0n, 0n), (Nat.add(0n, i), 0n), divmod_one(i, 0n))
+
+def div_one(+i: Nat) -> {Nat.div(i, 1n) == i : Nat}:
+  Equal.trans(Nat, Nat.div(i, 1n), Nat.add(0n, i), i,
+    Equal.cong(Nat & Nat, Nat, s => Pair.fst(Nat, Nat, s), Nat.divmod.go(i, 0n, 0n, 0n), (Nat.add(0n, i), 0n), divmod_one(i, 0n)),
+    {==})
+
+# p_ch(i, 1) = i, p_ky(i, 1) = 0 and p_kx(i, 1) = 0: a 1 x 1 patch is one cell
+def p_ch1(+i: Nat) -> {T.p_ch(i, 1n) == i : Nat}:
+  div_one(i)
+
+def p_ky1(+i: Nat) -> {T.p_ky(i, 1n) == 0n : Nat}:
+  Equal.trans(Nat, T.p_ky(i, 1n), Nat.div(0n, 1n), 0n,
+    Equal.cong(Nat, Nat, s => Nat.div(s, 1n), Nat.mod(i, Nat.mul(1n, 1n)), 0n, mod_one(i)),
+    div_one(0n))
+
+def p_kx1(+i: Nat) -> {T.p_kx(i, 1n) == 0n : Nat}:
+  Equal.trans(Nat, T.p_kx(i, 1n), Nat.mod(i, 1n), 0n, {==}, mod_one(i))
+
+# with no padding, p_iy and p_ix are the patch's own coordinates
+def p_iy1(+ch: Nat, +iy: Nat) -> {T.p_iy(ch, iy, 1n, 0n, 1n) == iy : Nat}:
+  Equal.trans(Nat, T.p_iy(ch, iy, 1n, 0n, 1n), Nat.sub(Nat.add(iy, 0n), 0n), iy,
+    Equal.cong(Nat, Nat, s => Nat.sub(s, 0n), Nat.add(Nat.mul(iy, 1n), T.p_ky(ch, 1n)), Nat.add(iy, 0n),
+      Equal.trans(Nat, Nat.add(Nat.mul(iy, 1n), T.p_ky(ch, 1n)), Nat.add(iy, T.p_ky(ch, 1n)), Nat.add(iy, 0n),
+        Equal.cong(Nat, Nat, s => Nat.add(s, T.p_ky(ch, 1n)), Nat.mul(iy, 1n), iy, NL.mul_one_r(iy)),
+        Equal.cong(Nat, Nat, s => Nat.add(iy, s), T.p_ky(ch, 1n), 0n, p_ky1(ch)))),
+    Equal.trans(Nat, Nat.sub(Nat.add(iy, 0n), 0n), Nat.sub(iy, 0n), iy,
+      Equal.cong(Nat, Nat, s => Nat.sub(s, 0n), Nat.add(iy, 0n), iy, NL.add_zero(iy)),
+      sub0(iy)))
+
+def p_ix1(+ch: Nat, +ix: Nat) -> {T.p_ix(ch, ix, 1n, 0n, 1n) == ix : Nat}:
+  Equal.trans(Nat, T.p_ix(ch, ix, 1n, 0n, 1n), Nat.sub(Nat.add(ix, 0n), 0n), ix,
+    Equal.cong(Nat, Nat, s => Nat.sub(s, 0n), Nat.add(Nat.mul(ix, 1n), T.p_kx(ch, 1n)), Nat.add(ix, 0n),
+      Equal.trans(Nat, Nat.add(Nat.mul(ix, 1n), T.p_kx(ch, 1n)), Nat.add(ix, T.p_kx(ch, 1n)), Nat.add(ix, 0n),
+        Equal.cong(Nat, Nat, s => Nat.add(s, T.p_kx(ch, 1n)), Nat.mul(ix, 1n), ix, NL.mul_one_r(ix)),
+        Equal.cong(Nat, Nat, s => Nat.add(ix, s), T.p_kx(ch, 1n), 0n, p_kx1(ch)))),
+    Equal.trans(Nat, Nat.sub(Nat.add(ix, 0n), 0n), Nat.sub(ix, 0n), ix,
+      Equal.cong(Nat, Nat, s => Nat.sub(s, 0n), Nat.add(ix, 0n), ix, NL.add_zero(ix)),
+      sub0(ix)))
+
+# PROOF (conv_roundtrip): the three components of the slot are the channel, row 0, column 0 of a 1 x 1 patch, and
+# p_iy / p_ix are the patch's own (iy, ix), so p_src is the image cell (b, iy, ix, ch) itself.
+def Laws.conv_roundtrip(b, iy, ix, ch, h, w, c):
+  +py = T.p_iy(ch, iy, 1n, 0n, 1n)
+  +px = T.p_ix(ch, ix, 1n, 0n, 1n)
+  +pch = T.p_ch(ch, 1n)
+  +m0 = Nat.mul(Nat.add(Nat.mul(Nat.add(Nat.mul(b, h), py), w), px), c)
+  +m1 = Nat.mul(Nat.add(Nat.mul(Nat.add(Nat.mul(b, h), py), w), ix), c)
+  +m2 = Nat.mul(Nat.add(Nat.mul(Nat.add(Nat.mul(b, h), iy), w), ix), c)
+  Equal.cong(Nat, U32, s => U32.from_nat(s), Nat.add(m0, pch), Nat.add(m2, ch),
+    Equal.trans(Nat, Nat.add(m0, pch), Nat.add(m0, ch), Nat.add(m2, ch),
+      Equal.cong(Nat, Nat, s => Nat.add(m0, s), pch, ch, p_ch1(ch)),
+      Equal.trans(Nat, Nat.add(m0, ch), Nat.add(m1, ch), Nat.add(m2, ch),
+        Equal.cong(Nat, Nat, s => Nat.add(s, ch), m0, m1,
+          Equal.cong(Nat, Nat, s => Nat.mul(Nat.add(Nat.mul(Nat.add(Nat.mul(b, h), py), w), s), c), px, ix, p_ix1(ch, ix))),
+        Equal.cong(Nat, Nat, s => Nat.add(s, ch), m1, m2,
+          Equal.cong(Nat, Nat, s => Nat.mul(Nat.add(Nat.mul(Nat.add(Nat.mul(b, h), s), w), ix), c), py, iy, p_iy1(ch, iy))))))

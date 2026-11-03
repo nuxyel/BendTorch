@@ -518,8 +518,8 @@ def beta_ok(+b: F32, +c: F32) -> Bool:
   +d = ((1.0 - b : F32) - c : F32)
   Bool.and(Bool.and((c > 0.0 : F32), (c <= 1.0 : F32)), ((d * d : F32) <= 0.0000000000000142108547152020037174224853515625 : F32))
 
-# True unless an Adam configuration's c1, c2 disagree with its b1, b2. Train.new poisons the state of a configuration
-# that fails (every loss after the first is NaN); a program checks it first with OptCfg.check to stop with a message.
+# True unless an Adam configuration's c1, c2 disagree with its b1, b2. Every step refuses a configuration that fails
+# (Opt.guard: every loss after the first is NaN); a program checks it first with OptCfg.check to stop with a message.
 def OptCfg.ok(+cfg: OptCfg) -> Bool:
   match cfg:
     case CAdam{lr, b1, b2, eps, wd, c1, c2}:
@@ -540,6 +540,55 @@ def cfg_stop(ok: Bool) -> IO(Unit):
 
 def OptCfg.check(+cfg: OptCfg) -> IO(Unit):
   cfg_stop(OptCfg.ok(cfg))
+
+# The step's Opt and the state it runs on. A step runs only when its configuration is the state's kind (SGD on
+# NoMom, momentum on OneMom, Adam or AdamW on TwoMom, AdamW with BF16 moments on Packed) and passes OptCfg.ok; any
+# other step runs with NaN for every number of the state's own kind, so its parameters and every loss after it are NaN,
+# as Train.new does with a configuration OptCfg.ok rejects. Without it a step of another kind fell to Opt.mat's last
+# case and left the parameters unchanged, with no error (BendTorch #24). The laws guard_nomom .. guard_packed state it.
+type Guarded<-P: Type> is Type:
+  Guarded{o: Opt, st: OptState<P>}
+
+def Guarded.opt(-P: Type, r: Guarded<P>) -> Opt:
+  match r:
+    case Guarded{o, st}: o
+
+# the kind of state a configuration's optimizer keeps: 0 none (SGD), 1 one buffer (momentum), 2 two (Adam, AdamW),
+# 3 two packed in BF16 (AdamW with BF16 moments)
+def OptCfg.kind(+cfg: OptCfg) -> U32:
+  match cfg:
+    case CSGD{lr}: 0
+    case CMomentum{lr, mu}: 1
+    case CAdam{lr, b1, b2, eps, wd, c1, c2}: 2
+    case CAdamW{lr, b1, b2, eps, wd, c1, c2}: 2
+    case CAdamWBF16{lr, b1, b2, eps, wd, c1, c2, v16}: 3
+
+def nan() -> F32:
+  (0.0 / 0.0 : F32)
+
+def nan_mom() -> Opt:
+  Momentum{nan(), nan()}
+
+def nan_adam() -> Opt:
+  Adam{nan(), nan(), nan(), nan(), nan(), False{}, nan(), nan(), nan(), nan()}
+
+# the configuration's Opt when ok, the refused one when not
+def Opt.when(ok: Bool, +cfg: OptCfg, +q1: F32, +q2: F32, +no: Opt) -> Opt:
+  match ok:
+    case True{}: Opt.at(cfg, q1, q2)
+    case False{}: no
+
+def Opt.guard(-P: Type, +cfg: OptCfg, +q1: F32, +q2: F32, st: OptState<P>) -> Guarded<P>:
+  match cfg st:
+    case CSGD{lr} NoMom{}: Guarded{Opt.when(OptCfg.ok(cfg), cfg, q1, q2, SGD{nan()}), NoMom{}}
+    case CMomentum{lr, mu} OneMom{m}: Guarded{Opt.when(OptCfg.ok(cfg), cfg, q1, q2, nan_mom()), OneMom{m}}
+    case CAdam{lr, b1, b2, eps, wd, c1, c2} TwoMom{m, v}: Guarded{Opt.when(OptCfg.ok(cfg), cfg, q1, q2, nan_adam()), TwoMom{m, v}}
+    case CAdamW{lr, b1, b2, eps, wd, c1, c2} TwoMom{m, v}: Guarded{Opt.when(OptCfg.ok(cfg), cfg, q1, q2, nan_adam()), TwoMom{m, v}}
+    case CAdamWBF16{lr, b1, b2, eps, wd, c1, c2, v16} Packed{t}: Guarded{Opt.when(OptCfg.ok(cfg), cfg, q1, q2, nan_adam()), Packed{t}}
+    case _ NoMom{}: Guarded{SGD{nan()}, NoMom{}}
+    case _ OneMom{m}: Guarded{nan_mom(), OneMom{m}}
+    case _ TwoMom{m, v}: Guarded{nan_adam(), TwoMom{m, v}}
+    case _ Packed{t}: Guarded{nan_adam(), Packed{t}}
 
 # dump and load for a matrix: its r*c numbers, row by row
 def mat_dump_fin(-r: Nat, -c: Nat, ml: TA.ML<r, c>) -> PL<TA.Mat<r, c>>:
@@ -898,9 +947,10 @@ type LossOut<-Y: Type> is Type:
 # Training: one step of any layer under any loss
 # =====================================================================================================
 
-# Parameters, gradient (zero between steps), optimizer-specific buffers, Adam's 1 - b1^t and 1 - b2^t, last loss.
+# Parameters, gradient (zero between steps), optimizer-specific buffers, the configuration the steps use (Train.new's,
+# or Train.with_cfg's), Adam's 1 - b1^t and 1 - b2^t, last loss.
 type Train<-P: Type> is Type:
-  Train{p: P, g: P, st: OptState<P>, p1: F32, p2: F32, loss: F32}
+  Train{p: P, g: P, st: OptState<P>, cfg: OptCfg, p1: F32, p2: F32, loss: F32}
 
 def OptState.new(~P: Type, ~X: Type, ~Y: Type, ~S: Type, ~m: Layer<P, X, Y, S>, cfg: OptCfg) -> OptState<P>:
   match cfg:
@@ -909,29 +959,26 @@ def OptState.new(~P: Type, ~X: Type, ~Y: Type, ~S: Type, ~m: Layer<P, X, Y, S>, 
     case CAdamWBF16{lr, b1, b2, eps, wd, c1, c2, v16}: Packed{PNew{v16}}
     case _: TwoMom{Layer.zeros(P, X, Y, S, m), Layer.zeros(P, X, Y, S, m)}
 
-# 1 - b^t starts at 0; a configuration OptCfg.ok rejects starts at NaN, so every loss after the first is NaN.
-def q_start(ok: Bool) -> F32:
-  match ok:
-    case True{}:
-      0.0
-    case False{}:
-      (0.0 / 0.0 : F32)
-
+# 1 - b^t starts at 0. A configuration OptCfg.ok rejects is kept as given: every step refuses it (Opt.guard), so every
+# loss after the first is NaN, as with one given later through Train.with_cfg.
 def Train.new(~P: Type, ~X: Type, ~Y: Type, ~S: Type, ~m: Layer<P, X, Y, S>, +cfg: OptCfg, p: P) -> Train<P>:
-  +q = q_start(OptCfg.ok(cfg))
-  Train{p, Layer.zeros(P, X, Y, S, m), OptState.new(~P, ~X, ~Y, ~S, ~m, cfg), q, q, 0.0}
+  Train{p, Layer.zeros(P, X, Y, S, m), OptState.new(~P, ~X, ~Y, ~S, ~m, cfg), cfg, 0.0, 0.0, 0.0}
 
-def ts5(-P: Type, +l: F32, +p1: F32, +p2: F32, r: Step<P>) -> Train<P>:
+def ts5(-P: Type, +cfg: OptCfg, +l: F32, +p1: F32, +p2: F32, r: Step<P>) -> Train<P>:
   match r:
     case Step{p, g, st}:
-      Train{p, g, st, p1, p2, l}
+      Train{p, g, st, cfg, p1, p2, l}
+
+def ts4g(~P: Type, ~X: Type, ~Y: Type, ~S: Type, ~m: Layer<P, X, Y, S>, +cfg: OptCfg, +l: F32, +q1: F32, +q2: F32, p: P, g: P, r: Guarded<P>) -> Train<P>:
+  match r:
+    case Guarded{o, st}: ts5(P, cfg, l, q1, q2, Layer.step(P, X, Y, S, m, o, p, g, st))
 
 def ts4(~P: Type, ~X: Type, ~Y: Type, ~S: Type, ~m: Layer<P, X, Y, S>, +cfg: OptCfg, st: OptState<P>, +p1: F32, +p2: F32, +l: F32, r: Bwd<P, X>) -> Train<P>:
   match r:
     case Bwd{p, dx, g}:
       +q1 = (p1 + (OptCfg.c1(cfg) * (1.0 - p1 : F32) : F32) : F32)
       +q2 = (p2 + (OptCfg.c2(cfg) * (1.0 - p2 : F32) : F32) : F32)
-      ts5(P, l, q1, q2, Layer.step(P, X, Y, S, m, Opt.at(cfg, q1, q2), p, g, st))
+      ts4g(~P, ~X, ~Y, ~S, ~m, cfg, l, q1, q2, p, g, Opt.guard(P, cfg, q1, q2, st))
 
 def ts3(~P: Type, ~X: Type, ~Y: Type, ~S: Type, ~m: Layer<P, X, Y, S>, +cfg: OptCfg, p: P, s: S, g: P, st: OptState<P>, +p1: F32, +p2: F32, r: LossOut<Y>) -> Train<P>:
   match r:
@@ -943,11 +990,15 @@ def ts2(~P: Type, ~X: Type, ~Y: Type, ~S: Type, ~T: Type, ~m: Layer<P, X, Y, S>,
     case Fwd{p, y, s}:
       ts3(~P, ~X, ~Y, ~S, ~m, cfg, p, s, g, st, p1, p2, loss(y, t))
 
-# forward, loss, backward and one optimizer step: the same code for every model
-def Train.step(~P: Type, ~X: Type, ~Y: Type, ~S: Type, ~T: Type, ~m: Layer<P, X, Y, S>, ~loss: Y -> T -> LossOut<Y>, +cfg: OptCfg, tr: Train<P>, x: X, t: T) -> Train<P>:
+# forward, loss, backward and one optimizer step under the record's configuration: the same code for every model
+def Train.step(~P: Type, ~X: Type, ~Y: Type, ~S: Type, ~T: Type, ~m: Layer<P, X, Y, S>, ~loss: Y -> T -> LossOut<Y>, tr: Train<P>, x: X, t: T) -> Train<P>:
   match tr:
-    case Train{p, g, st, p1, p2, l}:
+    case Train{p, g, st, cfg, p1, p2, l}:
       ts2(~P, ~X, ~Y, ~S, ~T, ~m, ~loss, cfg, g, st, p1, p2, t, Layer.fwd(P, X, Y, S, m, p, x))
+
+def train_at_g(-P: Type, sf: Opt -> P -> P -> OptState<P> -> Step<P>, +cfg: OptCfg, +l: F32, +q1: F32, +q2: F32, p: P, g: P, r: Guarded<P>) -> Train<P>:
+  match r:
+    case Guarded{o, st}: ts5(P, cfg, l, q1, q2, sf(o, p, g, st))
 
 # One owned model, including dimensions captured at run time. Its fwd, bwd and step closures each run once.
 def train_at_b(-P: Type, -X: Type, sf: Opt -> P -> P -> OptState<P> -> Step<P>, +cfg: OptCfg, st: OptState<P>, +p1: F32, +p2: F32, +l: F32, r: Bwd<P, X>) -> Train<P>:
@@ -955,7 +1006,7 @@ def train_at_b(-P: Type, -X: Type, sf: Opt -> P -> P -> OptState<P> -> Step<P>, 
     case Bwd{p, dx, g}:
       +q1 = (p1 + (OptCfg.c1(cfg) * (1.0 - p1 : F32) : F32) : F32)
       +q2 = (p2 + (OptCfg.c2(cfg) * (1.0 - p2 : F32) : F32) : F32)
-      ts5(P, l, q1, q2, sf(Opt.at(cfg, q1, q2), p, g, st))
+      train_at_g(P, sf, cfg, l, q1, q2, p, g, Opt.guard(P, cfg, q1, q2, st))
 
 def train_at_loss(-P: Type, -X: Type, -Y: Type, -S: Type, bf: P -> S -> Y -> P -> Bwd<P, X>, sf: Opt -> P -> P -> OptState<P> -> Step<P>, +cfg: OptCfg, p: P, s: S, g: P, st: OptState<P>, +p1: F32, +p2: F32, r: LossOut<Y>) -> Train<P>:
   match r:
@@ -965,10 +1016,17 @@ def train_at_f(-P: Type, -X: Type, -Y: Type, -S: Type, -Target: Type, bf: P -> S
   match r:
     case Fwd{p, y, s}: train_at_loss(P, X, Y, S, bf, sf, cfg, p, s, g, st, p1, p2, loss(y, t))
 
-def Train.step_at(-P: Type, -X: Type, -Y: Type, -S: Type, -Target: Type, m: Layer<P, X, Y, S>, loss: Y -> Target -> LossOut<Y>, +cfg: OptCfg, tr: Train<P>, x: X, t: Target) -> Train<P>:
+def Train.step_at(-P: Type, -X: Type, -Y: Type, -S: Type, -Target: Type, m: Layer<P, X, Y, S>, loss: Y -> Target -> LossOut<Y>, tr: Train<P>, x: X, t: Target) -> Train<P>:
   match m tr:
-    case Layer{ff, bf, sf, zeros, dump, load, store, count} Train{p, g, st, p1, p2, l}:
+    case Layer{ff, bf, sf, zeros, dump, load, store, count} Train{p, g, st, cfg, p1, p2, l}:
       train_at_f(P, X, Y, S, Target, bf, sf, loss, cfg, g, st, p1, p2, t, ff(p, x))
+
+# The same training state under another configuration from the next step on, for a schedule or a change mid-run. It
+# must be of the state's kind and pass OptCfg.ok: otherwise the next step is refused (NaN, see Opt.guard), since the
+# moments of another optimizer cannot be made up. 1 - b1^t and 1 - b2^t go on from where they are.
+def Train.with_cfg(-P: Type, +cfg: OptCfg, tr: Train<P>) -> Train<P>:
+  match tr:
+    case Train{p, g, st, c, p1, p2, l}: Train{p, g, st, cfg, p1, p2, l}
 
 # =====================================================================================================
 # Reading and printing numbers (bend-ml's and llama.bend's loaders, MIT)
@@ -3095,12 +3153,177 @@ def Attention(+n: Nat, +w: Nat, +kvw: Nat, +b: Nat, +t: Nat, +kv: Nat, +g: Nat, 
   Layer{p => x => attn_fwd(n, w, kvw, AttnDims{b, t, kv, g, hd, sc}, x), p => s => dy => g2 => attn_bwd(n, w, kvw, AttnDims{b, t, kv, g, hd, sc}, s, dy), op => p => g2 => st => no_step(Unit, op, p, g2, st), u => Unit{}, p => PL{p, Nil{}}, p => xs => off => PA{p, xs, off}, p => xs => off => PA{p, xs, off}, u => 0}
 
 # =====================================================================================================
-# Losses over arrays (cross-entropy, MSE, NLL)
+# conv: im2col (one gathered row per output position) and Conv2d (im2col then Linear's three products)
 # =====================================================================================================
 
-# ---- cross-entropy of the logits z (n x c) against one label per row, mean over the rows (PyTorch's F.cross_entropy,
-# reduction="mean"); its gradient is (softmax(z) - onehot) / n. Over z's own array, a row at a time, with
-# bend-ml-tensor-array's Mat.softmax_ce's operations in its order, so its bits. ----
+# the output size: floor division, no divisibility condition (the law out_count says so)
+def ocount(+h: Nat, +p: Nat, +k: Nat, +s: Nat) -> Nat:
+  Nat.add(Nat.div(Nat.sub(Nat.add(h, Nat.mul(2n, p)), k), s), 1n)
+
+# the gathered matrix is one flat list of n·oh·ow·c·k·k numbers in raster order; cell i of position q decomposes as
+# (channel, ky, kx) and the position as (batch, oy, ox), channel-major inside the patch as PyTorch's unfold
+def p_ch(+i: Nat, +k: Nat) -> Nat:
+  Nat.div(i, Nat.mul(k, k))
+
+def p_ky(+i: Nat, +k: Nat) -> Nat:
+  Nat.div(Nat.mod(i, Nat.mul(k, k)), k)
+
+def p_kx(+i: Nat, +k: Nat) -> Nat:
+  Nat.mod(i, k)
+
+def p_iy(+i: Nat, +oy: Nat, +k: Nat, +p: Nat, +s: Nat) -> Nat:
+  Nat.sub(Nat.add(Nat.mul(oy, s), p_ky(i, k)), p)
+
+def p_ix(+i: Nat, +ox: Nat, +k: Nat, +p: Nat, +s: Nat) -> Nat:
+  Nat.sub(Nat.add(Nat.mul(ox, s), p_kx(i, k)), p)
+
+def p_ok(+i: Nat, +oy: Nat, +ox: Nat, +h: Nat, +w: Nat, +k: Nat, +p: Nat, +s: Nat) -> Bool:
+  Bool.and(
+    Bool.and(Nat.is_le(p, Nat.add(Nat.mul(oy, s), p_ky(i, k))), Nat.is_lt(p_iy(i, oy, k, p, s), h)),
+    Bool.and(Nat.is_le(p, Nat.add(Nat.mul(ox, s), p_kx(i, k))), Nat.is_lt(p_ix(i, ox, k, p, s), w)))
+
+def p_src(+i: Nat, +b: Nat, +oy: Nat, +ox: Nat, +h: Nat, +w: Nat, +c: Nat, +k: Nat, +p: Nat, +s: Nat) -> U32:
+  U32.from_nat(Nat.add(Nat.mul(Nat.add(Nat.mul(Nat.add(Nat.mul(b, h), p_iy(i, oy, k, p, s)), w), p_ix(i, ox, k, p, s)), c), p_ch(i, k)))
+
+# the array and the cell's value: read when the window is inside, 0 when it is not, so no out-of-bounds cell is touched
+def p_rc(ok: Bool, d: Array<F32>, +src: U32) -> Array<F32> & F32:
+  match ok:
+    case True{}:
+      Array.get(F32, d, src)
+    case False{}:
+      Tuple{d, 0.0}
+
+type GL is Type:
+  GL{d: Array<F32>, xs: List<&2, F32>}
+
+# one flat loop (read_l's shape): each step conses the current number and fetches the next, the array handed forward
+def gather(+left: Nat, +j: Nat, +n: Nat, +h: Nat, +w: Nat, +c: Nat, +k: Nat, +p: Nat, +s: Nat, +oh: Nat, +ow: Nat, +ckk: Nat, rc: Array<F32> & F32, +acc: List<&2, F32>) -> GL:
+  match left rc:
+    case 0n Tuple{d, v}:
+      GL{d, acc}
+    case 1n Tuple{d, +v}:
+      GL{d, Con{v, acc}}
+    case 1n+rest Tuple{d, +v}:
+      +j2 = Nat.add(j, 1n)
+      +pos = Nat.div(j2, ckk)
+      +i = Nat.mod(j2, ckk)
+      +per = Nat.mul(oh, ow)
+      +b = Nat.div(pos, per)
+      +r = Nat.mod(pos, per)
+      +oy = Nat.div(r, ow)
+      +ox = Nat.mod(r, ow)
+      gather(rest, j2, n, h, w, c, k, p, s, oh, ow, ckk,
+        p_rc(Bool.and(Nat.is_lt(pos, Nat.mul(n, per)), p_ok(i, oy, ox, h, w, k, p, s)), d,
+          p_src(i, b, oy, ox, h, w, c, k, p, s)), Con{v, acc})
+
+def gl_out(r: GL) -> List<&2, F32>:
+  match r:
+    case GL{d, xs}:
+      List.reverse(&2, F32, xs)
+
+def im2col_n(+n: Nat, +h: Nat, +w: Nat, +c: Nat, +k: Nat, +p: Nat, +s: Nat, d: Array<F32>) -> List<&2, F32>:
+  +oh = ocount(h, p, k, s)
+  +ow = ocount(w, p, k, s)
+  +ckk = Nat.mul(c, Nat.mul(k, k))
+  gl_out(gather(Nat.mul(Nat.mul(n, Nat.mul(oh, ow)), ckk), 0n, n, h, w, c, k, p, s, oh, ow, ckk,
+    p_rc(p_ok(0n, 0n, 0n, h, w, k, p, s), d, p_src(0n, 0n, 0n, 0n, h, w, c, k, p, s)), Nil{}))
+
+# add v into acc[src], reading and writing the cell the same way (Array.get hands the array back)
+def add_pair(r: Array<F32> & F32, +src: U32, +v: F32) -> Array<F32>:
+  match r:
+    case Tuple{a, +old}:
+      Array.set(F32, a, src, (old + v : F32))
+
+def add_at(+src: U32, +v: F32, acc: Array<F32>) -> Array<F32>:
+  add_pair(Array.get(F32, acc, src), src, v)
+
+def add_if(ok: Bool, +src: U32, +v: F32, acc: Array<F32>) -> Array<F32>:
+  match ok:
+    case True{}:
+      add_at(src, v, acc)
+    case False{}:
+      acc
+
+# col2im: the gradient of the gather. Every patch cell that read an image cell adds into it, in raster order of the
+# patches and then of the cell inside the patch, which is the order a per-pixel sum on the device reproduces.
+def c2_go(+left: Nat, +j: Nat, +n: Nat, +h: Nat, +w: Nat, +c: Nat, +k: Nat, +p: Nat, +s: Nat, +oh: Nat, +ow: Nat, +ckk: Nat, +per: Nat, +total: Nat, dp: Array<F32> & F32, acc: Array<F32>) -> Array<F32>:
+  match left dp:
+    case 0n Tuple{d, v}:
+      acc
+    case 1n+rest Tuple{dp2, +v}:
+      +pos = Nat.div(j, ckk)
+      +i = Nat.mod(j, ckk)
+      +b = Nat.div(pos, per)
+      +r = Nat.mod(pos, per)
+      +oy = Nat.div(r, ow)
+      +ox = Nat.mod(r, ow)
+      +j2 = Nat.add(j, 1n)
+      c2_go(rest, j2, n, h, w, c, k, p, s, oh, ow, ckk, per, total,
+        Array.get(F32, dp2, U32.from_nat(Nat.mod(j2, total))),
+        add_if(Bool.and(Nat.is_lt(pos, Nat.mul(n, per)), p_ok(i, oy, ox, h, w, k, p, s)),
+          p_src(i, b, oy, ox, h, w, c, k, p, s), v, acc))
+
+def col2im(+n: Nat, +h: Nat, +w: Nat, +c: Nat, +k: Nat, +p: Nat, +s: Nat, dp: TA.Mat<Nat.mul(n, Nat.mul(ocount(h, p, k, s), ocount(w, p, k, s))), Nat.mul(c, Nat.mul(k, k))>) -> TA.Mat<Nat.mul(n, Nat.mul(h, w)), c>:
+  match dp:
+    case TA.Mat{d}:
+      +oh = ocount(h, p, k, s)
+      +ow = ocount(w, p, k, s)
+      +ckk = Nat.mul(c, Nat.mul(k, k))
+      +per = Nat.mul(oh, ow)
+      +total = Nat.mul(Nat.mul(n, per), ckk)
+      +size = Nat.mul(Nat.mul(n, Nat.mul(h, w)), c)
+      TA.Mat{c2_go(total, 0n, n, h, w, c, k, p, s, oh, ow, ckk, per, total,
+        Array.get(F32, d, U32.from_nat(0n)),
+        Array.new(F32, TA.cap_depth(size), 0.0))}
+
+def im2col(+n: Nat, +h: Nat, +w: Nat, +c: Nat, +k: Nat, +p: Nat, +s: Nat, x: TA.Mat<Nat.mul(n, Nat.mul(h, w)), c>) -> TA.Mat<Nat.mul(n, Nat.mul(ocount(h, p, k, s), ocount(w, p, k, s))), Nat.mul(c, Nat.mul(k, k))>:
+  match x:
+    case TA.Mat{d}:
+      TA.Mat.from_list(Nat.mul(n, Nat.mul(ocount(h, p, k, s), ocount(w, p, k, s))), Nat.mul(c, Nat.mul(k, k)), im2col_n(n, h, w, c, k, p, s, d))
+
+# Conv2d is im2col then Linear's three products, so its parameter type is Lin<c·k·k, co> and it inherits lin_step,
+# lin_zeros and the PL/PA plumbing: a Train sees a parameter tree it already knows. The stride is given as s - 1
+# (1n+s below), so it is never 0; the patch matrix is kept only in the forward's state, which is what the backward
+# needs, and it is not rebuilt.
+#
+# The image's size is written as the kernel plus a surplus: the caller passes `hs`/`ws` with h + 2p = k + hs and
+# w + 2p = k + ws, and the image follows, h = k + hs - 2p (cimg). A window bigger than its image is therefore
+# unwritable: k <= h + 2p holds by construction, and no call site needs a lemma (the UNet's k = 3, s = 2, p = 1 at
+# 64 x 64 writes hs = ws = 63). The one condition left is the padding's, 2p <= k + hs; a caller that breaks it gets a
+# smaller image than it asked for, and its own Mat's size refuses the mismatch.
+
+# the image's shape from the surplus: h = k + hs - 2p, and the output count, (h + 2p - k)/s + 1, which is hs/s + 1 once
+# the surplus is the padded image's
+def cimg(+k: Nat, +hs: Nat, +p: Nat) -> Nat:
+  Nat.sub(Nat.add(k, hs), Nat.mul(2n, p))
+
+def ckk(+c: Nat, +k: Nat) -> Nat:
+  Nat.mul(c, Nat.mul(k, k))
+
+def chw(+k: Nat, +hs: Nat, +ws: Nat, +p: Nat) -> Nat:
+  Nat.mul(cimg(k, hs, p), cimg(k, ws, p))
+
+def coh(+k: Nat, +hs: Nat, +p: Nat, +s1: Nat) -> Nat:
+  ocount(cimg(k, hs, p), p, k, Nat.add(1n, s1))
+
+def cohw(+k: Nat, +hs: Nat, +ws: Nat, +p: Nat, +s1: Nat) -> Nat:
+  Nat.mul(coh(k, hs, p, s1), coh(k, ws, p, s1))
+
+def conv_b2(+n: Nat, +c: Nat, +co: Nat, +k: Nat, +hs: Nat, +ws: Nat, +p: Nat, +s1: Nat, b: Bwd<Lin<ckk(c, k), co>, TA.Mat<Nat.mul(n, cohw(k, hs, ws, p, s1)), ckk(c, k)>>) -> Bwd<Lin<ckk(c, k), co>, TA.Mat<Nat.mul(n, chw(k, hs, ws, p)), c>>:
+  match b:
+    case Bwd{prm, dx, gg}:
+      Bwd{prm, col2im(n, cimg(k, hs, p), cimg(k, ws, p), c, k, p, Nat.add(1n, s1), dx), gg}
+
+def Conv2d(+n: Nat, +c: Nat, +co: Nat, +k: Nat, +hs: Nat, +ws: Nat, +p: Nat, +s1: Nat, +par: Nat) -> Layer<Lin<ckk(c, k), co>, TA.Mat<Nat.mul(n, chw(k, hs, ws, p)), c>, TA.Mat<Nat.mul(n, cohw(k, hs, ws, p, s1)), co>, TA.Mat<Nat.mul(n, cohw(k, hs, ws, p, s1)), ckk(c, k)>>:
+  Layer{
+    prm => x => lin_fwd(Nat.mul(n, cohw(k, hs, ws, p, s1)), ckk(c, k), co, par, prm, im2col(n, cimg(k, hs, p), cimg(k, ws, p), c, k, p, Nat.add(1n, s1), x)),
+    prm => st => dy => gg => conv_b2(n, c, co, k, hs, ws, p, s1, lin_bwd(Nat.mul(n, cohw(k, hs, ws, p, s1)), ckk(c, k), co, par, prm, st, dy, gg)),
+    op => prm => gg => st => lin_step(ckk(c, k), co, op, prm, gg, st),
+    u => lin_zeros(ckk(c, k), co),
+    prm => lin_dump(ckk(c, k), co, prm),
+    prm => xs => off => lin_load(ckk(c, k), co, prm, xs, off),
+    prm => xs => off => lin_store(ckk(c, k), co, prm, xs, off),
+    u => U32.from_nat(Nat.mul(co, Nat.add(1n, ckk(c, k))))}
 
 def hit(b: Bool) -> F32:
   match b:
@@ -3470,18 +3693,18 @@ def pt_load(xs: Array<F32>, +off: U32) -> PTA:
 type TrainPL<-P: Type> is Type:
   TrainPL{tr: Train<P>, xs: List<&2, F32>}
 
-def td0(-P: Type, g: P, +p1: F32, +p2: F32, +l: F32, rp: PL<P>) -> TrainPL<P>:
+def td0(-P: Type, g: P, +cfg: OptCfg, +p1: F32, +p2: F32, +l: F32, rp: PL<P>) -> TrainPL<P>:
   match rp:
-    case PL{p, xp}: TrainPL{Train{p, g, NoMom{}, p1, p2, l}, xp}
+    case PL{p, xp}: TrainPL{Train{p, g, NoMom{}, cfg, p1, p2, l}, xp}
 
-def td1(-P: Type, g: P, +p1: F32, +p2: F32, +l: F32, rp: PL<P>, rm: PL<P>) -> TrainPL<P>:
+def td1(-P: Type, g: P, +cfg: OptCfg, +p1: F32, +p2: F32, +l: F32, rp: PL<P>, rm: PL<P>) -> TrainPL<P>:
   match rp rm:
-    case PL{p, xp} PL{mm, xm}: TrainPL{Train{p, g, OneMom{mm}, p1, p2, l}, List.append(&2, F32, xp, xm)}
+    case PL{p, xp} PL{mm, xm}: TrainPL{Train{p, g, OneMom{mm}, cfg, p1, p2, l}, List.append(&2, F32, xp, xm)}
 
-def td3(-P: Type, g: P, +p1: F32, +p2: F32, +l: F32, rp: PL<P>, rm: PL<P>, rv: PL<P>) -> TrainPL<P>:
+def td3(-P: Type, g: P, +cfg: OptCfg, +p1: F32, +p2: F32, +l: F32, rp: PL<P>, rm: PL<P>, rv: PL<P>) -> TrainPL<P>:
   match rp rm rv:
     case PL{p, xp} PL{m, xm} PL{v, xv}:
-      TrainPL{Train{p, g, TwoMom{m, v}, p1, p2, l}, List.append(&2, F32, xp, List.append(&2, F32, xm, List.append(&2, F32, xv, [p1, p2])))}
+      TrainPL{Train{p, g, TwoMom{m, v}, cfg, p1, p2, l}, List.append(&2, F32, xp, List.append(&2, F32, xm, List.append(&2, F32, xv, [p1, p2])))}
 
 # the first k cells of an array, in order
 def cells_l(k: Nat, +i: U32, acc: List<&2, F32>, ra: Array<F32> & F32) -> List<&2, F32>:
@@ -3491,28 +3714,29 @@ def cells_l(k: Nat, +i: U32, acc: List<&2, F32>, ra: Array<F32> & F32) -> List<&
     case 1n+q Tuple{a, +v}:
       cells_l(q, (i + 1 : U32), v <> acc, Array.get(F32, a, (i + 1 : U32)))
 
-def tdp2(-P: Type, p: P, g: P, +p1: F32, +p2: F32, +l: F32, xp: List<&2, F32>, r: PTA) -> TrainPL<P>:
+def tdp2(-P: Type, p: P, g: P, +cfg: OptCfg, +p1: F32, +p2: F32, +l: F32, xp: List<&2, F32>, r: PTA) -> TrainPL<P>:
   match r:
     case PTA{t, xs, +off}:
-      TrainPL{Train{p, g, Packed{t}, p1, p2, l}, List.append(&2, F32, xp, List.append(&2, F32, cells_l(U32.to_nat(off), 0, [], Array.get(F32, xs, 0)), [p1, p2]))}
+      TrainPL{Train{p, g, Packed{t}, cfg, p1, p2, l}, List.append(&2, F32, xp, List.append(&2, F32, cells_l(U32.to_nat(off), 0, [], Array.get(F32, xs, 0)), [p1, p2]))}
 
-def tdp(-P: Type, g: P, +p1: F32, +p2: F32, +l: F32, rp: PL<P>, rt: PTU) -> TrainPL<P>:
+def tdp(-P: Type, g: P, +cfg: OptCfg, +p1: F32, +p2: F32, +l: F32, rp: PL<P>, rt: PTU) -> TrainPL<P>:
   match rp rt:
     case PL{p, xp} PTU{t, +n}:
-      tdp2(P, p, g, p1, p2, l, xp, pt_store(t, Array.new(F32, depth(U32.to_nat(n)), 0.0), 0))
+      tdp2(P, p, g, cfg, p1, p2, l, xp, pt_store(t, Array.new(F32, depth(U32.to_nat(n)), 0.0), 0))
 
 # every number of a training state: the parameters, then the first moments, the second moments, b1^t and b2^t (packed
-# moments: their tree's cells, pt_store's layout, in place of the two moments)
+# moments: their tree's cells, pt_store's layout, in place of the two moments). Not its configuration: a checkpoint
+# resumes under the configuration of the Train it is read into.
 def Train.dump(~P: Type, ~X: Type, ~Y: Type, ~S: Type, ~m: Layer<P, X, Y, S>, tr: Train<P>) -> TrainPL<P>:
   match tr:
-    case Train{p, g, NoMom{}, +p1, +p2, +l}:
-      td0(P, g, p1, p2, l, Layer.dump(P, X, Y, S, m, p))
-    case Train{p, g, OneMom{mm}, +p1, +p2, +l}:
-      td1(P, g, p1, p2, l, Layer.dump(P, X, Y, S, m, p), Layer.dump(P, X, Y, S, m, mm))
-    case Train{p, g, TwoMom{mm, vv}, +p1, +p2, +l}:
-      td3(P, g, p1, p2, l, Layer.dump(P, X, Y, S, m, p), Layer.dump(P, X, Y, S, m, mm), Layer.dump(P, X, Y, S, m, vv))
-    case Train{p, g, Packed{t}, +p1, +p2, +l}:
-      tdp(P, g, p1, p2, l, Layer.dump(P, X, Y, S, m, p), pt_cells(t))
+    case Train{p, g, NoMom{}, +cfg, +p1, +p2, +l}:
+      td0(P, g, cfg, p1, p2, l, Layer.dump(P, X, Y, S, m, p))
+    case Train{p, g, OneMom{mm}, +cfg, +p1, +p2, +l}:
+      td1(P, g, cfg, p1, p2, l, Layer.dump(P, X, Y, S, m, p), Layer.dump(P, X, Y, S, m, mm))
+    case Train{p, g, TwoMom{mm, vv}, +cfg, +p1, +p2, +l}:
+      td3(P, g, cfg, p1, p2, l, Layer.dump(P, X, Y, S, m, p), Layer.dump(P, X, Y, S, m, mm), Layer.dump(P, X, Y, S, m, vv))
+    case Train{p, g, Packed{t}, +cfg, +p1, +p2, +l}:
+      tdp(P, g, cfg, p1, p2, l, Layer.dump(P, X, Y, S, m, p), pt_cells(t))
 
 def f32_at(xs: List<&2, F32>, n: Nat) -> F32:
   match xs n:
@@ -3523,68 +3747,68 @@ def f32_at(xs: List<&2, F32>, n: Nat) -> F32:
     case Nil{} _:
       0.0
 
-def tr0(-P: Type, g: P, r: PA<P>) -> Train<P>:
+def tr0(-P: Type, +cfg: OptCfg, g: P, r: PA<P>) -> Train<P>:
   match r:
-    case PA{p, xs, off}: Train{p, g, NoMom{}, 0.0, 0.0, 0.0}
+    case PA{p, xs, off}: Train{p, g, NoMom{}, cfg, 0.0, 0.0, 0.0}
 
-def tr_m2(-P: Type, p: P, g: P, r: PA<P>) -> Train<P>:
+def tr_m2(-P: Type, +cfg: OptCfg, p: P, g: P, r: PA<P>) -> Train<P>:
   match r:
-    case PA{mm, xs, off}: Train{p, g, OneMom{mm}, 0.0, 0.0, 0.0}
+    case PA{mm, xs, off}: Train{p, g, OneMom{mm}, cfg, 0.0, 0.0, 0.0}
 
-def tr_m1(~P: Type, ~X: Type, ~Y: Type, ~S: Type, ~m: Layer<P, X, Y, S>, mm: P, g: P, r: PA<P>) -> Train<P>:
+def tr_m1(~P: Type, ~X: Type, ~Y: Type, ~S: Type, ~m: Layer<P, X, Y, S>, +cfg: OptCfg, mm: P, g: P, r: PA<P>) -> Train<P>:
   match r:
-    case PA{p, xs, off}: tr_m2(P, p, g, Layer.load(P, X, Y, S, m, mm, xs, off))
+    case PA{p, xs, off}: tr_m2(P, cfg, p, g, Layer.load(P, X, Y, S, m, mm, xs, off))
 
-def tr_adam2(-P: Type, p: P, mm: P, vv: P, g: P, p1: F32, r: Array<F32> & F32) -> Train<P>:
+def tr_adam2(-P: Type, +cfg: OptCfg, p: P, mm: P, vv: P, g: P, p1: F32, r: Array<F32> & F32) -> Train<P>:
   match r:
-    case Tuple{xs, p2}: Train{p, g, TwoMom{mm, vv}, p1, p2, 0.0}
+    case Tuple{xs, p2}: Train{p, g, TwoMom{mm, vv}, cfg, p1, p2, 0.0}
 
-def tr_adam(-P: Type, p: P, mm: P, vv: P, g: P, r: Array<F32> & F32, +off: U32) -> Train<P>:
+def tr_adam(-P: Type, +cfg: OptCfg, p: P, mm: P, vv: P, g: P, r: Array<F32> & F32, +off: U32) -> Train<P>:
   match r:
-    case Tuple{xs, p1}: tr_adam2(P, p, mm, vv, g, p1, Array.get(F32, xs, off))
+    case Tuple{xs, p1}: tr_adam2(P, cfg, p, mm, vv, g, p1, Array.get(F32, xs, off))
 
-def tr3(-P: Type, p: P, mm: P, g: P, r: PA<P>) -> Train<P>:
+def tr3(-P: Type, +cfg: OptCfg, p: P, mm: P, g: P, r: PA<P>) -> Train<P>:
   match r:
-    case PA{vv, xs, +off}: tr_adam(P, p, mm, vv, g, Array.get(F32, xs, off), (off + 1 : U32))
+    case PA{vv, xs, +off}: tr_adam(P, cfg, p, mm, vv, g, Array.get(F32, xs, off), (off + 1 : U32))
 
-def tr2(~P: Type, ~X: Type, ~Y: Type, ~S: Type, ~m: Layer<P, X, Y, S>, p: P, vv: P, g: P, r: PA<P>) -> Train<P>:
+def tr2(~P: Type, ~X: Type, ~Y: Type, ~S: Type, ~m: Layer<P, X, Y, S>, +cfg: OptCfg, p: P, vv: P, g: P, r: PA<P>) -> Train<P>:
   match r:
     case PA{mm, xs, off}:
-      tr3(P, p, mm, g, Layer.load(P, X, Y, S, m, vv, xs, off))
+      tr3(P, cfg, p, mm, g, Layer.load(P, X, Y, S, m, vv, xs, off))
 
-def tr1(~P: Type, ~X: Type, ~Y: Type, ~S: Type, ~m: Layer<P, X, Y, S>, mm: P, vv: P, g: P, r: PA<P>) -> Train<P>:
+def tr1(~P: Type, ~X: Type, ~Y: Type, ~S: Type, ~m: Layer<P, X, Y, S>, +cfg: OptCfg, mm: P, vv: P, g: P, r: PA<P>) -> Train<P>:
   match r:
     case PA{p, xs, off}:
-      tr2(~P, ~X, ~Y, ~S, ~m, p, vv, g, Layer.load(P, X, Y, S, m, mm, xs, off))
+      tr2(~P, ~X, ~Y, ~S, ~m, cfg, p, vv, g, Layer.load(P, X, Y, S, m, mm, xs, off))
 
-def trp4(-P: Type, p: P, g: P, t: PTree, +p1: F32, r: Array<F32> & F32) -> Train<P>:
+def trp4(-P: Type, +cfg: OptCfg, p: P, g: P, t: PTree, +p1: F32, r: Array<F32> & F32) -> Train<P>:
   match r:
-    case Tuple{xs, p2}: Train{p, g, Packed{t}, p1, p2, 0.0}
+    case Tuple{xs, p2}: Train{p, g, Packed{t}, cfg, p1, p2, 0.0}
 
-def trp3(-P: Type, p: P, g: P, t: PTree, r: Array<F32> & F32, +off: U32) -> Train<P>:
+def trp3(-P: Type, +cfg: OptCfg, p: P, g: P, t: PTree, r: Array<F32> & F32, +off: U32) -> Train<P>:
   match r:
-    case Tuple{xs, p1}: trp4(P, p, g, t, p1, Array.get(F32, xs, off))
+    case Tuple{xs, p1}: trp4(P, cfg, p, g, t, p1, Array.get(F32, xs, off))
 
-def trp2(-P: Type, p: P, g: P, r: PTA) -> Train<P>:
+def trp2(-P: Type, +cfg: OptCfg, p: P, g: P, r: PTA) -> Train<P>:
   match r:
-    case PTA{t, xs, +off}: trp3(P, p, g, t, Array.get(F32, xs, off), (off + 1 : U32))
+    case PTA{t, xs, +off}: trp3(P, cfg, p, g, t, Array.get(F32, xs, off), (off + 1 : U32))
 
-def trp(-P: Type, g: P, r: PA<P>) -> Train<P>:
+def trp(-P: Type, +cfg: OptCfg, g: P, r: PA<P>) -> Train<P>:
   match r:
-    case PA{p, xs, +off}: trp2(P, p, g, pt_load(xs, off))
+    case PA{p, xs, +off}: trp2(P, cfg, p, g, pt_load(xs, off))
 
 # a training state filled from the numbers Train.dump wrote (its buffers are overwritten in place; packed moments are
-# built again from the tree's cells)
+# built again from the tree's cells); its configuration stays the one tr was made with
 def Train.restore(~P: Type, ~X: Type, ~Y: Type, ~S: Type, ~m: Layer<P, X, Y, S>, tr: Train<P>, xs: Array<F32>) -> Train<P>:
   match tr:
-    case Train{p, g, NoMom{}, p1, p2, l}:
-      tr0(P, g, Layer.load(P, X, Y, S, m, p, xs, 0))
-    case Train{p, g, OneMom{mm}, p1, p2, l}:
-      tr_m1(~P, ~X, ~Y, ~S, ~m, mm, g, Layer.load(P, X, Y, S, m, p, xs, 0))
-    case Train{p, g, TwoMom{mm, vv}, p1, p2, l}:
-      tr1(~P, ~X, ~Y, ~S, ~m, mm, vv, g, Layer.load(P, X, Y, S, m, p, xs, 0))
-    case Train{p, g, Packed{t}, p1, p2, l}:
-      trp(P, g, Layer.load(P, X, Y, S, m, p, xs, 0))
+    case Train{p, g, NoMom{}, cfg, p1, p2, l}:
+      tr0(P, cfg, g, Layer.load(P, X, Y, S, m, p, xs, 0))
+    case Train{p, g, OneMom{mm}, cfg, p1, p2, l}:
+      tr_m1(~P, ~X, ~Y, ~S, ~m, cfg, mm, g, Layer.load(P, X, Y, S, m, p, xs, 0))
+    case Train{p, g, TwoMom{mm, vv}, cfg, p1, p2, l}:
+      tr1(~P, ~X, ~Y, ~S, ~m, cfg, mm, vv, g, Layer.load(P, X, Y, S, m, p, xs, 0))
+    case Train{p, g, Packed{t}, cfg, p1, p2, l}:
+      trp(P, cfg, g, Layer.load(P, X, Y, S, m, p, xs, 0))
 
 # ---- writing numbers straight from an array, a chunk at a time ----
 # File.write_bytes takes a list with one cell per byte; one list for a whole model would take several GB at SmolLM2's
@@ -3652,56 +3876,56 @@ def Params.save(~P: Type, ~X: Type, ~Y: Type, ~S: Type, ~m: Layer<P, X, Y, S>, +
 
 # ---- a training state into a file: the parameters, then the moments in use, then Adam's b1^t and b2^t ----
 
-def tsa_fin(-P: Type, +path: String, g: P, st: OptState<P>, +p1: F32, +p2: F32, +l: F32, r: PA<P>) -> IO(Train<P>):
+def tsa_fin(-P: Type, +path: String, g: P, st: OptState<P>, +cfg: OptCfg, +p1: F32, +p2: F32, +l: F32, r: PA<P>) -> IO(Train<P>):
   match r:
     case PA{p, xs, +off}:
       do IO<Train<P>>:
         a : Array<F32> <- write_f32(path, xs, off)
-        return Train{p, g, st, p1, p2, l}
+        return Train{p, g, st, cfg, p1, p2, l}
 
-def tsa_m(-P: Type, +path: String, p: P, g: P, +p1: F32, +p2: F32, +l: F32, r: PA<P>) -> IO(Train<P>):
+def tsa_m(-P: Type, +path: String, p: P, g: P, +cfg: OptCfg, +p1: F32, +p2: F32, +l: F32, r: PA<P>) -> IO(Train<P>):
   match r:
-    case PA{mm, xs, off}: tsa_fin(P, path, g, OneMom{mm}, p1, p2, l, PA{p, xs, off})
+    case PA{mm, xs, off}: tsa_fin(P, path, g, OneMom{mm}, cfg, p1, p2, l, PA{p, xs, off})
 
-def tsa_pw(-P: Type, +path: String, p: P, mm: P, g: P, +p1: F32, +p2: F32, +l: F32, r: PA<P>) -> IO(Train<P>):
+def tsa_pw(-P: Type, +path: String, p: P, mm: P, g: P, +cfg: OptCfg, +p1: F32, +p2: F32, +l: F32, r: PA<P>) -> IO(Train<P>):
   match r:
     case PA{vv, xs, +off}:
-      tsa_fin(P, path, g, TwoMom{mm, vv}, p1, p2, l, PA{p, Array.set(F32, Array.set(F32, xs, off, p1), (off + 1 : U32), p2), (off + 2 : U32)})
+      tsa_fin(P, path, g, TwoMom{mm, vv}, cfg, p1, p2, l, PA{p, Array.set(F32, Array.set(F32, xs, off, p1), (off + 1 : U32), p2), (off + 2 : U32)})
 
-def tsa_v(~P: Type, ~X: Type, ~Y: Type, ~S: Type, ~m: Layer<P, X, Y, S>, +path: String, p: P, vv: P, g: P, +p1: F32, +p2: F32, +l: F32, r: PA<P>) -> IO(Train<P>):
+def tsa_v(~P: Type, ~X: Type, ~Y: Type, ~S: Type, ~m: Layer<P, X, Y, S>, +path: String, p: P, vv: P, g: P, +cfg: OptCfg, +p1: F32, +p2: F32, +l: F32, r: PA<P>) -> IO(Train<P>):
   match r:
-    case PA{mm, xs, off}: tsa_pw(P, path, p, mm, g, p1, p2, l, Layer.store(P, X, Y, S, m, vv, xs, off))
+    case PA{mm, xs, off}: tsa_pw(P, path, p, mm, g, cfg, p1, p2, l, Layer.store(P, X, Y, S, m, vv, xs, off))
 
-def tsa_mm(~P: Type, ~X: Type, ~Y: Type, ~S: Type, ~m: Layer<P, X, Y, S>, +path: String, mm: P, g: P, +p1: F32, +p2: F32, +l: F32, r: PA<P>) -> IO(Train<P>):
+def tsa_mm(~P: Type, ~X: Type, ~Y: Type, ~S: Type, ~m: Layer<P, X, Y, S>, +path: String, mm: P, g: P, +cfg: OptCfg, +p1: F32, +p2: F32, +l: F32, r: PA<P>) -> IO(Train<P>):
   match r:
-    case PA{p, xs, off}: tsa_m(P, path, p, g, p1, p2, l, Layer.store(P, X, Y, S, m, mm, xs, off))
+    case PA{p, xs, off}: tsa_m(P, path, p, g, cfg, p1, p2, l, Layer.store(P, X, Y, S, m, mm, xs, off))
 
-def tsa_mv(~P: Type, ~X: Type, ~Y: Type, ~S: Type, ~m: Layer<P, X, Y, S>, +path: String, mm: P, vv: P, g: P, +p1: F32, +p2: F32, +l: F32, r: PA<P>) -> IO(Train<P>):
+def tsa_mv(~P: Type, ~X: Type, ~Y: Type, ~S: Type, ~m: Layer<P, X, Y, S>, +path: String, mm: P, vv: P, g: P, +cfg: OptCfg, +p1: F32, +p2: F32, +l: F32, r: PA<P>) -> IO(Train<P>):
   match r:
-    case PA{p, xs, off}: tsa_v(~P, ~X, ~Y, ~S, ~m, path, p, vv, g, p1, p2, l, Layer.store(P, X, Y, S, m, mm, xs, off))
+    case PA{p, xs, off}: tsa_v(~P, ~X, ~Y, ~S, ~m, path, p, vv, g, cfg, p1, p2, l, Layer.store(P, X, Y, S, m, mm, xs, off))
 
-def tsp3(-P: Type, +path: String, p: P, g: P, +p1: F32, +p2: F32, +l: F32, r: PTA) -> IO(Train<P>):
+def tsp3(-P: Type, +path: String, p: P, g: P, +cfg: OptCfg, +p1: F32, +p2: F32, +l: F32, r: PTA) -> IO(Train<P>):
   match r:
     case PTA{t, xs, +off}:
-      tsa_fin(P, path, g, Packed{t}, p1, p2, l, PA{p, Array.set(F32, Array.set(F32, xs, off, p1), (off + 1 : U32), p2), (off + 2 : U32)})
+      tsa_fin(P, path, g, Packed{t}, cfg, p1, p2, l, PA{p, Array.set(F32, Array.set(F32, xs, off, p1), (off + 1 : U32), p2), (off + 2 : U32)})
 
-def tsp2(-P: Type, +path: String, g: P, +p1: F32, +p2: F32, +l: F32, t: PTree, r: PA<P>) -> IO(Train<P>):
+def tsp2(-P: Type, +path: String, g: P, +cfg: OptCfg, +p1: F32, +p2: F32, +l: F32, t: PTree, r: PA<P>) -> IO(Train<P>):
   match r:
-    case PA{p, xs, +off}: tsp3(P, path, p, g, p1, p2, l, pt_store(t, xs, off))
+    case PA{p, xs, +off}: tsp3(P, path, p, g, cfg, p1, p2, l, pt_store(t, xs, off))
 
-def tsp(~P: Type, ~X: Type, ~Y: Type, ~S: Type, ~m: Layer<P, X, Y, S>, +path: String, p: P, g: P, +p1: F32, +p2: F32, +l: F32, rt: PTU) -> IO(Train<P>):
+def tsp(~P: Type, ~X: Type, ~Y: Type, ~S: Type, ~m: Layer<P, X, Y, S>, +path: String, p: P, g: P, +cfg: OptCfg, +p1: F32, +p2: F32, +l: F32, rt: PTU) -> IO(Train<P>):
   match rt:
     case PTU{t, +n}:
-      tsp2(P, path, g, p1, p2, l, t, Layer.store(P, X, Y, S, m, p, Array.new(F32, depth(U32.to_nat(((Layer.count(P, X, Y, S, m) + n : U32) + 2 : U32))), 0.0), 0))
+      tsp2(P, path, g, cfg, p1, p2, l, t, Layer.store(P, X, Y, S, m, p, Array.new(F32, depth(U32.to_nat(((Layer.count(P, X, Y, S, m) + n : U32) + 2 : U32))), 0.0), 0))
 
 # the layout Train.dump gives, written from one array instead of a list (the same bytes)
 def Train.save(~P: Type, ~X: Type, ~Y: Type, ~S: Type, ~m: Layer<P, X, Y, S>, +path: String, tr: Train<P>) -> IO(Train<P>):
   match tr:
-    case Train{p, g, NoMom{}, +p1, +p2, +l}:
-      tsa_fin(P, path, g, NoMom{}, p1, p2, l, Layer.store(P, X, Y, S, m, p, Array.new(F32, depth(U32.to_nat(Layer.count(P, X, Y, S, m))), 0.0), 0))
-    case Train{p, g, OneMom{mm}, +p1, +p2, +l}:
-      tsa_mm(~P, ~X, ~Y, ~S, ~m, path, mm, g, p1, p2, l, Layer.store(P, X, Y, S, m, p, Array.new(F32, depth(U32.to_nat((2 * Layer.count(P, X, Y, S, m) : U32))), 0.0), 0))
-    case Train{p, g, TwoMom{mm, vv}, +p1, +p2, +l}:
-      tsa_mv(~P, ~X, ~Y, ~S, ~m, path, mm, vv, g, p1, p2, l, Layer.store(P, X, Y, S, m, p, Array.new(F32, depth(U32.to_nat(((3 * Layer.count(P, X, Y, S, m) : U32) + 2 : U32))), 0.0), 0))
-    case Train{p, g, Packed{t}, +p1, +p2, +l}:
-      tsp(~P, ~X, ~Y, ~S, ~m, path, p, g, p1, p2, l, pt_cells(t))
+    case Train{p, g, NoMom{}, +cfg, +p1, +p2, +l}:
+      tsa_fin(P, path, g, NoMom{}, cfg, p1, p2, l, Layer.store(P, X, Y, S, m, p, Array.new(F32, depth(U32.to_nat(Layer.count(P, X, Y, S, m))), 0.0), 0))
+    case Train{p, g, OneMom{mm}, +cfg, +p1, +p2, +l}:
+      tsa_mm(~P, ~X, ~Y, ~S, ~m, path, mm, g, cfg, p1, p2, l, Layer.store(P, X, Y, S, m, p, Array.new(F32, depth(U32.to_nat((2 * Layer.count(P, X, Y, S, m) : U32))), 0.0), 0))
+    case Train{p, g, TwoMom{mm, vv}, +cfg, +p1, +p2, +l}:
+      tsa_mv(~P, ~X, ~Y, ~S, ~m, path, mm, vv, g, cfg, p1, p2, l, Layer.store(P, X, Y, S, m, p, Array.new(F32, depth(U32.to_nat(((3 * Layer.count(P, X, Y, S, m) : U32) + 2 : U32))), 0.0), 0))
+    case Train{p, g, Packed{t}, +cfg, +p1, +p2, +l}:
+      tsp(~P, ~X, ~Y, ~S, ~m, path, p, g, cfg, p1, p2, l, pt_cells(t))

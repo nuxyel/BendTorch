@@ -6,8 +6,8 @@
   <a href="https://github.com/nuxyel/BendTorch/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/nuxyel/BendTorch/ci.yml?branch=main&style=flat-square&label=ci&labelColor=4d4a44&color=7e9a5e" alt="CI"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-8b83b5?style=flat-square&labelColor=4d4a44" alt="MIT license"></a>
   <a href="https://bend-lang.com"><img src="https://img.shields.io/badge/Bend-2.0.39-8b83b5?style=flat-square&labelColor=4d4a44" alt="Bend 2.0.39"></a>
-  <img src="https://img.shields.io/badge/laws%20proved-29-7e9a5e?style=flat-square&labelColor=4d4a44" alt="29 laws proved">
-  <img src="https://img.shields.io/badge/planted%20bugs-149%2F149%20as%20expected-7e9a5e?style=flat-square&labelColor=4d4a44" alt="149 planted bugs, 149 as expected">
+  <img src="https://img.shields.io/badge/laws%20proved-35-7e9a5e?style=flat-square&labelColor=4d4a44" alt="35 laws proved">
+  <img src="https://img.shields.io/badge/planted%20bugs-167%2F167%20as%20expected-7e9a5e?style=flat-square&labelColor=4d4a44" alt="167 planted bugs, 167 as expected">
 </p>
 
 **BendTorch** trains neural networks in [Bend 2](https://bend-lang.com) with general pieces: layers with typed forward
@@ -39,8 +39,9 @@ def Hidden() -> T.Layer<T.Two<T.Lin<784n, 128n>, Unit>, X, TA.Mat<100n, 128n>, T
 def Model() -> T.Layer<P, X, Y, S>:
   T.Seq(~T.Two<T.Lin<784n, 128n>, Unit>, ~T.Lin<128n, 10n>, ~X, ~TA.Mat<100n, 128n>, ~Y, ~T.Two<X, TA.Mat<100n, 128n>>, ~TA.Mat<100n, 128n>, ~Hidden(), ~T.Linear(100n, 128n, 10n, 0n))
 
-# one training step, the same for every model and loss
-T.Train.step(~P, ~X, ~Y, ~S, ~List<&2, Nat>, ~Model(), ~ce, cfg, state, x, labels)
+# one training step, the same for every model and loss, under the configuration the state was made with
+# (Train.new(..., cfg, parameters); Train.with_cfg changes it, for a schedule)
+T.Train.step(~P, ~X, ~Y, ~S, ~List<&2, Nat>, ~Model(), ~ce, state, x, labels)
 ```
 
 A layer is a record of four functions over its parameters `P`, its input `X`, its output `Y` and what its forward pass
@@ -83,13 +84,13 @@ them again with Bend's kernel proved in Lean, with no `@unsafe`, no `?TODO` and 
 explains each proof. The linear laws are about an exact model where numbers are `Nat`; the F32 code computes the same
 formulas and is tested, not proved, to do so.
 
-149 deliberate faults planted in the code and the specification (`scripts/mutate.py`) each behave as expected: 146
+167 deliberate faults planted in the code and the specification (`scripts/mutate.py`) each behave as expected: 164
 are caught by a law or a test, and three survive by design, because they still compute the right result. One is right
 by accident (a one-cell array wraps every index to 0), and a bounds check catches the same fault; one only changes a
 GPU block size, and any block size that divides a row gives the same sum, bit for bit: the law `block_sum` proves it;
 the third lets packed AdamW write past n into cells that hold zeros and stay zero.
 
-<p align="center"><img src="docs/media/mutants.webp" alt="149 planted faults: 146 caught, 3 survive by design" width="80%"></p>
+<p align="center"><img src="docs/media/mutants.webp" alt="167 planted faults: 164 caught, 3 survive by design" width="80%"></p>
 
 ## 03 · It trains, and it computes what PyTorch computes
 
@@ -179,14 +180,14 @@ against PyTorch's.
 
 ## 05 · Use it
 
-Four packages on BendHub, all at version 1.3.0.0. Import the files you need in your own Bend program:
+Four packages on BendHub, all at version 2.0.0.0. Import the files you need in your own Bend program:
 
 ```python
-import bendtorch@1.3.0.0/main.bend as T          # layers, combinators, losses, optimizers, Train
-import bendtorch@1.3.0.0/tensor.bend as TT       # general tensors: any rank, broadcasting, their gradients
-import bendtorch-fast@1.3.0.0/main.bend as F     # the same layers and bits, in parallel on the CPU
-import bendtorch-gpu@1.3.0.0/main.bend as G      # the layers on one CUDA GPU (all but GELUErf)
-import bendtorch-load@1.3.0.0/main.bend as L     # weights from flat binary and safetensors files, checkpoints
+import bendtorch@2.0.0.0/main.bend as T          # layers, combinators, losses, optimizers, Train
+import bendtorch@2.0.0.0/tensor.bend as TT       # general tensors: any rank, broadcasting, their gradients
+import bendtorch-fast@2.0.0.0/main.bend as F     # the same layers and bits, in parallel on the CPU
+import bendtorch-gpu@2.0.0.0/main.bend as G      # the layers on one CUDA GPU (all but GELUErf)
+import bendtorch-load@2.0.0.0/main.bend as L     # weights from flat binary and safetensors files, checkpoints
 ```
 
 `bendtorch` holds the laws and their proofs. The other three are outside the proofs on purpose: `-fast` and `-gpu` share
@@ -202,7 +203,7 @@ Linux x86_64, clang, Python 3.14, `curl`. The Python venv with PyTorch takes abo
 make setup   # Bend 2.0.39 (SHA256-checked), Lean 4.34.0, the Python venv of reference/; no sudo
 make data    # MNIST and Tiny Shakespeare into data/, the twins' initial weights and batches (seed 0)
 make check   # the laws (--verdict), the rejected programs, every layer, the MLP, MNIST, the Llama and a SmolLM2-sized block against PyTorch (~2 min)
-make mutate  # the 149 deliberate faults
+make mutate  # the 167 deliberate faults
 make bench   # BendTorch against PyTorch on MNIST, the tiny Llama and the block (~6 min)
 make check-js  # the same tests on the JavaScript build, run with Bun; the outputs must be the native build's bits
 ```
@@ -231,8 +232,12 @@ The full list, each with its measurement or reason, is in [`docs/limitations.md`
   `@unsafe` `Array.fork`, and loading uses a temporary foreign reader; the tests check they give `main.bend`'s bits.
 - **Slower than PyTorch** wherever products dominate, and on the GPU slower than 16 CPU threads at these sizes: most of a
   GPU step is the runtime (filling new arrays on one lane, a fixed cost between kernels), not the work.
-- **No convolution yet**: images go through `Linear` and attention layers only; `GroupNorm` is in (both lanes), Conv2d
-  is the next milestone ([#15](https://github.com/nuxyel/BendTorch/issues/15)).
+- **Convolution is one layer**: `Conv2d` is `im2col` then `Linear`, in both lanes, with the parameters typed
+  `Lin<c·k·k, co>` so the optimizer step, the zero parameters and the checkpoints are the linear layers' own. It has a
+  row law and a round-trip law at a 1 x 1 kernel; GroupNorm is in both lanes too, and full attention shipped in v1.3.0
+  ([#17](https://github.com/nuxyel/BendTorch/issues/17) closed). A UNet still needs RoPE2d
+  ([#18](https://github.com/nuxyel/BendTorch/issues/18)) and adaLN ([#19](https://github.com/nuxyel/BendTorch/issues/19));
+  an unconditional UNet needs neither.
 - **Matrices only**, F32 training (BF16 storage, int8 inference), one CUDA GPU; SmolLM2-1.7B trains in 32 GB only with AdamW's moments packed in BF16, at 24.1 GB of peak memory.
 
 ## Where things are

@@ -18,20 +18,20 @@ def cfg(v16: Bool) -> T.OptCfg:
   T.CAdamWBF16{0.003, 0.9, 0.999, 0.00000001, 0.01, 0.1, 0.001, v16}
 
 def step_with(+cfg: T.OptCfg, +ids: List<&2, Nat>, tr: T.Train<TL.P>) -> T.Train<TL.P>:
-  T.Train.step(~TL.P, ~TL.X, ~TL.Y(2n), ~TL.S(2n), ~List<&2, Nat>, ~TL.Model(~2n), ~TL.ce, cfg, tr, TL.xs_of(ids), TL.ys_of(ids))
+  T.Train.step(~TL.P, ~TL.X, ~TL.Y(2n), ~TL.S(2n), ~List<&2, Nat>, ~TL.Model(~2n), ~TL.ce, tr, TL.xs_of(ids), TL.ys_of(ids))
 
 # k more steps from batch `step`; prints the loss of the step before (0 before the first)
 def tloop(k: Nat, +step: U32, +cfg: T.OptCfg, tr: T.Train<TL.P>) -> IO(T.Train<TL.P>):
   match k tr:
-    case 0n T.Train{p, g, st, p1, p2, +l}:
+    case 0n T.Train{p, g, st, oc, p1, p2, +l}:
       do IO<T.Train<TL.P>>:
         T.F32.print("loss", l)
-        return T.Train{p, g, st, p1, p2, l}
-    case 1n+q T.Train{p, g, st, p1, p2, +l}:
+        return T.Train{p, g, st, oc, p1, p2, l}
+    case 1n+q T.Train{p, g, st, oc, p1, p2, +l}:
       do IO<T.Train<TL.P>>:
         T.F32.print("loss", l)
         ids : List<&2, Nat> <- TL.load_batch(step)
-        tloop(q, (step + 1 : U32), cfg, step_with(cfg, ids, T.Train{p, g, st, p1, p2, l}))
+        tloop(q, (step + 1 : U32), cfg, step_with(cfg, ids, T.Train{p, g, st, oc, p1, p2, l}))
 
 def train_run(+k: Nat, +v16: Bool, p: TL.P) -> IO(T.Train<TL.P>):
   do IO<T.Train<TL.P>>:
