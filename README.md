@@ -39,8 +39,9 @@ def Hidden() -> T.Layer<T.Two<T.Lin<784n, 128n>, Unit>, X, TA.Mat<100n, 128n>, T
 def Model() -> T.Layer<P, X, Y, S>:
   T.Seq(~T.Two<T.Lin<784n, 128n>, Unit>, ~T.Lin<128n, 10n>, ~X, ~TA.Mat<100n, 128n>, ~Y, ~T.Two<X, TA.Mat<100n, 128n>>, ~TA.Mat<100n, 128n>, ~Hidden(), ~T.Linear(100n, 128n, 10n, 0n))
 
-# one training step, the same for every model and loss
-T.Train.step(~P, ~X, ~Y, ~S, ~List<&2, Nat>, ~Model(), ~ce, cfg, state, x, labels)
+# one training step, the same for every model and loss, under the configuration the state was made with
+# (Train.new(..., cfg, parameters); Train.with_cfg changes it, for a schedule)
+T.Train.step(~P, ~X, ~Y, ~S, ~List<&2, Nat>, ~Model(), ~ce, state, x, labels)
 ```
 
 A layer is a record of four functions over its parameters `P`, its input `X`, its output `Y` and what its forward pass

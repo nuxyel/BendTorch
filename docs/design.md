@@ -93,9 +93,13 @@ general here is Bend's **templates**: a `Layer` record passed as `~l` is substit
 - Layers: `Linear`, `LinearNB`, `Embedding`, `RMSNorm`, `LayerNorm`, `GroupNorm`, the activations, `Softmax`, `LogSoftmax`, `RoPE`,
   `Attention`, `FullAttention`; losses `CrossEntropy`, `NLL`, `MSE`; optimizers SGD, momentum, Adam, AdamW, in PyTorch's order of
   operations.
-- `Train.step(~model, ~loss, cfg, state, x, targets)` is the whole training step for any layer and any loss. The state
-  holds the parameters, their gradient and `OptState<P>`: no buffers for SGD, one for momentum, two for Adam/AdamW;
-  `1 - b1^t`, `1 - b2^t` (carried as `q + c (1 - q)`, never as a power) retain Adam's bias corrections. `Train.new` receives the configuration to allocate that state.
+- `Train.step(~model, ~loss, state, x, targets)` is the whole training step for any layer and any loss. The state
+  holds the parameters, their gradient, `OptState<P>` (no buffers for SGD, one for momentum, two for Adam/AdamW), the
+  configuration its steps use and `1 - b1^t`, `1 - b2^t` (carried as `q + c (1 - q)`, never as a power), which retain
+  Adam's bias corrections. `Train.new` receives the configuration once, to allocate that state and to keep it;
+  `Train.with_cfg` replaces it (a schedule). The configuration has one owner because two owners were a bug (#24): the
+  step's argument used to win, so the learning rate given to `Train.new` did nothing. Each step checks the configuration
+  against the buffers (`Opt.guard`, and its laws): one of another family, or that `OptCfg.ok` rejects, runs with NaN.
 - **A generic walk over the parameters.** `dump` gives every number of a layer's parameters in a fixed order and `load`
   overwrites them from one `Array<F32>` at an element offset; the combinators thread the array and next offset.
   `Layer.count` gives the serialized size, so `load.bend` checks the file length before loading. `Train.save` writes
@@ -131,6 +135,8 @@ general here is Bend's **templates**: a `Layer` record passed as `~l` is substit
 | `Seq`, `Fork`, `Both` and `Residual` compose backward passes correctly (chain rule, sum of input gradients, sides kept apart, skip connection plus layer) | **law** about the combinators' own code, on the `Nat` model's linear layers | `seq_chain`, `fork_sum`, `both_sum`, `residual` |
 | Each layer's output and gradients equal PyTorch's within the tolerance | **tested**, 10 seeds, with IEEE edge cases for the activations | `reference/test_ops.py` |
 | The optimizers equal `torch.optim` step by step | **tested** | `reference/test_mlp.py` |
+| A step runs under its configuration only when it is of the state's family and passes `OptCfg.ok`, and with NaN otherwise | **law** about the package's own `Opt.guard`, for every configuration and each kind of state | `guard_nomom`, `guard_onemom`, `guard_twomom`, `guard_packed` |
+| The configuration given to `Train.new` is the one every step uses; `Train.with_cfg` changes it and keeps the moments; a checkpoint resumes under the configuration of the state it is read into | **tested** against `torch.optim.AdamW` (a sweep, a warmup, a mid-run change) and bit for bit (resume) | `reference/test_cfg.py` |
 | An Adam configuration's `c1`, `c2` agree with its `b1`, `b2` (`OptCfg.ok`); a program stops on one that does not (`OptCfg.check`), and without the check its state starts at NaN | **tested** at run time (F32 is opaque to the checker, so it cannot be a law): 5,486 configurations, 5 mutants | `reference/test_infra.py` |
 | MNIST and a two-layer Llama train like their PyTorch twins | **tested** | `test_mnist.py`, `test_tiny.py` |
 | The F32 code computes the formulas of the `Nat` model | **tested only** | the same tests |
