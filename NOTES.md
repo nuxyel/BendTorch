@@ -1979,4 +1979,5 @@ Six new laws and one rewritten, all by `--verdict`, about the code the demos exe
   the workflow and mutate.py's machinery), green in 59 and 58 minutes, the text rules, the self-check and the choice in
   2 s of them. The merge's push to `devel` (5b48cd1) counted from 4209297, the newest commit with a green push run,
   found through the API: the same choice, green in 38 minutes (167 mutants, 163 as expected and the 4 that need a CUDA
-  device or SmolLM2's weights skipped). This entry is the first documentation-only push.
+  device or SmolLM2's weights skipped). This entry was the first documentation-only push: its run chose nothing and
+  took 31 seconds, checkout and text rules included.
