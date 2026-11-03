@@ -38,6 +38,8 @@ TEN = numeric("tensor_test", "test_tensor.py")
 IMAP = numeric("imap_check", "check_imap.py")
 ST = numeric("safetensors_test", "test_safetensors.py")
 CFG = numeric("cfg_test", "test_cfg.py")
+CONV = numeric("conv2d_probe", "conv2d_check.py")
+I2C = numeric("im2col_probe", "im2col_check.py")
 
 
 ST135 = Path(os.environ.get("LLAMA_BEND", "../llama.bend")) / "data/smollm2-135m/hf/model.safetensors"
@@ -408,6 +410,27 @@ MUTANTS = [
     ("adam config: an unchecked program trains under a configuration OptCfg.ok rejects", "torch/main.bend",
      "    case CAdamW{lr, b1, b2, eps, wd, c1, c2} TwoMom{m, v}: Guarded{Opt.when(OptCfg.ok(cfg),",
      "    case CAdamW{lr, b1, b2, eps, wd, c1, c2} TwoMom{m, v}: Guarded{Opt.when(True{},", INFRA, "caught"),
+    ("conv: the gather reads the padding cells (no window check)", "torch/main.bend",
+     "        p_rc(Bool.and(Nat.is_lt(pos, Nat.mul(n, per)), p_ok(i, oy, ox, h, w, k, p, s)), d,",
+     "        p_rc(Nat.is_lt(pos, Nat.mul(n, per)), d,", CONV, "caught"),
+    ("conv: a patch's row reads the kernel's column offset", "torch/main.bend",
+     "  Nat.sub(Nat.add(Nat.mul(oy, s), p_ky(i, k)), p)", "  Nat.sub(Nat.add(Nat.mul(oy, s), p_kx(i, k)), p)", CONV, "caught"),
+    ("conv: the channel inside a patch is read from the kernel's row", "torch/main.bend",
+     "p_ix(i, ox, k, p, s)), c), p_ch(i, k)))", "p_ix(i, ox, k, p, s)), c), p_ky(i, k)))", CONV, "caught"),
+    ("col2im: a patch cell over the padding adds into the image", "torch/main.bend",
+     "        add_if(Bool.and(Nat.is_lt(pos, Nat.mul(n, per)), p_ok(i, oy, ox, h, w, k, p, s)),",
+     "        add_if(Nat.is_lt(pos, Nat.mul(n, per)),", CONV, "caught"),
+    ("col2im: the scatter starts one gathered cell late", "torch/main.bend",
+     "        Array.get(F32, d, U32.from_nat(0n)),\n        Array.new(F32, TA.cap_depth(size), 0.0))}",
+     "        Array.get(F32, d, U32.from_nat(1n)),\n        Array.new(F32, TA.cap_depth(size), 0.0))}", I2C, "caught"),
+    ("gpu im2col: the device gather reads the padding cells", "torch/gpu.bend",
+     "      i2c_put(e, Bool.and(ok1, Bool.and(ok2, U32.is_lt(ix, w))), (src + ch : U32), CIC{d, o})",
+     "      i2c_put(e, U32.is_lt(pos, (n * per : U32)), (src + ch : U32), CIC{d, o})", GPUL, "caught"),
+    ("gpu col2im: a cell's sum skips its last candidate along x", "torch/gpu.bend",
+     "gi_qx(U32.to_nat(kn), ok, 0, ox0, oy,", "gi_qx(Nat.sub(U32.to_nat(kn), 1n), ok, 0, ox0, oy,", GPUL, "caught"),
+    ("gpu col2im: the candidates along y start one row late", "torch/gpu.bend",
+     "      gis_set(e, gi_qy(U32.to_nat(k), 0, oy0, ox0, iy, ix, b, ch, g, GIS{d, o, 0.0}))",
+     "      gis_set(e, gi_qy(U32.to_nat(k), 1, oy0, ox0, iy, ix, b, ch, g, GIS{d, o, 0.0}))", GPUL, "caught"),
     ("guard law: a NoMom state takes a configuration of another kind", "torch/main.bend",
      "    case _ NoMom{}: Guarded{SGD{nan()}, NoMom{}}", "    case _ NoMom{}: Guarded{Opt.at(cfg, q1, q2), NoMom{}}", laws,
      "caught"),
