@@ -7,6 +7,8 @@
 //     (H is the height this script prints; the window must match the SVG's size)
 //   magick docs/media/mutants.png -quality 90 docs/media/mutants.webp && rm docs/media/mutants.png
 // (or: ffmpeg -i docs/media/mutants.png -quality 90 docs/media/mutants.webp). Then update the README's alt text.
+// Without a browser: rsvg-convert -w 1000 -h H docs/media/mutants.svg -o docs/media/mutants.png, with the two fonts
+// decompressed (woff2_decompress) into a directory fontconfig reads; librsvg ignores the embedded @font-face.
 import fs from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
@@ -55,7 +57,7 @@ for (let i = 0; i < N; i++) {
 }
 
 const TITLE = `${N} planted faults: ${K} caught, ${S} survive by design`;
-const tally = `<text x="${W / 2}" y="${gridEnd + 46}" font-size="20" font-weight="700" text-anchor="middle">` +
+const tally = `<text x="${W / 2}" y="${gridEnd + 46}" font-size="20" font-weight="700" text-anchor="middle" xml:space="preserve">` +
   `<tspan fill="${C.green}">${K} caught</tspan><tspan fill="${C.b1}"> · </tspan><tspan fill="${C.amber}">${S} survive by design</tspan></text>`;
 const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" role="img" aria-label="${esc(TITLE)}">
 <title>${esc(TITLE)}</title>
