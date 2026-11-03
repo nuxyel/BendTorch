@@ -1960,7 +1960,7 @@ Six new laws and one rewritten, all by `--verdict`, about the code the demos exe
   run whose tree is this one's or that is in its history (a cancelled or failed run's change runs again; a release's
   merge into `main` needs nothing), a pull request from its base. Pull requests to `main`, Sundays (no longer every
   night), a dispatch and `[full]` in a pushed commit's message run everything. The text rules, the self-check and the
-  choice run before any setup, so a documentation change should finish in about a minute; the first runs will say.
+  choice run before any setup, so a documentation change should finish in about a minute.
 - Replayed over the 180 commits on `devel` since v1.0.0 with today's graph: 118 would run nothing (notes, READMEs,
   docs, comments), 46 a selection (a median of one target and 15 mutants), 16 every target (Bend's pins, the
   workflow, and old Makefile lines no target holds now). On my machine, with each target timed once, that is 923
@@ -1975,3 +1975,8 @@ Six new laws and one rewritten, all by `--verdict`, about the code the demos exe
   its push, not on Sunday.
 - Limits: a file read through a path assembled at run time is not seen. If nothing else names it, it calls for every
   target; if something does, the weekly run and the release are the net.
+- The first runs on the new workflow: #31's two, each every target, the JavaScript lane and all 167 mutants (it changed
+  the workflow and mutate.py's machinery), green in 59 and 58 minutes, the text rules, the self-check and the choice in
+  2 s of them. The merge's push to `devel` (5b48cd1) counted from 4209297, the newest commit with a green push run,
+  found through the API: the same choice, green in 38 minutes (167 mutants, 163 as expected and the 4 that need a CUDA
+  device or SmolLM2's weights skipped). This entry is the first documentation-only push.
