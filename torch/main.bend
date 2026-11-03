@@ -3153,12 +3153,177 @@ def Attention(+n: Nat, +w: Nat, +kvw: Nat, +b: Nat, +t: Nat, +kv: Nat, +g: Nat, 
   Layer{p => x => attn_fwd(n, w, kvw, AttnDims{b, t, kv, g, hd, sc}, x), p => s => dy => g2 => attn_bwd(n, w, kvw, AttnDims{b, t, kv, g, hd, sc}, s, dy), op => p => g2 => st => no_step(Unit, op, p, g2, st), u => Unit{}, p => PL{p, Nil{}}, p => xs => off => PA{p, xs, off}, p => xs => off => PA{p, xs, off}, u => 0}
 
 # =====================================================================================================
-# Losses over arrays (cross-entropy, MSE, NLL)
+# conv: im2col (one gathered row per output position) and Conv2d (im2col then Linear's three products)
 # =====================================================================================================
 
-# ---- cross-entropy of the logits z (n x c) against one label per row, mean over the rows (PyTorch's F.cross_entropy,
-# reduction="mean"); its gradient is (softmax(z) - onehot) / n. Over z's own array, a row at a time, with
-# bend-ml-tensor-array's Mat.softmax_ce's operations in its order, so its bits. ----
+# the output size: floor division, no divisibility condition (the law out_count says so)
+def ocount(+h: Nat, +p: Nat, +k: Nat, +s: Nat) -> Nat:
+  Nat.add(Nat.div(Nat.sub(Nat.add(h, Nat.mul(2n, p)), k), s), 1n)
+
+# the gathered matrix is one flat list of n·oh·ow·c·k·k numbers in raster order; cell i of position q decomposes as
+# (channel, ky, kx) and the position as (batch, oy, ox), channel-major inside the patch as PyTorch's unfold
+def p_ch(+i: Nat, +k: Nat) -> Nat:
+  Nat.div(i, Nat.mul(k, k))
+
+def p_ky(+i: Nat, +k: Nat) -> Nat:
+  Nat.div(Nat.mod(i, Nat.mul(k, k)), k)
+
+def p_kx(+i: Nat, +k: Nat) -> Nat:
+  Nat.mod(i, k)
+
+def p_iy(+i: Nat, +oy: Nat, +k: Nat, +p: Nat, +s: Nat) -> Nat:
+  Nat.sub(Nat.add(Nat.mul(oy, s), p_ky(i, k)), p)
+
+def p_ix(+i: Nat, +ox: Nat, +k: Nat, +p: Nat, +s: Nat) -> Nat:
+  Nat.sub(Nat.add(Nat.mul(ox, s), p_kx(i, k)), p)
+
+def p_ok(+i: Nat, +oy: Nat, +ox: Nat, +h: Nat, +w: Nat, +k: Nat, +p: Nat, +s: Nat) -> Bool:
+  Bool.and(
+    Bool.and(Nat.is_le(p, Nat.add(Nat.mul(oy, s), p_ky(i, k))), Nat.is_lt(p_iy(i, oy, k, p, s), h)),
+    Bool.and(Nat.is_le(p, Nat.add(Nat.mul(ox, s), p_kx(i, k))), Nat.is_lt(p_ix(i, ox, k, p, s), w)))
+
+def p_src(+i: Nat, +b: Nat, +oy: Nat, +ox: Nat, +h: Nat, +w: Nat, +c: Nat, +k: Nat, +p: Nat, +s: Nat) -> U32:
+  U32.from_nat(Nat.add(Nat.mul(Nat.add(Nat.mul(Nat.add(Nat.mul(b, h), p_iy(i, oy, k, p, s)), w), p_ix(i, ox, k, p, s)), c), p_ch(i, k)))
+
+# the array and the cell's value: read when the window is inside, 0 when it is not, so no out-of-bounds cell is touched
+def p_rc(ok: Bool, d: Array<F32>, +src: U32) -> Array<F32> & F32:
+  match ok:
+    case True{}:
+      Array.get(F32, d, src)
+    case False{}:
+      Tuple{d, 0.0}
+
+type GL is Type:
+  GL{d: Array<F32>, xs: List<&2, F32>}
+
+# one flat loop (read_l's shape): each step conses the current number and fetches the next, the array handed forward
+def gather(+left: Nat, +j: Nat, +n: Nat, +h: Nat, +w: Nat, +c: Nat, +k: Nat, +p: Nat, +s: Nat, +oh: Nat, +ow: Nat, +ckk: Nat, rc: Array<F32> & F32, +acc: List<&2, F32>) -> GL:
+  match left rc:
+    case 0n Tuple{d, v}:
+      GL{d, acc}
+    case 1n Tuple{d, +v}:
+      GL{d, Con{v, acc}}
+    case 1n+rest Tuple{d, +v}:
+      +j2 = Nat.add(j, 1n)
+      +pos = Nat.div(j2, ckk)
+      +i = Nat.mod(j2, ckk)
+      +per = Nat.mul(oh, ow)
+      +b = Nat.div(pos, per)
+      +r = Nat.mod(pos, per)
+      +oy = Nat.div(r, ow)
+      +ox = Nat.mod(r, ow)
+      gather(rest, j2, n, h, w, c, k, p, s, oh, ow, ckk,
+        p_rc(Bool.and(Nat.is_lt(pos, Nat.mul(n, per)), p_ok(i, oy, ox, h, w, k, p, s)), d,
+          p_src(i, b, oy, ox, h, w, c, k, p, s)), Con{v, acc})
+
+def gl_out(r: GL) -> List<&2, F32>:
+  match r:
+    case GL{d, xs}:
+      List.reverse(&2, F32, xs)
+
+def im2col_n(+n: Nat, +h: Nat, +w: Nat, +c: Nat, +k: Nat, +p: Nat, +s: Nat, d: Array<F32>) -> List<&2, F32>:
+  +oh = ocount(h, p, k, s)
+  +ow = ocount(w, p, k, s)
+  +ckk = Nat.mul(c, Nat.mul(k, k))
+  gl_out(gather(Nat.mul(Nat.mul(n, Nat.mul(oh, ow)), ckk), 0n, n, h, w, c, k, p, s, oh, ow, ckk,
+    p_rc(p_ok(0n, 0n, 0n, h, w, k, p, s), d, p_src(0n, 0n, 0n, 0n, h, w, c, k, p, s)), Nil{}))
+
+# add v into acc[src], reading and writing the cell the same way (Array.get hands the array back)
+def add_pair(r: Array<F32> & F32, +src: U32, +v: F32) -> Array<F32>:
+  match r:
+    case Tuple{a, +old}:
+      Array.set(F32, a, src, (old + v : F32))
+
+def add_at(+src: U32, +v: F32, acc: Array<F32>) -> Array<F32>:
+  add_pair(Array.get(F32, acc, src), src, v)
+
+def add_if(ok: Bool, +src: U32, +v: F32, acc: Array<F32>) -> Array<F32>:
+  match ok:
+    case True{}:
+      add_at(src, v, acc)
+    case False{}:
+      acc
+
+# col2im: the gradient of the gather. Every patch cell that read an image cell adds into it, in raster order of the
+# patches and then of the cell inside the patch, which is the order a per-pixel sum on the device reproduces.
+def c2_go(+left: Nat, +j: Nat, +n: Nat, +h: Nat, +w: Nat, +c: Nat, +k: Nat, +p: Nat, +s: Nat, +oh: Nat, +ow: Nat, +ckk: Nat, +per: Nat, +total: Nat, dp: Array<F32> & F32, acc: Array<F32>) -> Array<F32>:
+  match left dp:
+    case 0n Tuple{d, v}:
+      acc
+    case 1n+rest Tuple{dp2, +v}:
+      +pos = Nat.div(j, ckk)
+      +i = Nat.mod(j, ckk)
+      +b = Nat.div(pos, per)
+      +r = Nat.mod(pos, per)
+      +oy = Nat.div(r, ow)
+      +ox = Nat.mod(r, ow)
+      +j2 = Nat.add(j, 1n)
+      c2_go(rest, j2, n, h, w, c, k, p, s, oh, ow, ckk, per, total,
+        Array.get(F32, dp2, U32.from_nat(Nat.mod(j2, total))),
+        add_if(Bool.and(Nat.is_lt(pos, Nat.mul(n, per)), p_ok(i, oy, ox, h, w, k, p, s)),
+          p_src(i, b, oy, ox, h, w, c, k, p, s), v, acc))
+
+def col2im(+n: Nat, +h: Nat, +w: Nat, +c: Nat, +k: Nat, +p: Nat, +s: Nat, dp: TA.Mat<Nat.mul(n, Nat.mul(ocount(h, p, k, s), ocount(w, p, k, s))), Nat.mul(c, Nat.mul(k, k))>) -> TA.Mat<Nat.mul(n, Nat.mul(h, w)), c>:
+  match dp:
+    case TA.Mat{d}:
+      +oh = ocount(h, p, k, s)
+      +ow = ocount(w, p, k, s)
+      +ckk = Nat.mul(c, Nat.mul(k, k))
+      +per = Nat.mul(oh, ow)
+      +total = Nat.mul(Nat.mul(n, per), ckk)
+      +size = Nat.mul(Nat.mul(n, Nat.mul(h, w)), c)
+      TA.Mat{c2_go(total, 0n, n, h, w, c, k, p, s, oh, ow, ckk, per, total,
+        Array.get(F32, d, U32.from_nat(0n)),
+        Array.new(F32, TA.cap_depth(size), 0.0))}
+
+def im2col(+n: Nat, +h: Nat, +w: Nat, +c: Nat, +k: Nat, +p: Nat, +s: Nat, x: TA.Mat<Nat.mul(n, Nat.mul(h, w)), c>) -> TA.Mat<Nat.mul(n, Nat.mul(ocount(h, p, k, s), ocount(w, p, k, s))), Nat.mul(c, Nat.mul(k, k))>:
+  match x:
+    case TA.Mat{d}:
+      TA.Mat.from_list(Nat.mul(n, Nat.mul(ocount(h, p, k, s), ocount(w, p, k, s))), Nat.mul(c, Nat.mul(k, k)), im2col_n(n, h, w, c, k, p, s, d))
+
+# Conv2d is im2col then Linear's three products, so its parameter type is Lin<c·k·k, co> and it inherits lin_step,
+# lin_zeros and the PL/PA plumbing: a Train sees a parameter tree it already knows. The stride is given as s - 1
+# (1n+s below), so it is never 0; the patch matrix is kept only in the forward's state, which is what the backward
+# needs, and it is not rebuilt.
+#
+# The image's size is written as the kernel plus a surplus: the caller passes `hs`/`ws` with h + 2p = k + hs and
+# w + 2p = k + ws, and the image follows, h = k + hs - 2p (cimg). A window bigger than its image is therefore
+# unwritable: k <= h + 2p holds by construction, and no call site needs a lemma (the UNet's k = 3, s = 2, p = 1 at
+# 64 x 64 writes hs = ws = 63). The one condition left is the padding's, 2p <= k + hs; a caller that breaks it gets a
+# smaller image than it asked for, and its own Mat's size refuses the mismatch.
+
+# the image's shape from the surplus: h = k + hs - 2p, and the output count, (h + 2p - k)/s + 1, which is hs/s + 1 once
+# the surplus is the padded image's
+def cimg(+k: Nat, +hs: Nat, +p: Nat) -> Nat:
+  Nat.sub(Nat.add(k, hs), Nat.mul(2n, p))
+
+def ckk(+c: Nat, +k: Nat) -> Nat:
+  Nat.mul(c, Nat.mul(k, k))
+
+def chw(+k: Nat, +hs: Nat, +ws: Nat, +p: Nat) -> Nat:
+  Nat.mul(cimg(k, hs, p), cimg(k, ws, p))
+
+def coh(+k: Nat, +hs: Nat, +p: Nat, +s1: Nat) -> Nat:
+  ocount(cimg(k, hs, p), p, k, Nat.add(1n, s1))
+
+def cohw(+k: Nat, +hs: Nat, +ws: Nat, +p: Nat, +s1: Nat) -> Nat:
+  Nat.mul(coh(k, hs, p, s1), coh(k, ws, p, s1))
+
+def conv_b2(+n: Nat, +c: Nat, +co: Nat, +k: Nat, +hs: Nat, +ws: Nat, +p: Nat, +s1: Nat, b: Bwd<Lin<ckk(c, k), co>, TA.Mat<Nat.mul(n, cohw(k, hs, ws, p, s1)), ckk(c, k)>>) -> Bwd<Lin<ckk(c, k), co>, TA.Mat<Nat.mul(n, chw(k, hs, ws, p)), c>>:
+  match b:
+    case Bwd{prm, dx, gg}:
+      Bwd{prm, col2im(n, cimg(k, hs, p), cimg(k, ws, p), c, k, p, Nat.add(1n, s1), dx), gg}
+
+def Conv2d(+n: Nat, +c: Nat, +co: Nat, +k: Nat, +hs: Nat, +ws: Nat, +p: Nat, +s1: Nat, +par: Nat) -> Layer<Lin<ckk(c, k), co>, TA.Mat<Nat.mul(n, chw(k, hs, ws, p)), c>, TA.Mat<Nat.mul(n, cohw(k, hs, ws, p, s1)), co>, TA.Mat<Nat.mul(n, cohw(k, hs, ws, p, s1)), ckk(c, k)>>:
+  Layer{
+    prm => x => lin_fwd(Nat.mul(n, cohw(k, hs, ws, p, s1)), ckk(c, k), co, par, prm, im2col(n, cimg(k, hs, p), cimg(k, ws, p), c, k, p, Nat.add(1n, s1), x)),
+    prm => st => dy => gg => conv_b2(n, c, co, k, hs, ws, p, s1, lin_bwd(Nat.mul(n, cohw(k, hs, ws, p, s1)), ckk(c, k), co, par, prm, st, dy, gg)),
+    op => prm => gg => st => lin_step(ckk(c, k), co, op, prm, gg, st),
+    u => lin_zeros(ckk(c, k), co),
+    prm => lin_dump(ckk(c, k), co, prm),
+    prm => xs => off => lin_load(ckk(c, k), co, prm, xs, off),
+    prm => xs => off => lin_store(ckk(c, k), co, prm, xs, off),
+    u => U32.from_nat(Nat.mul(co, Nat.add(1n, ckk(c, k))))}
 
 def hit(b: Bool) -> F32:
   match b:

@@ -117,8 +117,13 @@ Numbers marked "busy machine" were taken with other jobs running and are a first
 ## Features
 
 - The layers work on matrices: a tensor is a `Mat<r, c>`, with batches and heads folded into rows and columns.
-- No convolution yet: images go through `Linear` and attention layers only. `GroupNorm` is in (`main.bend` and
-  `gpu.bend`); Conv2d is the next milestone (`docs/plan.md`, [#15](https://github.com/nuxyel/BendTorch/issues/15)).
+- Convolution is `Conv2d`, `im2col` then `Linear`'s three products, in `main.bend` and, with the gather and scatter as
+  bangs, in `gpu.bend`: the patch matrix is `n·oh·ow` rows of `c·k·k`, the parameters are `Lin<c·k·k, co>`, so the
+  optimizer, the checkpoint code and the layer plumbing serve it unchanged. The image is written as the kernel plus a
+  surplus (`h + 2p = k + hs`), so a window bigger than its image cannot be written and no call site needs a lemma. What
+  is still tested rather than stated: the general `k = s` round trip of `col2im(im2col(x))` is compared with PyTorch at
+  three shapes (`reference/conv2d_check.py`), and the adjoint law is [#15](https://github.com/nuxyel/BendTorch/issues/15)'s
+  remaining piece.
 - No `.pt` loading: weights come from a flat binary file in the twins' layout or from a `model.safetensors`
   (`torch/load.bend`, through the temporary foreign reader). The exact GELU
   (`GELUErf`) runs on the CPU and in JavaScript; it is not in `gpu.bend`.
