@@ -5,7 +5,9 @@ A mutant is caught when the gate fails. Some mutants are expected to survive: th
 equivalent mutant) or they sit outside what any gate checks; those are listed with the reason, so the report shows
 the limits of the checks as well as their reach.
 
-    reference/.venv/bin/python scripts/mutate.py        # or: make mutate
+    reference/.venv/bin/python scripts/mutate.py                  # or: make mutate
+    reference/.venv/bin/python scripts/mutate.py --only <file>    # the mutants named in <file>, one per line (make
+                                                                  # mutate ONLY=<file>; scripts/affected.py writes it)
 """
 
 import os
@@ -134,9 +136,9 @@ MNIST = numeric("mnist", "test_mnist.py")
 def tiny16():
     # AdamW with packed BF16 moments on the tiny Llama (fast.bend's layers) against its twin, with a checkpoint
     b = subprocess.run(["bend", "demo/tiny_bf16opt.bend", "-o", ".scratch/mut_tiny_bf16opt"], capture_output=True, env=ENV)
-    if b.returncode != 0 or not Path(".scratch/tiny_llama").exists():
+    if b.returncode != 0 or not Path(".scratch/mut_tiny_llama_ref").exists():
         return False
-    return subprocess.run([PY, "reference/test_tiny_bf16opt.py", ".scratch/mut_tiny_bf16opt", ".scratch/tiny_llama", "20"],
+    return subprocess.run([PY, "reference/test_tiny_bf16opt.py", ".scratch/mut_tiny_bf16opt", ".scratch/mut_tiny_llama_ref", "20"],
                           capture_output=True).returncode == 0
 
 
@@ -508,18 +510,43 @@ MUTANTS = [
 ]
 
 
+# programs a gate compares against, built once from the unmutated code before any mutant (tiny16 reads the tiny Llama's
+# float32 run; it read make check's .scratch/tiny_llama until --only let mutate run without make check)
+REFS = {TINY16: ["tiny_llama"]}
+
+
+def selected(argv):
+    if not argv:
+        return MUTANTS
+    if len(argv) != 2 or argv[0] != "--only":
+        sys.exit("usage: scripts/mutate.py [--only <file of mutant names, one per line>]")
+    names = [l.strip() for l in open(argv[1]) if l.strip()]
+    known = {m[0] for m in MUTANTS}
+    unknown = [n for n in names if n not in known]
+    if unknown:
+        sys.exit("mutate: no such mutant: " + "; ".join(unknown))
+    return [m for m in MUTANTS if m[0] in set(names)]
+
+
 def main():
     escaped, skipped = [], []
     cuda = has_cuda()
+    mutants = selected(sys.argv[1:])
+    Path(".scratch").mkdir(exist_ok=True)
+    for gate in dict.fromkeys(g for _, _, _, _, g, _ in mutants):
+        for demo in REFS.get(gate, []):
+            if subprocess.run(["bend", f"demo/{demo}.bend", "-o", f".scratch/mut_{demo}_ref"], capture_output=True, env=ENV).returncode != 0:
+                print(f"mutate: demo/{demo}.bend, which the gate {gate.__name__} compares against, does not build")
+                sys.exit(1)
     # every gate must pass on the code as it is, or each of its mutants would count as caught without being tested
     # (the fast gate expected 13 zeros from a program that printed 12, from 2026-10-21 to 2026-10-25)
-    for gate in dict.fromkeys(g for _, _, _, _, g, _ in MUTANTS):
+    for gate in dict.fromkeys(g for _, _, _, _, g, _ in mutants):
         if (gate is EXPCR and not cuda) or (gate is SMOLST and not ST135.exists()):
             continue
         if not gate():
             print(f"mutate: the gate {gate.__name__} fails on the unmutated code")
             sys.exit(1)
-    for name, path, before, after, gate, expected in MUTANTS:
+    for name, path, before, after, gate, expected in mutants:
         if gate is EXPCR and not cuda:
             print(f"skip {'':8} {name}  [needs a CUDA device]")
             skipped.append(name)
@@ -541,7 +568,8 @@ def main():
         print(f"{'ok ' if ok else 'BAD'} {verdict:8} {name}" + ("" if expected == "caught" else f"  [{expected}]"))
         if not ok:
             escaped.append(name)
-    print(f"mutate: {len(MUTANTS)} mutants, {len(MUTANTS) - len(escaped) - len(skipped)} as expected"
+    print(f"mutate: {len(mutants)} mutants" + (f" of {len(MUTANTS)} (--only)" if len(mutants) < len(MUTANTS) else "")
+          + f", {len(mutants) - len(escaped) - len(skipped)} as expected"
           + (f", {len(skipped)} skipped (no CUDA device or no model.safetensors)" if skipped else ""))
     sys.exit(1 if escaped else 0)
 

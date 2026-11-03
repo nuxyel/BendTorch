@@ -1,18 +1,28 @@
 name: CI
 
-# A private repository gets 2,000 Actions minutes a month, so not everything runs on every push:
-# - quick (every push to devel or main): the laws, every test against PyTorch, and the exact bits on 1 and 16 threads;
-#   a newer push to the same branch cancels a run still in progress.
-# - full (pull requests to main, every night on devel, or by hand): the same, plus the mutation run and the
-#   JavaScript lane.
+# What runs is what a change reads (scripts/affected.py decides, and the run's summary says why):
+# - pushes and pull requests to devel: from the changed files to the make targets and the mutants that read them,
+#   through each target's recipe and each file's imports and paths. A change to documentation or to comments runs only
+#   the text rules; a file it cannot place, or one every run reads (this workflow, the setup and data scripts), runs
+#   every target and the JavaScript lane, with the mutants still chosen by what they read. A push is counted from the
+#   newest commit in its history with a green run, so the change of a run that was cancelled or failed runs again; a
+#   pull request from its base.
+# - pull requests to main (a release), every Sunday on devel, a run by hand, and a pushed commit whose message has
+#   [full]: everything, that is make check, make bits, every mutant and the JavaScript lane.
+# The repository is public and the runner costs nothing; the selection is for the time a change waits (a full run takes
+# about an hour).
 on:
   push:
     branches: [main, devel]
   pull_request:
-    branches: [main]
+    branches: [main, devel]
   workflow_dispatch:
   schedule:
-    - cron: "17 6 * * *"   # nightly, on devel (a scheduled run checks out the branch named below)
+    - cron: "17 6 * * 0"   # Sundays, on devel (a scheduled run checks out the branch named below)
+
+permissions:
+  contents: read
+  actions: read            # scripts/affected.py reads this workflow's green runs
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
@@ -20,23 +30,38 @@ concurrency:
 
 jobs:
   check:
-    name: ${{ (github.event_name == 'push') && 'quick' || 'full' }} (laws, tests against PyTorch, bits${{ (github.event_name == 'push') && '' || ', mutants, JavaScript' }})
+    name: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.base_ref == 'main') && 'full (laws, tests against PyTorch, bits, mutants, JavaScript)' || 'selected (what the change reads, scripts/affected.py)' }}
     runs-on: ubuntu-24.04      # pinned; 4 vCPU, 16 GB RAM
     timeout-minutes: 90       # the full run took 57-60 min at 1.3.0 (the 2026-11-02 nightly passed every step and was cut at 60)
     env:
-      FULL: ${{ github.event_name != 'push' }}
+      FULL: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.base_ref == 'main' }}
       SKIP_RTS_PROBE: 1        # 4 vCPU and noisy CPU time: the runtime's thread-count probe runs on the local machine
     steps:
       - uses: actions/checkout@v7
         with:
           ref: ${{ github.event_name == 'schedule' && 'devel' || '' }}
+          fetch-depth: 0       # the selection compares this commit with an earlier one
 
       - uses: actions/setup-python@v7
         id: py
         with:
           python-version: "3.14"
 
+      # scripts/check_rts.py reads every tracked file, so it runs on every change; it needs only the standard library
+      - name: Text rules (no runtime option outside +RTS ... -RTS)
+        run: python3 scripts/check_rts.py --self-test && python3 scripts/check_rts.py
+
+      - name: The selection's own tests (scripts/affected.py self-check)
+        run: python3 scripts/affected.py self-check
+
+      - name: Select what the change needs
+        id: sel
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/affected.py ci
+
       - name: Cache the Bend and Lean toolchains
+        if: steps.sel.outputs.setup == 'true'
         uses: actions/cache@v6
         with:
           path: |
@@ -45,6 +70,7 @@ jobs:
           key: toolchain-${{ runner.os }}-${{ hashFiles('scripts/setup.sh') }}
 
       - name: Cache the Python environment (torch is the slow part)
+        if: steps.sel.outputs.setup == 'true'
         uses: actions/cache@v6
         with:
           path: reference/.venv
@@ -54,6 +80,7 @@ jobs:
 
       # only the downloads are cached; the initial weights and batches are written again on every run
       - name: Cache the datasets
+        if: steps.sel.outputs.setup == 'true'
         uses: actions/cache@v6
         with:
           path: |
@@ -62,46 +89,45 @@ jobs:
           key: data-${{ hashFiles('scripts/mnist.sh', 'scripts/tiny.sh') }}
 
       - name: Set up (Bend 2.0.39, Lean 4.34.0, Python venv)
+        if: steps.sel.outputs.setup == 'true'
         run: make setup
 
       - name: Data
+        if: steps.sel.outputs.setup == 'true'
         run: make data
 
-      - name: Check
+      # make check bits, or the targets the change reads (make builds their demos)
+      - name: Check (make ${{ steps.sel.outputs.targets }})
+        if: steps.sel.outputs.targets != ''
         shell: bash
         run: |
           set -o pipefail
-          make check 2>&1 | tee check.log
+          make ${{ steps.sel.outputs.targets }} 2>&1 | tee -a check.log
 
-      - name: Bits (the exact outputs on 1 and 16 threads)
+      - name: Mutation run (${{ steps.sel.outputs.mutants }} mutants)
+        if: steps.sel.outputs.mutants != '0'
         shell: bash
         run: |
           set -o pipefail
-          make bits 2>&1 | tee -a check.log
-
-      - name: Mutation run
-        if: env.FULL == 'true'
-        shell: bash
-        run: |
-          set -o pipefail
-          make mutate 2>&1 | tee -a check.log
+          make mutate ${{ steps.sel.outputs.full != 'true' && 'ONLY=.scratch/mutants.txt' || '' }} 2>&1 | tee -a check.log
 
       - name: Bun 1.4.2 (for the JavaScript lane)
-        if: env.FULL == 'true'
+        if: steps.sel.outputs.js == 'true'
         run: |
           curl -fsSL https://bun.sh/install | bash -s "bun-v1.4.2"
           echo "$HOME/.bun/bin" >> "$GITHUB_PATH"
 
       - name: JavaScript lane
-        if: env.FULL == 'true'
+        if: steps.sel.outputs.js == 'true'
         shell: bash
         run: |
           set -o pipefail
           make check-js 2>&1 | tee -a check.log
 
       - name: Keep the log
-        if: always()
+        if: always() && steps.sel.outputs.setup == 'true'
         uses: actions/upload-artifact@v7
         with:
           name: check-log
           path: check.log
+          if-no-files-found: ignore
