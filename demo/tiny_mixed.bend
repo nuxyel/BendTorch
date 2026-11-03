@@ -85,19 +85,19 @@ def Model(~b: Nat) -> T.Layer<TL.P, TL.X, TL.Y(b), TL.S(b)>:
 # ---- training: tiny_llama.bend's loop with this model ----
 
 def step_with(+cfg: T.OptCfg, +ids: List<&2, Nat>, tr: T.Train<TL.P>) -> T.Train<TL.P>:
-  T.Train.step(~TL.P, ~TL.X, ~TL.Y(2n), ~TL.S(2n), ~List<&2, Nat>, ~Model(~2n), ~TL.ce, cfg, tr, TL.xs_of(ids), TL.ys_of(ids))
+  T.Train.step(~TL.P, ~TL.X, ~TL.Y(2n), ~TL.S(2n), ~List<&2, Nat>, ~Model(~2n), ~TL.ce, tr, TL.xs_of(ids), TL.ys_of(ids))
 
 def tloop(k: Nat, +step: U32, +cfg: T.OptCfg, tr: T.Train<TL.P>) -> IO(T.Train<TL.P>):
   match k tr:
-    case 0n T.Train{p, g, st, p1, p2, +l}:
+    case 0n T.Train{p, g, st, oc, p1, p2, +l}:
       do IO<T.Train<TL.P>>:
         T.F32.print("loss", l)
-        return T.Train{p, g, st, p1, p2, l}
-    case 1n+q T.Train{p, g, st, p1, p2, +l}:
+        return T.Train{p, g, st, oc, p1, p2, l}
+    case 1n+q T.Train{p, g, st, oc, p1, p2, +l}:
       do IO<T.Train<TL.P>>:
         T.F32.print("loss", l)
         ids : List<&2, Nat> <- TL.load_batch(step)
-        tloop(q, (step + 1 : U32), cfg, step_with(cfg, ids, T.Train{p, g, st, p1, p2, l}))
+        tloop(q, (step + 1 : U32), cfg, step_with(cfg, ids, T.Train{p, g, st, oc, p1, p2, l}))
 
 def train(+k: Nat) -> IO(Unit):
   do IO<Unit>:

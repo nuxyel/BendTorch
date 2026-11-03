@@ -2,7 +2,7 @@
 export BEND_NO_TELEMETRY := 1
 export PATH := $(HOME)/.bend/bin:$(HOME)/.elan/bin:$(PATH)
 PY := reference/.venv/bin/python
-DEMOS := mlp_test ops_test mnist tiny_llama tiny_rt tensor_test imap_check fast_test gpu_test gpu_layers_test depth_check smol_block infra_test dtype_test tiny_mixed reader_test safetensors_test tiny_bf16opt loop_test fullattn_test fullattn_lane
+DEMOS := mlp_test ops_test mnist tiny_llama tiny_rt tensor_test imap_check fast_test gpu_test gpu_layers_test depth_check smol_block infra_test dtype_test tiny_mixed reader_test safetensors_test tiny_bf16opt loop_test fullattn_test fullattn_lane cfg_test
 # torch/load.bend's defs that reach the foreign binary reader (bend-ml-binary-read@0.2.0.0): the list may change only on purpose
 LOAD_DEFS := read_go read_sized read read_f32_at read_bf16_at size weights train_read train St.read St.then St.fill tensors_from tensors piece safetensors
 # torch/gpu.bend's defs that rely on bend-ml-tensor-gpu's @unsafe Array.fork (its leaves do not: they are plain Bend)
@@ -55,6 +55,7 @@ build:            ## compile the test and demo programs into .scratch/
 
 check: laws build ## the laws, then every layer, the tensor operations, the MLP, MNIST, the tiny Llama and a SmolLM2-sized block against PyTorch
 	$(PY) reference/test_infra.py .scratch/infra_test
+	$(PY) reference/test_cfg.py .scratch/cfg_test
 	$(PY) reference/test_reader.py .scratch/reader_test
 	$(PY) reference/test_safetensors.py .scratch/safetensors_test
 	$(PY) reference/test_ops.py .scratch/ops_test

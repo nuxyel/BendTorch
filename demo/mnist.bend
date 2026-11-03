@@ -83,17 +83,17 @@ def train_batch(+n: Nat, +row: U32, +cfg: T.OptCfg, tr: T.Train<P>) -> IO(T.Trai
   do IO<T.Train<P>>:
     x : X(n) <- load_x(n, "data/mnist/train-images-idx3-ubyte", row)
     ys : List<&2, Nat> <- load_y(n, "data/mnist/train-labels-idx1-ubyte", row)
-    return T.Train.step_at(P, X(n), Y(n), S(n), List<&2, Nat>, Model(n), z => targets => T.CrossEntropy(n, 10n, z, targets), cfg, tr, x, ys)
+    return T.Train.step_at(P, X(n), Y(n), S(n), List<&2, Nat>, Model(n), z => targets => T.CrossEntropy(n, 10n, z, targets), tr, x, ys)
 
 # Mean of batch losses, as before; a final partial batch is one batch in the mean.
 def tloop(k: Nat, +n: Nat, +row: U32, +cfg: T.OptCfg, +acc: F32, tr: T.Train<P>) -> IO(T.Train<P>):
   match k tr:
-    case 0n T.Train{p, g, st, p1, p2, +l}:
-      IO.pure(T.Train<P>, T.Train{p, g, st, p1, p2, (acc + l : F32)})
-    case 1n+q T.Train{p, g, st, p1, p2, +l}:
+    case 0n T.Train{p, g, st, oc, p1, p2, +l}:
+      IO.pure(T.Train<P>, T.Train{p, g, st, oc, p1, p2, (acc + l : F32)})
+    case 1n+q T.Train{p, g, st, oc, p1, p2, +l}:
       do IO<T.Train<P>>:
         +take : Nat = Nat.min(n, Nat.sub(60000n, U32.to_nat(row)))
-        next : T.Train<P> <- train_batch(take, row, cfg, T.Train{p, g, st, p1, p2, l})
+        next : T.Train<P> <- train_batch(take, row, cfg, T.Train{p, g, st, oc, p1, p2, l})
         tloop(q, n, (row + U32.from_nat(take) : U32), cfg, (acc + l : F32), next)
 
 type Hits is Type:
@@ -143,11 +143,11 @@ def report(+e: Nat, +nb: Nat, +secs: Nat, +sum: F32, h: Hits) -> IO(P):
 # the next epoch starts from these parameters with a fresh loss sum; the gradient and the optimizer state carry over
 def epoch_end(+n: Nat, +e: Nat, +nb: Nat, +secs: Nat, tr: T.Train<P>) -> IO(T.Train<P>):
   match tr:
-    case T.Train{p, g, st, p1, p2, +l}:
+    case T.Train{p, g, st, oc, p1, p2, +l}:
       do IO<T.Train<P>>:
         h : Hits <- eloop(batches(10000n, n), n, 0, Hits{0n, p})
         p3 : P <- report(e, nb, secs, l, h)
-        return T.Train{p3, g, st, p1, p2, 0.0}
+        return T.Train{p3, g, st, oc, p1, p2, 0.0}
 
 def epochs(k: Nat, +n: Nat, +e: Nat, +nb: Nat, +cfg: T.OptCfg, tr: T.Train<P>) -> IO(Unit):
   match k:

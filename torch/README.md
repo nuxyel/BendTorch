@@ -10,11 +10,21 @@ type Layer<-P: Type, -X: Type, -Y: Type, -S: Type> is Type:
         count: Unit -> U32}
 ```
 
-`zeros` makes a gradient or a moment buffer. `Train.new(..., cfg, parameters)` allocates no moment buffers for SGD,
-one for momentum and two for Adam/AdamW (`OptState<P>`: `NoMom`, `OneMom`, `TwoMom`). Keep the optimizer family fixed
-for a training state; use a fresh state when switching families. The optimizer arithmetic is unchanged. Call
-`T.OptCfg.check(cfg)` before training, as the demos do: it stops with a message when an Adam configuration's `c1`, `c2`
-disagree with its `b1`, `b2`.
+`zeros` makes a gradient or a moment buffer. `Train.new(..., cfg, parameters)` keeps the configuration in the training
+state and allocates no moment buffers for SGD, one for momentum and two for Adam/AdamW (`OptState<P>`: `NoMom`,
+`OneMom`, `TwoMom`; `Packed` for AdamW with BF16 moments). Every `Train.step` runs under that configuration, so it is
+given once. `Train.with_cfg(P, cfg, state)` replaces it from the next step on, for a schedule or a change mid-run; the
+moments and Adam's `1 - b1^t`, `1 - b2^t` carry over. A configuration of another family than the state's buffers, or
+one that `OptCfg.ok` rejects, is refused: that step runs with NaN, so the parameters and every later loss are NaN. Use a
+fresh state when switching families. Call `T.OptCfg.check(cfg)` before training, as the demos do: it stops with a
+message when an Adam configuration's `c1`, `c2` disagree with its `b1`, `b2`.
+
+From 1.x (BendTorch #24): `Train.step` and `Train.step_at` no longer take a configuration, and the record has one more
+field, after `st` (`T.Train{p, g, st, cfg, p1, p2, loss}`), so a pattern on it gains one. Until 1.3.0 the step's own
+argument decided everything but which buffers to make: the learning rate given to `Train.new` was not used, and a
+configuration of another family left the parameters unchanged with no error. A program that gave each step its own
+configuration (a schedule) now calls `Train.with_cfg` before the step, with the same numbers it passed: the results are
+the same bits.
 
 `dump` returns a flat list in a fixed order; `load` reads from one source array at an **element** offset and returns
 `PA{parameters, source_array, next_offset}`. `count` gives the number of serialized F32 values, including non-learned
@@ -48,7 +58,7 @@ cost at run time.
 | Combinators | `Seq` (one after the other), `Fork` (one input to two layers, the input gradients summed), `Both` (a pair of inputs to two layers), `Residual` (`x + f(x)`), `Tie` (first, middle, last, where the first and the last share one parameter: tied embeddings) |
 | Losses | `CrossEntropy` (mean, from logits; each row's softmax sum is a balanced tree, for vocabularies of 49,152), `NLL` (mean, from log-probabilities), `MSE` (mean) |
 | Optimizers | `SGD`, SGD with momentum, `Adam` (with or without weight decay), `AdamW`; one pass per parameter matrix, in PyTorch's order of operations, the gradient zeroed on the way. `CAdam{lr, b1, b2, eps, wd, c1, c2}` and `CAdamW{...}` take `c1 = 1 - b1` and `c2 = 1 - b2` as their own constants (`0.1, 0.001` for the usual betas), as PyTorch computes them in float64, and the training state carries `1 - b^t`. `OptCfg.ok(cfg)` checks each pair: `0 < c <= 1` and `c` within 2^-23 of `1 - b` taken in F32 (always true for a `c` written as `1 - b`, false for a typo); `OptCfg.check(cfg)` stops an IO program with a message when it fails, and `Train.new` starts a failing configuration's state at NaN, so every loss after the first is NaN. `CAdamWBF16{lr, b1, b2, eps, wd, c1, c2, v16}` is AdamW with its first moment stored as packed BF16 (two values a `U32`, rounded to nearest even after each update, read back rounded by the weight update) and, when `v16`, its second moment too; the weights, the gradient and the arithmetic stay F32. Its state is `Packed{tree}`: the buffers of each matrix at a leaf, allocated on the matrix's first step, half the words of F32 moments; checkpoints write the tree with its sizes. A BF16 `v` loses most small updates of long runs (`b2 = 0.999` moves it by 0.1%, under half a BF16 step), so it drifts above the exact average: over 2,000 steps of the tiny Llama, 90.6% of v's updates were lost to rounding and the stored v sat 1.54x above the exact one at the median, while the losses stayed within M11's bound (0.0452 with m packed, 0.0234 with m and v, against 0.05). So it is an opt-in, not a default: m alone is safe, and m with v is for when memory decides, as for one step or a short fine-tune of SmolLM2-1.7B (AdamW's state 26.0 GiB in F32, 19.5 GiB with both packed) |
-| Training | `Train.step`: forward, loss, backward and one optimizer step for any layer under any loss; `Train.save` and `load.bend`'s `train`: checkpoints of the parameters and the optimizer state (a resumed run gives the same bits) |
+| Training | `Train.step`: forward, loss, backward and one optimizer step for any layer under any loss, under the configuration the state carries (`Train.new`'s, or `Train.with_cfg`'s; one of another family, or that `OptCfg.ok` rejects, is refused); `Train.save` and `load.bend`'s `train`: checkpoints of the parameters and the optimizer state (a resumed run gives the same bits) |
 | General tensors (`tensor.bend`) | `Tensor<s>`, the shape `s` a list of sizes in the type, any rank (tested 0 to 4); `add`, `sub`, `mul`, `div` with PyTorch's broadcasting and their gradients (`grad2`, `sum_to`); `sum_axis`, `sum_axis_keep`, `mean_axis`, `sum_all`, `mean_all`; `reshape` (with a proof that the count does not change), `flatten`; `permute` (with `transpose_p`, the permutation that swaps two axes); `narrow` (with a proof that the window fits); `cat`; `bmm` (`[b, n, k] · [b, k, m]`), each with its backward function. `of_mat` and `to_mat` turn a `Mat<r, c>` into a `Tensor<[r, c]>` and back without a copy |
 
 `erf(x)` is written in the package with F32 additions, multiplications and comparisons only (Base has no `erf`), so it
@@ -241,7 +251,8 @@ def Hidden() -> T.Layer<T.Two<T.Lin<784n, 128n>, Unit>, TA.Mat<100n, 784n>, TA.M
 
 `Seq` takes its seven types and its two layers. The types are explicit because Bend does almost no inference; they are
 also the documentation of the model: `T.Two<T.Lin<784n, 128n>, Unit>` is the parameters of a linear layer next to a
-ReLU's (none). Training is `T.Train.step(~P, ~X, ~Y, ~S, ~T, ~Model(), ~loss, cfg, state, x, targets)`.
+ReLU's (none). Training is `T.Train.step(~P, ~X, ~Y, ~S, ~T, ~Model(), ~loss, state, x, targets)`, under the configuration given to
+`T.Train.new`.
 
 ## Reusing parameters in a loop
 
@@ -310,6 +321,7 @@ them to F32's precision is tested against PyTorch, not proved.
 | `mat_numel` | A `Tensor<[r, c]>` holds the `r·c` numbers of a `Mat<r, c>`, so `of_mat` and `to_mat` can reuse the array as it is. |
 | `permute_rank` | Permuting the axes gives one axis per entry of the permutation, so a permutation keeps the rank. |
 | `gqa_head` | With `g` query heads per key/value head, query head `j·g + i` (`i < g`) reads key/value head `(j·g + i) / g = j`. The forward pass picks key/value head `hi / g` for query head `hi`; the backward pass adds the gradients of heads `j·g + 0 .. j·g + g - 1` into key/value head `j`. The law says these are the same groups. The proof is llama.bend's: `j·g` is `j` whole blocks of `g`, and `i < g` more numbers do not complete another one. |
+| `guard_nomom`, `guard_onemom`, `guard_twomom`, `guard_packed` | A step runs only under a configuration of its state's family. For every configuration and each kind of state (no buffers, one, two, two packed in BF16), the optimizer that `Opt.guard` hands the step is the configuration's own exactly when the configuration is of that kind (`OptCfg.kind`) and passes `OptCfg.ok`; otherwise it is the refused optimizer of the state's kind, every number NaN. So a learning rate or a family the state was not made for cannot run silently (#24). The proof takes the five configurations one by one; in each, both sides compute to the same optimizer. |
 | `block_sum` | `tree_sum` adds a row in passes: neighbours in pairs, an odd last cell carried up as it is, until one number is left. The GPU's loss kernels split the row into blocks of `2^p` cells instead: one leaf sums each block as a balanced tree of pairs, then the host runs `tree_sum`'s remaining passes over the block sums. When `2^p` divides the row, both make exactly the same additions: the same pairs, in the same order. `spec.bend` writes a sum as the tree of its additions over the cells' positions (`(0+1)+(2+3)` rather than a number), so the law holds for F32 as for any arithmetic, with nothing assumed about rounding. The proof: one pass over `2k` blocks of `2^p` cells pairs block `2j` with block `2j+1`, which is a block of `2^(p+1)` cells as the balanced tree builds it (an induction on `k`); so `p` passes over a row of `2^p·k` cells leave its `k` blocks (an induction on `p`, with `2^(p+1)·k = 2^p·2k`), and the passes after that are the same on both sides. It is why the mutant that shrinks the cross-entropy's GPU blocks to one cell survives: one cell divides every row. That the GPU code builds these trees is tested (the GPU layers give `main.bend`'s bits), not proved. |
 | `unpair_pair` (in [`dtype.bend`](dtype.bend), checked by `bend torch/dtype.bend` and `--verdict`) | Packing 16-bit values two to a word and reading back as many values as there were gives the same list, in the same order, for any length: an odd last value is paired with a 0 that the read leaves out. The proof takes two values at a time: the pair `HW{a, b}` unpacks to `a` then `b`, and the rest of the list is the induction hypothesis. That the bit operations which put a pair into a word and take it out are exact (`half_join`, `half_lo`, `half_hi`) is tested over every 16-bit value, not proved. |
 

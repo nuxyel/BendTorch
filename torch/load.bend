@@ -212,16 +212,16 @@ def cells_of(+path: String) -> IO(U32):
 
 def train(~P: Type, ~X: Type, ~Y: Type, ~S: Type, ~m: T.Layer<P, X, Y, S>, +path: String, tr: T.Train<P>) -> IO(T.Train<P>):
   match tr:
-    case T.Train{p, g, T.NoMom{}, p1, p2, loss}:
-      train_read(~P, ~X, ~Y, ~S, ~m, path, T.Layer.count(P, X, Y, S, m), 1, 0, T.Train{p, g, T.NoMom{}, p1, p2, loss})
-    case T.Train{p, g, T.OneMom{mm}, p1, p2, loss}:
-      train_read(~P, ~X, ~Y, ~S, ~m, path, T.Layer.count(P, X, Y, S, m), 2, 0, T.Train{p, g, T.OneMom{mm}, p1, p2, loss})
-    case T.Train{p, g, T.TwoMom{mm, vv}, p1, p2, loss}:
-      train_read(~P, ~X, ~Y, ~S, ~m, path, T.Layer.count(P, X, Y, S, m), 3, 2, T.Train{p, g, T.TwoMom{mm, vv}, p1, p2, loss})
-    case T.Train{p, g, T.Packed{t}, p1, p2, loss}:
+    case T.Train{p, g, T.NoMom{}, c, p1, p2, loss}:
+      train_read(~P, ~X, ~Y, ~S, ~m, path, T.Layer.count(P, X, Y, S, m), 1, 0, T.Train{p, g, T.NoMom{}, c, p1, p2, loss})
+    case T.Train{p, g, T.OneMom{mm}, c, p1, p2, loss}:
+      train_read(~P, ~X, ~Y, ~S, ~m, path, T.Layer.count(P, X, Y, S, m), 2, 0, T.Train{p, g, T.OneMom{mm}, c, p1, p2, loss})
+    case T.Train{p, g, T.TwoMom{mm, vv}, c, p1, p2, loss}:
+      train_read(~P, ~X, ~Y, ~S, ~m, path, T.Layer.count(P, X, Y, S, m), 3, 2, T.Train{p, g, T.TwoMom{mm, vv}, c, p1, p2, loss})
+    case T.Train{p, g, T.Packed{t}, c, p1, p2, loss}:
       do IO<T.Train<P>>:
         +n : U32 <- cells_of(path)
-        train_read(~P, ~X, ~Y, ~S, ~m, path, n, 1, 0, T.Train{p, g, T.Packed{t}, p1, p2, loss})
+        train_read(~P, ~X, ~Y, ~S, ~m, path, n, 1, 0, T.Train{p, g, T.Packed{t}, c, p1, p2, loss})
 
 # =====================================================================================================
 # Safetensors (Hugging Face): 8 bytes holding the header's length (little-endian), a JSON header naming each tensor's

@@ -41,7 +41,7 @@ def steps(k: Nat, +c: T.OptCfg, tr: T.Train<P>) -> T.Train<P>:
   match k:
     case 0n: tr
     case 1n+q:
-      steps(q, c, T.Train.step(~P, ~M, ~M, ~S, ~M, ~Model(), ~loss, c, tr, TA.Mat.from_list(2n, 3n, [0.2, 0.1, 0.4, 0.3, 0.6, 0.5]), TA.Mat.from_list(2n, 3n, [0.1, 0.3, 0.2, 0.4, 0.3, 0.5])))
+      steps(q, c, T.Train.step(~P, ~M, ~M, ~S, ~M, ~Model(), ~loss, tr, TA.Mat.from_list(2n, 3n, [0.2, 0.1, 0.4, 0.3, 0.6, 0.5]), TA.Mat.from_list(2n, 3n, [0.1, 0.3, 0.2, 0.4, 0.3, 0.5])))
 
 def finish(r: T.TrainPL<P>) -> IO(Unit):
   match r:
@@ -56,7 +56,7 @@ def params_fin(p: P) -> IO(Unit):
 
 def params_of(+path: String, tr: T.Train<P>) -> IO(Unit):
   match tr:
-    case T.Train{p, g, st, p1, p2, l}:
+    case T.Train{p, g, st, oc, p1, p2, l}:
       do IO<Unit>:
         q : P <- T.Params.save(~P, ~M, ~M, ~S, ~Model(), path, p)
         params_fin(q)

@@ -6,8 +6,8 @@
   <a href="https://github.com/nuxyel/BendTorch/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/nuxyel/BendTorch/ci.yml?branch=main&style=flat-square&label=ci&labelColor=4d4a44&color=7e9a5e" alt="CI"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-8b83b5?style=flat-square&labelColor=4d4a44" alt="MIT license"></a>
   <a href="https://bend-lang.com"><img src="https://img.shields.io/badge/Bend-2.0.39-8b83b5?style=flat-square&labelColor=4d4a44" alt="Bend 2.0.39"></a>
-  <img src="https://img.shields.io/badge/laws%20proved-29-7e9a5e?style=flat-square&labelColor=4d4a44" alt="29 laws proved">
-  <img src="https://img.shields.io/badge/planted%20bugs-149%2F149%20as%20expected-7e9a5e?style=flat-square&labelColor=4d4a44" alt="149 planted bugs, 149 as expected">
+  <img src="https://img.shields.io/badge/laws%20proved-33-7e9a5e?style=flat-square&labelColor=4d4a44" alt="33 laws proved">
+  <img src="https://img.shields.io/badge/planted%20bugs-159%2F159%20as%20expected-7e9a5e?style=flat-square&labelColor=4d4a44" alt="159 planted bugs, 159 as expected">
 </p>
 
 **BendTorch** trains neural networks in [Bend 2](https://bend-lang.com) with general pieces: layers with typed forward
@@ -39,8 +39,9 @@ def Hidden() -> T.Layer<T.Two<T.Lin<784n, 128n>, Unit>, X, TA.Mat<100n, 128n>, T
 def Model() -> T.Layer<P, X, Y, S>:
   T.Seq(~T.Two<T.Lin<784n, 128n>, Unit>, ~T.Lin<128n, 10n>, ~X, ~TA.Mat<100n, 128n>, ~Y, ~T.Two<X, TA.Mat<100n, 128n>>, ~TA.Mat<100n, 128n>, ~Hidden(), ~T.Linear(100n, 128n, 10n, 0n))
 
-# one training step, the same for every model and loss
-T.Train.step(~P, ~X, ~Y, ~S, ~List<&2, Nat>, ~Model(), ~ce, cfg, state, x, labels)
+# one training step, the same for every model and loss, under the configuration the state was made with
+# (Train.new(..., cfg, parameters); Train.with_cfg changes it, for a schedule)
+T.Train.step(~P, ~X, ~Y, ~S, ~List<&2, Nat>, ~Model(), ~ce, state, x, labels)
 ```
 
 A layer is a record of four functions over its parameters `P`, its input `X`, its output `Y` and what its forward pass
@@ -83,13 +84,13 @@ them again with Bend's kernel proved in Lean, with no `@unsafe`, no `?TODO` and 
 explains each proof. The linear laws are about an exact model where numbers are `Nat`; the F32 code computes the same
 formulas and is tested, not proved, to do so.
 
-149 deliberate faults planted in the code and the specification (`scripts/mutate.py`) each behave as expected: 146
+159 deliberate faults planted in the code and the specification (`scripts/mutate.py`) each behave as expected: 156
 are caught by a law or a test, and three survive by design, because they still compute the right result. One is right
 by accident (a one-cell array wraps every index to 0), and a bounds check catches the same fault; one only changes a
 GPU block size, and any block size that divides a row gives the same sum, bit for bit: the law `block_sum` proves it;
 the third lets packed AdamW write past n into cells that hold zeros and stay zero.
 
-<p align="center"><img src="docs/media/mutants.webp" alt="149 planted faults: 146 caught, 3 survive by design" width="80%"></p>
+<p align="center"><img src="docs/media/mutants.webp" alt="159 planted faults: 156 caught, 3 survive by design" width="80%"></p>
 
 ## 03 · It trains, and it computes what PyTorch computes
 
@@ -202,7 +203,7 @@ Linux x86_64, clang, Python 3.14, `curl`. The Python venv with PyTorch takes abo
 make setup   # Bend 2.0.39 (SHA256-checked), Lean 4.34.0, the Python venv of reference/; no sudo
 make data    # MNIST and Tiny Shakespeare into data/, the twins' initial weights and batches (seed 0)
 make check   # the laws (--verdict), the rejected programs, every layer, the MLP, MNIST, the Llama and a SmolLM2-sized block against PyTorch (~2 min)
-make mutate  # the 149 deliberate faults
+make mutate  # the 159 deliberate faults
 make bench   # BendTorch against PyTorch on MNIST, the tiny Llama and the block (~6 min)
 make check-js  # the same tests on the JavaScript build, run with Bun; the outputs must be the native build's bits
 ```

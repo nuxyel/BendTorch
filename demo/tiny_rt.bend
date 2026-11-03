@@ -391,20 +391,20 @@ def grads(+b: Nat, +t: Nat, +ids: List<&2, Nat>) -> IO(Unit):
 # ---- training ----
 
 def step_with(+b: Nat, +t: Nat, +cfg: T.OptCfg, +ids: List<&2, Nat>, tr: T.Train<P>) -> T.Train<P>:
-  T.Train.step_at(P, X, Y(b, t), S(b, t), List<&2, Nat>, Model(b, t), z => ys => ce(b, t, z, ys), cfg, tr, xs_of(b, t, ids), ys_of(b, t, ids))
+  T.Train.step_at(P, X, Y(b, t), S(b, t), List<&2, Nat>, Model(b, t), z => ys => ce(b, t, z, ys), tr, xs_of(b, t, ids), ys_of(b, t, ids))
 
 # k more steps from batch `step`; prints the loss of the step before (0 before the first)
 def tloop(k: Nat, +b: Nat, +t: Nat, +path: String, +step: U32, +cfg: T.OptCfg, tr: T.Train<P>) -> IO(T.Train<P>):
   match k tr:
-    case 0n T.Train{p, g, st, p1, p2, +l}:
+    case 0n T.Train{p, g, st, oc, p1, p2, +l}:
       do IO<T.Train<P>>:
         T.F32.print("loss", l)
-        return T.Train{p, g, st, p1, p2, l}
-    case 1n+q T.Train{p, g, st, p1, p2, +l}:
+        return T.Train{p, g, st, oc, p1, p2, l}
+    case 1n+q T.Train{p, g, st, oc, p1, p2, +l}:
       do IO<T.Train<P>>:
         T.F32.print("loss", l)
         ids : List<&2, Nat> <- load_batch(b, t, path, step)
-        tloop(q, b, t, path, (step + 1 : U32), cfg, step_with(b, t, cfg, ids, T.Train{p, g, st, p1, p2, l}))
+        tloop(q, b, t, path, (step + 1 : U32), cfg, step_with(b, t, cfg, ids, T.Train{p, g, st, oc, p1, p2, l}))
 
 def cfg() -> T.OptCfg:
   T.CAdamW{0.003, 0.9, 0.999, 0.00000001, 0.01, 0.1, 0.001}
@@ -416,7 +416,7 @@ def train_run(+k: Nat, +b: Nat, +t: Nat, +path: String, p: P) -> IO(T.Train<P>):
 
 def finish(tr: T.Train<P>) -> IO(Unit):
   match tr:
-    case T.Train{p, g, st, p1, p2, l}:
+    case T.Train{p, g, st, oc, p1, p2, l}:
       print_params("final", p)
 
 def train(+k: Nat, +b: Nat, +t: Nat, +path: String) -> IO(Unit):
@@ -498,7 +498,7 @@ def show_gen(+voc: List<&2, U32>, r: Gen) -> IO(Unit):
 
 def sample2(+n: Nat, +t: Nat, +win: List<&2, Nat>, +voc: List<&2, U32>, tr: T.Train<P>) -> IO(Unit):
   match tr:
-    case T.Train{p, g, st, p1, p2, l}:
+    case T.Train{p, g, st, oc, p1, p2, l}:
       show_gen(voc, gen(n, t, p, win, Nil{}))
 
 # trains for k steps, then continues the last t characters of the prompt by n characters, greedily
