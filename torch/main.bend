@@ -1003,11 +1003,11 @@ def Train.step(~P: Type, ~X: Type, ~Y: Type, ~S: Type, ~T: Type, ~m: Layer<P, X,
     case Train{p, g, st, cfg, p1, p2, l}:
       ts2(~P, ~X, ~Y, ~S, ~T, ~m, ~loss, cfg, g, st, p1, p2, t, Layer.fwd(P, X, Y, S, m, p, x))
 
-# One owned model, including dimensions captured at run time. Its fwd, bwd and step closures each run once.
 def train_at_g(-P: Type, sf: Opt -> P -> P -> OptState<P> -> Step<P>, +cfg: OptCfg, +l: F32, +q1: F32, +q2: F32, p: P, g: P, r: Guarded<P>) -> Train<P>:
   match r:
     case Guarded{o, st}: ts5(P, cfg, l, q1, q2, sf(o, p, g, st))
 
+# One owned model, including dimensions captured at run time. Its fwd, bwd and step closures each run once.
 def train_at_b(-P: Type, -X: Type, sf: Opt -> P -> P -> OptState<P> -> Step<P>, +cfg: OptCfg, st: OptState<P>, +p1: F32, +p2: F32, +l: F32, r: Bwd<P, X>) -> Train<P>:
   match r:
     case Bwd{p, dx, g}:
@@ -3567,7 +3567,8 @@ def tdp(-P: Type, g: P, +cfg: OptCfg, +p1: F32, +p2: F32, +l: F32, rp: PL<P>, rt
       tdp2(P, p, g, cfg, p1, p2, l, xp, pt_store(t, Array.new(F32, depth(U32.to_nat(n)), 0.0), 0))
 
 # every number of a training state: the parameters, then the first moments, the second moments, b1^t and b2^t (packed
-# moments: their tree's cells, pt_store's layout, in place of the two moments)
+# moments: their tree's cells, pt_store's layout, in place of the two moments). Not its configuration: a checkpoint
+# resumes under the configuration of the Train it is read into.
 def Train.dump(~P: Type, ~X: Type, ~Y: Type, ~S: Type, ~m: Layer<P, X, Y, S>, tr: Train<P>) -> TrainPL<P>:
   match tr:
     case Train{p, g, NoMom{}, +cfg, +p1, +p2, +l}:
@@ -3639,7 +3640,7 @@ def trp(-P: Type, +cfg: OptCfg, g: P, r: PA<P>) -> Train<P>:
     case PA{p, xs, +off}: trp2(P, cfg, p, g, pt_load(xs, off))
 
 # a training state filled from the numbers Train.dump wrote (its buffers are overwritten in place; packed moments are
-# built again from the tree's cells)
+# built again from the tree's cells); its configuration stays the one tr was made with
 def Train.restore(~P: Type, ~X: Type, ~Y: Type, ~S: Type, ~m: Layer<P, X, Y, S>, tr: Train<P>, xs: Array<F32>) -> Train<P>:
   match tr:
     case Train{p, g, NoMom{}, cfg, p1, p2, l}:
