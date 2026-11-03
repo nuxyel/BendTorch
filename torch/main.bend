@@ -541,6 +541,37 @@ def cfg_stop(ok: Bool) -> IO(Unit):
 def OptCfg.check(+cfg: OptCfg) -> IO(Unit):
   cfg_stop(OptCfg.ok(cfg))
 
+# The step's Opt and the state it runs on. A step runs only when its configuration is the state's kind (SGD on
+# NoMom, momentum on OneMom, Adam or AdamW on TwoMom, AdamW with BF16 moments on Packed) and passes OptCfg.ok; any
+# other step runs with NaN for every number of the state's own kind, so its parameters and every loss after it are NaN,
+# as Train.new does with a configuration OptCfg.ok rejects. Without it a step of another kind fell to Opt.mat's last
+# case and left the parameters unchanged, with no error (BendTorch #24).
+type Guarded<-P: Type> is Type:
+  Guarded{o: Opt, st: OptState<P>}
+
+def nan() -> F32:
+  (0.0 / 0.0 : F32)
+
+def nan_adam() -> Opt:
+  Adam{nan(), nan(), nan(), nan(), nan(), False{}, nan(), nan(), nan(), nan()}
+
+def guard_ok(-P: Type, ok: Bool, +o: Opt, st: OptState<P>) -> Guarded<P>:
+  match ok:
+    case True{}: Guarded{o, st}
+    case False{}: Guarded{nan_adam(), st}
+
+def Opt.guard(-P: Type, +cfg: OptCfg, +q1: F32, +q2: F32, st: OptState<P>) -> Guarded<P>:
+  match cfg st:
+    case CSGD{lr} NoMom{}: Guarded{SGD{lr}, NoMom{}}
+    case CMomentum{lr, mu} OneMom{m}: Guarded{Momentum{lr, mu}, OneMom{m}}
+    case CAdam{lr, b1, b2, eps, wd, c1, c2} TwoMom{m, v}: guard_ok(P, OptCfg.ok(cfg), Opt.at(cfg, q1, q2), TwoMom{m, v})
+    case CAdamW{lr, b1, b2, eps, wd, c1, c2} TwoMom{m, v}: guard_ok(P, OptCfg.ok(cfg), Opt.at(cfg, q1, q2), TwoMom{m, v})
+    case CAdamWBF16{lr, b1, b2, eps, wd, c1, c2, v16} Packed{t}: guard_ok(P, OptCfg.ok(cfg), Opt.at(cfg, q1, q2), Packed{t})
+    case _ NoMom{}: Guarded{SGD{nan()}, NoMom{}}
+    case _ OneMom{m}: Guarded{Momentum{nan(), nan()}, OneMom{m}}
+    case _ TwoMom{m, v}: Guarded{nan_adam(), TwoMom{m, v}}
+    case _ Packed{t}: Guarded{nan_adam(), Packed{t}}
+
 # dump and load for a matrix: its r*c numbers, row by row
 def mat_dump_fin(-r: Nat, -c: Nat, ml: TA.ML<r, c>) -> PL<TA.Mat<r, c>>:
   match ml:
@@ -926,12 +957,16 @@ def ts5(-P: Type, +l: F32, +p1: F32, +p2: F32, r: Step<P>) -> Train<P>:
     case Step{p, g, st}:
       Train{p, g, st, p1, p2, l}
 
+def ts4g(~P: Type, ~X: Type, ~Y: Type, ~S: Type, ~m: Layer<P, X, Y, S>, +l: F32, +q1: F32, +q2: F32, p: P, g: P, r: Guarded<P>) -> Train<P>:
+  match r:
+    case Guarded{o, st}: ts5(P, l, q1, q2, Layer.step(P, X, Y, S, m, o, p, g, st))
+
 def ts4(~P: Type, ~X: Type, ~Y: Type, ~S: Type, ~m: Layer<P, X, Y, S>, +cfg: OptCfg, st: OptState<P>, +p1: F32, +p2: F32, +l: F32, r: Bwd<P, X>) -> Train<P>:
   match r:
     case Bwd{p, dx, g}:
       +q1 = (p1 + (OptCfg.c1(cfg) * (1.0 - p1 : F32) : F32) : F32)
       +q2 = (p2 + (OptCfg.c2(cfg) * (1.0 - p2 : F32) : F32) : F32)
-      ts5(P, l, q1, q2, Layer.step(P, X, Y, S, m, Opt.at(cfg, q1, q2), p, g, st))
+      ts4g(~P, ~X, ~Y, ~S, ~m, l, q1, q2, p, g, Opt.guard(P, cfg, q1, q2, st))
 
 def ts3(~P: Type, ~X: Type, ~Y: Type, ~S: Type, ~m: Layer<P, X, Y, S>, +cfg: OptCfg, p: P, s: S, g: P, st: OptState<P>, +p1: F32, +p2: F32, r: LossOut<Y>) -> Train<P>:
   match r:
@@ -950,12 +985,16 @@ def Train.step(~P: Type, ~X: Type, ~Y: Type, ~S: Type, ~T: Type, ~m: Layer<P, X,
       ts2(~P, ~X, ~Y, ~S, ~T, ~m, ~loss, cfg, g, st, p1, p2, t, Layer.fwd(P, X, Y, S, m, p, x))
 
 # One owned model, including dimensions captured at run time. Its fwd, bwd and step closures each run once.
+def train_at_g(-P: Type, sf: Opt -> P -> P -> OptState<P> -> Step<P>, +l: F32, +q1: F32, +q2: F32, p: P, g: P, r: Guarded<P>) -> Train<P>:
+  match r:
+    case Guarded{o, st}: ts5(P, l, q1, q2, sf(o, p, g, st))
+
 def train_at_b(-P: Type, -X: Type, sf: Opt -> P -> P -> OptState<P> -> Step<P>, +cfg: OptCfg, st: OptState<P>, +p1: F32, +p2: F32, +l: F32, r: Bwd<P, X>) -> Train<P>:
   match r:
     case Bwd{p, dx, g}:
       +q1 = (p1 + (OptCfg.c1(cfg) * (1.0 - p1 : F32) : F32) : F32)
       +q2 = (p2 + (OptCfg.c2(cfg) * (1.0 - p2 : F32) : F32) : F32)
-      ts5(P, l, q1, q2, sf(Opt.at(cfg, q1, q2), p, g, st))
+      train_at_g(P, sf, l, q1, q2, p, g, Opt.guard(P, cfg, q1, q2, st))
 
 def train_at_loss(-P: Type, -X: Type, -Y: Type, -S: Type, bf: P -> S -> Y -> P -> Bwd<P, X>, sf: Opt -> P -> P -> OptState<P> -> Step<P>, +cfg: OptCfg, p: P, s: S, g: P, st: OptState<P>, +p1: F32, +p2: F32, r: LossOut<Y>) -> Train<P>:
   match r:
