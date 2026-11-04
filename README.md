@@ -6,7 +6,7 @@
   <a href="https://github.com/nuxyel/BendTorch/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/nuxyel/BendTorch/ci.yml?branch=main&style=flat-square&label=ci&labelColor=4d4a44&color=7e9a5e" alt="CI"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-8b83b5?style=flat-square&labelColor=4d4a44" alt="MIT license"></a>
   <a href="https://bend-lang.com"><img src="https://img.shields.io/badge/Bend-2.0.40-8b83b5?style=flat-square&labelColor=4d4a44" alt="Bend 2.0.40"></a>
-  <img src="https://img.shields.io/badge/laws%20proved-37-7e9a5e?style=flat-square&labelColor=4d4a44" alt="37 laws proved">
+  <img src="https://img.shields.io/badge/laws%20proved-40-7e9a5e?style=flat-square&labelColor=4d4a44" alt="40 laws proved">
   <img src="https://img.shields.io/badge/planted%20bugs-174%2F174%20as%20expected-7e9a5e?style=flat-square&labelColor=4d4a44" alt="174 planted bugs, 174 as expected">
 </p>
 
