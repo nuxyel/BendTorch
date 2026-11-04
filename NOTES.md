@@ -2220,3 +2220,54 @@ That is the work, and it is a piece of its own rather than an afternoon's extens
   ulps, cross-entropy 4, attention 176,128, small 7,680, full 172,032, full small 8,192, GELUErf's dx 113; all 19 cases
   0 with `exp_cr`), `reader`, `smol`, `smol-gpu`, `bits-smol`, `check-js`, and `make mutate`: 174 of 174 as expected
   (171 caught, the 3 that survive by design), 44 minutes.
+## 2026-11-04: `Tile` (BendTorch#19), and the timings nuxyel asked for
+
+A conditioned block modulates per image (`h = h * (1 + scale)`), but the state is per token, and nothing broadcast a
+per-image row over its tokens: the modulation had to be repeated on the host and rebuilt with `Mat.from_list`. `Tile`
+is the smallest piece nuxyel asked for: `Mat<b,c>` to `Mat<b*t,c>`, row `i` of the input becoming rows
+`i*t .. i*t+t-1`, with the backward summing each image's `t` rows back into its row.
+
+The walk is one chain — images, rows, row, cells — because Bend has no mutual recursion here, and the addressing is two
+`Nat` defs (`tile_src`, `tile_dst`) that the loop calls through `U32.from_nat`, so the hot path has no division (the
+division lives in the forward's index only through `tile_src`, computed once per row, not per cell).
+
+### Score
+
+`reference/tile_check.py`, probe rebuilt from source, a 2 x 4 input over `t = 3` (6 x 4) and a 6 x 4 dY:
+
+    Tile: max |Bend - torch| forward 0.000e+00  backward 0.000e+00  (tolerance 1e-6)
+    a last-row backward would be off by 2.000e+00
+    PASS
+
+The second line is the point: a backward that kept the last row of each tile instead of summing them has the right
+shape and passes a shape check, and it is off by 2.0 here.
+
+### The laws
+
+`tile_row`: the `t` output rows of image `i` are all image row `i`, i.e. `(i*t + j) / t = i` for `j <= s` with
+`t = 1 + s`. The proof is `div_blocks` (the `i` whole blocks of `t` leave `go(j, s, i, 0)`) then `div_rest` (a
+remainder `j <= s` does not complete another block).
+`tile_sum`: every one of the `t` rows reads (forward) and adds into (backward) the same cell — `tile_src(c, t, i*t+j, k)
+= i*c + k`. It is `tile_row` carried through the column arithmetic, so it is nearly a corollary and the README row says
+so; it is still the statement the backward rests on.
+
+`make laws` green with 36 laws in `LAWS.bend` (37 in all); `--verdict` green; `make build` green.
+
+### The timings (#19 asked for them before deciding on a fused `Modulate`)
+
+The comparison is one elementwise pass over Tile's output shape (512 x 128, i.e. 8 images x 64 tokens x 128 wide)
+against that pass plus the tile broadcast; both written as 20,000 iterations threading a 512 x 128 matrix, medians of
+three, `/usr/bin/time`, wall clock with 0.01 s resolution:
+
+    one elementwise pass                1.51, 1.46, 1.49 s   (median 1.49 s, 74.5 us a step)
+    Tile then the same pass              1.40, 1.45, 1.45 s   (median 1.45 s, 72.5 us a step)
+
+So the broadcast is **not measurably slower** than materialising the operand it replaces: the single-pass version fills a
+512 x 128 matrix with the tiled scale, and the tiled version fills 8 x 128 and broadcasts it on the device. At this
+shape a fused `Modulate` would buy nothing measurable; what #19 measured was the *host* staging, and `Tile` is the
+piece that removes it. Reported on the issue.
+
+### Not in this change
+
+The device lane: `make gpu` is unavailable here (no `nvcc`, no `CUDA_HOME`), so `gpu.bend`'s copy is deferred rather
+than committed untested.
