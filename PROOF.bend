@@ -1567,19 +1567,68 @@ def p_ix_ks(+ch: Nat, +ky: Nat, +kx: Nat, +a: Nat, +b: Nat, +k: Nat, +ox: Nat,
 # PROOF (conv_roundtrip_ks): read (handed to p_src) and write (p_src itself) address the same image cell: the
 # channel is the outer quotient, the two window offsets are the inner quotient and remainder, and with s = k and
 # p = 0 the row and column follow.
-def Laws.conv_roundtrip_ks(n, oy, ox, ch, ky, kx, h, w, c, k, a, b, e1, e2):
-  Equal.cong(Nat, U32, s => U32.from_nat(s),
-    Nat.add(Nat.mul(Nat.add(Nat.mul(Nat.add(Nat.mul(n, h), T.p_iy(Nat.add(Nat.mul(Nat.add(Nat.mul(ch, k), ky), k), kx), oy, k, 0n, k)), w), T.p_ix(Nat.add(Nat.mul(Nat.add(Nat.mul(ch, k), ky), k), kx), ox, k, 0n, k)), c), T.p_ch(Nat.add(Nat.mul(Nat.add(Nat.mul(ch, k), ky), k), kx), k)),
-    Nat.add(Nat.mul(Nat.add(Nat.mul(Nat.add(Nat.mul(n, h), Nat.add(Nat.mul(oy, k), ky)), w), Nat.add(Nat.mul(ox, k), kx)), c), ch),
-    Equal.trans(Nat,
-      Nat.add(Nat.mul(Nat.add(Nat.mul(Nat.add(Nat.mul(n, h), T.p_iy(Nat.add(Nat.mul(Nat.add(Nat.mul(ch, k), ky), k), kx), oy, k, 0n, k)), w), T.p_ix(Nat.add(Nat.mul(Nat.add(Nat.mul(ch, k), ky), k), kx), ox, k, 0n, k)), c), T.p_ch(Nat.add(Nat.mul(Nat.add(Nat.mul(ch, k), ky), k), kx), k)),
-      Nat.add(Nat.mul(Nat.add(Nat.mul(Nat.add(Nat.mul(n, h), Nat.add(Nat.mul(oy, k), ky)), w), T.p_ix(Nat.add(Nat.mul(Nat.add(Nat.mul(ch, k), ky), k), kx), ox, k, 0n, k)), c), T.p_ch(Nat.add(Nat.mul(Nat.add(Nat.mul(ch, k), ky), k), kx), k)),
-      Nat.add(Nat.mul(Nat.add(Nat.mul(Nat.add(Nat.mul(n, h), Nat.add(Nat.mul(oy, k), ky)), w), Nat.add(Nat.mul(ox, k), kx)), c), ch),
-      Equal.cong(Nat, Nat, s => Nat.add(Nat.mul(Nat.add(Nat.mul(Nat.add(Nat.mul(n, h), s), w), T.p_ix(Nat.add(Nat.mul(Nat.add(Nat.mul(ch, k), ky), k), kx), ox, k, 0n, k)), c), T.p_ch(Nat.add(Nat.mul(Nat.add(Nat.mul(ch, k), ky), k), kx), k)), T.p_iy(Nat.add(Nat.mul(Nat.add(Nat.mul(ch, k), ky), k), kx), oy, k, 0n, k), Nat.add(Nat.mul(oy, k), ky), p_iy_ks(ch, ky, kx, a, b, k, oy, e1, e2)),
-      Equal.trans(Nat,
-        Nat.add(Nat.mul(Nat.add(Nat.mul(Nat.add(Nat.mul(n, h), Nat.add(Nat.mul(oy, k), ky)), w), T.p_ix(Nat.add(Nat.mul(Nat.add(Nat.mul(ch, k), ky), k), kx), ox, k, 0n, k)), c), T.p_ch(Nat.add(Nat.mul(Nat.add(Nat.mul(ch, k), ky), k), kx), k)),
-        Nat.add(Nat.mul(Nat.add(Nat.mul(Nat.add(Nat.mul(n, h), Nat.add(Nat.mul(oy, k), ky)), w), Nat.add(Nat.mul(ox, k), kx)), c), T.p_ch(Nat.add(Nat.mul(Nat.add(Nat.mul(ch, k), ky), k), kx), k)),
-        Nat.add(Nat.mul(Nat.add(Nat.mul(Nat.add(Nat.mul(n, h), Nat.add(Nat.mul(oy, k), ky)), w), Nat.add(Nat.mul(ox, k), kx)), c), ch),
-        Equal.cong(Nat, Nat, s => Nat.add(Nat.mul(Nat.add(Nat.mul(Nat.add(Nat.mul(n, h), Nat.add(Nat.mul(oy, k), ky)), w), s), c), T.p_ch(Nat.add(Nat.mul(Nat.add(Nat.mul(ch, k), ky), k), kx), k)), T.p_ix(Nat.add(Nat.mul(Nat.add(Nat.mul(ch, k), ky), k), kx), ox, k, 0n, k), Nat.add(Nat.mul(ox, k), kx), p_ix_ks(ch, ky, kx, a, b, k, ox, e1, e2)),
-        Equal.cong(Nat, Nat, s => Nat.add(Nat.mul(Nat.add(Nat.mul(Nat.add(Nat.mul(n, h), Nat.add(Nat.mul(oy, k), ky)), w), Nat.add(Nat.mul(ox, k), kx)), c), s), T.p_ch(Nat.add(Nat.mul(Nat.add(Nat.mul(ch, k), ky), k), kx), k), ch, p_ch_ks(ch, ky, kx, a, b, k, e1, e2)))))
+# -----------------------------------------------------------------------------------------------------
+# the round trip with any stride and padding: the decode does not care about s or p (BendTorch#29)
+# -----------------------------------------------------------------------------------------------------
+#
+# p_ky and p_kx are the slot's own offsets inside the k x k window, so they do not depend on the stride or the
+# padding at all; only the source coordinate does, and it is (oy*s + ky) - p. What is needed is that the subtraction
+# does not truncate, which the window hypothesis writes as oy*s + ky = p + ty, and one subtraction lemma.
 
+# (p + t) - p == t: the window's coordinate minus the padding is the image coordinate
+def sub_self_add(+p: Nat, +t: Nat) -> {Nat.sub(Nat.add(p, t), p) == t : Nat}:
+  match p:
+    case 0n:
+      sub0(t)
+    case 1n+pp:
+      sub_self_add(pp, t)
+
+# PROOF (p_iy_win): the source row is oy*s + ky - p, which the window hypothesis makes ty
+def p_iy_win(+ch: Nat, +ky: Nat, +kx: Nat, +a: Nat, +b: Nat, +k: Nat, +oy: Nat, +s: Nat, +p: Nat, +ty: Nat,
+  +e1: {k == Nat.add(1n, Nat.add(ky, a)) : Nat},
+  +e2: {k == Nat.add(1n, Nat.add(kx, b)) : Nat},
+  +ey: {Nat.add(Nat.mul(oy, s), ky) == Nat.add(p, ty) : Nat}) ->
+  {T.p_iy(Nat.add(Nat.mul(Nat.add(Nat.mul(ch, k), ky), k), kx), oy, k, p, s) == ty : Nat}:
+  Equal.trans(Nat, Nat.sub(Nat.add(Nat.mul(oy, s), T.p_ky(Nat.add(Nat.mul(Nat.add(Nat.mul(ch, k), ky), k), kx), k)), p), Nat.sub(Nat.add(Nat.mul(oy, s), ky), p), ty,
+    Equal.cong(Nat, Nat, z => Nat.sub(Nat.add(Nat.mul(oy, s), z), p), T.p_ky(Nat.add(Nat.mul(Nat.add(Nat.mul(ch, k), ky), k), kx), k), ky,
+      p_ky_ks(ch, ky, kx, a, b, k, e1, e2)),
+    Equal.trans(Nat, Nat.sub(Nat.add(Nat.mul(oy, s), ky), p), Nat.sub(Nat.add(p, ty), p), ty,
+      Equal.cong(Nat, Nat, z => Nat.sub(z, p), Nat.add(Nat.mul(oy, s), ky), Nat.add(p, ty), ey),
+      sub_self_add(p, ty)))
+
+# PROOF (p_ix_win): the same for the source column
+def p_ix_win(+ch: Nat, +ky: Nat, +kx: Nat, +a: Nat, +b: Nat, +k: Nat, +ox: Nat, +s: Nat, +p: Nat, +tx: Nat,
+  +e1: {k == Nat.add(1n, Nat.add(ky, a)) : Nat},
+  +e2: {k == Nat.add(1n, Nat.add(kx, b)) : Nat},
+  +ex: {Nat.add(Nat.mul(ox, s), kx) == Nat.add(p, tx) : Nat}) ->
+  {T.p_ix(Nat.add(Nat.mul(Nat.add(Nat.mul(ch, k), ky), k), kx), ox, k, p, s) == tx : Nat}:
+  Equal.trans(Nat, Nat.sub(Nat.add(Nat.mul(ox, s), T.p_kx(Nat.add(Nat.mul(Nat.add(Nat.mul(ch, k), ky), k), kx), k)), p), Nat.sub(Nat.add(Nat.mul(ox, s), kx), p), tx,
+    Equal.cong(Nat, Nat, z => Nat.sub(Nat.add(Nat.mul(ox, s), z), p), T.p_kx(Nat.add(Nat.mul(Nat.add(Nat.mul(ch, k), ky), k), kx), k), kx,
+      p_kx_ks(ch, ky, kx, a, b, k, e1, e2)),
+    Equal.trans(Nat, Nat.sub(Nat.add(Nat.mul(ox, s), kx), p), Nat.sub(Nat.add(p, tx), p), tx,
+      Equal.cong(Nat, Nat, z => Nat.sub(z, p), Nat.add(Nat.mul(ox, s), kx), Nat.add(p, tx), ex),
+      sub_self_add(p, tx)))
+
+# PROOF (conv_roundtrip_window): p_ch, p_ky and p_kx are the slot's, and p_iy/p_ix are the window's coordinate
+# minus the padding: the source cell is the one the output position covers, channel and all.
+def Laws.conv_roundtrip_window(n, oy, ox, ch, ky, kx, h, w, c, k, p, s, a, b, ty, tx, e1, e2, ey, ex):
+  Equal.cong(Nat, U32, z => U32.from_nat(z),
+    Nat.add(Nat.mul(Nat.add(Nat.mul(Nat.add(Nat.mul(n, h), T.p_iy(Nat.add(Nat.mul(Nat.add(Nat.mul(ch, k), ky), k), kx), oy, k, p, s)), w), T.p_ix(Nat.add(Nat.mul(Nat.add(Nat.mul(ch, k), ky), k), kx), ox, k, p, s)), c), T.p_ch(Nat.add(Nat.mul(Nat.add(Nat.mul(ch, k), ky), k), kx), k)),
+    Nat.add(Nat.mul(Nat.add(Nat.mul(Nat.add(Nat.mul(n, h), ty), w), tx), c), ch),
+    Equal.trans(Nat,
+      Nat.add(Nat.mul(Nat.add(Nat.mul(Nat.add(Nat.mul(n, h), T.p_iy(Nat.add(Nat.mul(Nat.add(Nat.mul(ch, k), ky), k), kx), oy, k, p, s)), w), T.p_ix(Nat.add(Nat.mul(Nat.add(Nat.mul(ch, k), ky), k), kx), ox, k, p, s)), c), T.p_ch(Nat.add(Nat.mul(Nat.add(Nat.mul(ch, k), ky), k), kx), k)),
+      Nat.add(Nat.mul(Nat.add(Nat.mul(Nat.add(Nat.mul(n, h), ty), w), T.p_ix(Nat.add(Nat.mul(Nat.add(Nat.mul(ch, k), ky), k), kx), ox, k, p, s)), c), T.p_ch(Nat.add(Nat.mul(Nat.add(Nat.mul(ch, k), ky), k), kx), k)),
+      Nat.add(Nat.mul(Nat.add(Nat.mul(Nat.add(Nat.mul(n, h), ty), w), tx), c), ch),
+      Equal.cong(Nat, Nat, z => Nat.add(Nat.mul(Nat.add(Nat.mul(Nat.add(Nat.mul(n, h), z), w), T.p_ix(Nat.add(Nat.mul(Nat.add(Nat.mul(ch, k), ky), k), kx), ox, k, p, s)), c), T.p_ch(Nat.add(Nat.mul(Nat.add(Nat.mul(ch, k), ky), k), kx), k)), T.p_iy(Nat.add(Nat.mul(Nat.add(Nat.mul(ch, k), ky), k), kx), oy, k, p, s), ty, p_iy_win(ch, ky, kx, a, b, k, oy, s, p, ty, e1, e2, ey)),
+      Equal.trans(Nat,
+        Nat.add(Nat.mul(Nat.add(Nat.mul(Nat.add(Nat.mul(n, h), ty), w), T.p_ix(Nat.add(Nat.mul(Nat.add(Nat.mul(ch, k), ky), k), kx), ox, k, p, s)), c), T.p_ch(Nat.add(Nat.mul(Nat.add(Nat.mul(ch, k), ky), k), kx), k)),
+        Nat.add(Nat.mul(Nat.add(Nat.mul(Nat.add(Nat.mul(n, h), ty), w), tx), c), T.p_ch(Nat.add(Nat.mul(Nat.add(Nat.mul(ch, k), ky), k), kx), k)),
+        Nat.add(Nat.mul(Nat.add(Nat.mul(Nat.add(Nat.mul(n, h), ty), w), tx), c), ch),
+        Equal.cong(Nat, Nat, z => Nat.add(Nat.mul(Nat.add(Nat.mul(Nat.add(Nat.mul(n, h), ty), w), z), c), T.p_ch(Nat.add(Nat.mul(Nat.add(Nat.mul(ch, k), ky), k), kx), k)), T.p_ix(Nat.add(Nat.mul(Nat.add(Nat.mul(ch, k), ky), k), kx), ox, k, p, s), tx, p_ix_win(ch, ky, kx, a, b, k, ox, s, p, tx, e1, e2, ex)),
+        Equal.cong(Nat, Nat, z => Nat.add(Nat.mul(Nat.add(Nat.mul(Nat.add(Nat.mul(n, h), ty), w), tx), c), z), T.p_ch(Nat.add(Nat.mul(Nat.add(Nat.mul(ch, k), ky), k), kx), k), ch, p_ch_ks(ch, ky, kx, a, b, k, e1, e2)))))
+
+# PROOF (conv_roundtrip_ks): the window law at s = k and p = 0, where the source row is oy*k + ky (0 + x = x), so
+# the narrower law is an instance of the general one, not a second proof.
+def Laws.conv_roundtrip_ks(n, oy, ox, ch, ky, kx, h, w, c, k, a, b, e1, e2):
+  Laws.conv_roundtrip_window(n, oy, ox, ch, ky, kx, h, w, c, k, 0n, k, a, b,
+    Nat.add(Nat.mul(oy, k), ky), Nat.add(Nat.mul(ox, k), kx), e1, e2, {==}, {==})

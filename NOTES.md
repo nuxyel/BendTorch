@@ -2042,3 +2042,54 @@ The law is `s = k` and `p = 0`. A stride other than the kernel size, or padding,
 and is not stated; the padded case reads `0` outside the window (`p_ok`), which is a statement about `p_rc`, not
 about the index. The adjoint of `im2col` (that `col2im` is the transpose of the gather) is not a law either; it is
 the next piece of #29.
+
+## 2026-11-04: the round trip at any stride and padding, and what the adjoint still needs
+
+`conv_roundtrip_ks` was `s = k, p = 0`. The real layers are `k = 3, s = 2, p = 1`, and the decode turned out not to
+care: `p_ky` and `p_kx` are the slot's offsets inside the `k x k` window, so they never mention the stride or the
+padding. Only the source coordinate does, and it is `(oy*s + ky) - p`.
+
+### The law
+
+`conv_roundtrip_window`: for every kernel, stride and padding, slot `(ch, ky, kx)` of output position `(oy, ox)` is
+image cell `(oy*s + ky - p, ox*s + kx - p)`, channel `ch`. Four bounds are hypotheses, all written as
+decompositions: `k = 1 + ky + a`, `k = 1 + kx + b` (the window offsets), and `oy*s + ky = p + ty`,
+`ox*s + kx = p + tx` (the window row and column are inside the image). The last two are not decoration: without them
+`p_iy`/`p_ix` truncate at 0 and `p_ok` is false, so the gather reads 0 and there is no cell to name.
+
+### What the proof cost
+
+One lemma, `sub_self_add(p, t)`: `(p + t) - p = t`, an induction on `p` (`sub0` at 0, one definitional step after).
+`p_iy_win`/`p_ix_win` are then `p_ky_ks`/`p_kx_ks` with `sub(x, 0)` replaced by "subtract `p` from the window's
+coordinate": the congr chain rewrites `p_ky` to `ky`, the window hypothesis rewrites `oy*s + ky` to `p + ty`, and
+`sub_self_add` cancels the padding. The law's proof is the same assembly as `conv_roundtrip_ks`'s with those two.
+
+`conv_roundtrip_ks` is now *proved as an instance* of the general law (`s = k`, `p = 0`, where the two window
+hypotheses are `{==}` because `0 + x = x`), so the subsumption is checked by the kernel rather than asserted in a
+comment. `conv_roundtrip` (`k = 1`) is a different statement — it takes the image coordinate directly instead of
+deriving it from `(oy, ox)` — so it keeps its own proof, and the README says so.
+
+### Runs
+
+- `bend PROOF.bend --check-only` and `--verdict`: ALL PROOFS CHECK.
+- `make laws`: green, 37 laws in all, the ten `tests/bad_*.bend` still rejected as expected.
+- `reference/conv2d_check.py` rebuilt from source (`.scratch/conv2d_probe` removed first): y, dx, dW and db all
+  `0.000e+00` on the three shapes, including `c1` and `c2` at `k = 3, p = 1, s = 2` — the geometry the new law states
+  per cell. `reference/im2col_check.py` still `0.000e+00` at `k = 1, k = s = 2, 3, 4`.
+
+### The adjoint (#15), and why it is not next in the same sitting
+
+`col2im` is the gather's transpose, so `dy·im2col(x) = col2im(dy)·x`. It cannot be proved about the code as it
+stands: `col2im` accumulates into an array (`add_at`, `Array.set`) by index, and the checker cannot follow writes into
+an array by index — the same limit the `causal` law records for its probabilities. So the adjoint has to be stated
+over a model in `torch/spec.bend`, and that model needs index-addressed accumulation: `nth`/`set_at` over
+`List<Nat>`, with the arithmetic that goes with them. `spec.bend` has dots, matrix-vector products and Frobenius
+inner products over whole lists, but no indexed access at all.
+
+The shape the proof would take: with the image a `List<Nat>` and the slot-to-cell map `p_src` (whose per-cell
+behaviour is now a law), the adjoint is a reindexing of one sum,
+`Σ_slots dy[j]·x[p_src j] = Σ_cells x[c]·(Σ_{j: p_src j = c} dy[j])`, so it needs (i) an exchange of two sums,
+(ii) that each slot's cell is a real cell (boundedness: `p_src j < n·h·w·c`), and (iii) that summing over the cells
+of the image picks each slot's term exactly once. For `s = k` that last one is a bijection and the decode gives it;
+for overlapping windows it is the fiber sum, which needs `Nat` equality reasoning the codebase does not have yet.
+That is the work, and it is a piece of its own rather than an afternoon's extension of tonight's lemma.
