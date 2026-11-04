@@ -374,6 +374,41 @@ law im2col_rows:
   for d: Array<F32>
   {List.length(&2, F32, T.im2col_n(n, h, w, c, k, p, s, d)) == Nat.mul(Nat.mul(n, Nat.mul(T.ocount(h, p, k, s), T.ocount(w, p, k, s))), Nat.mul(c, Nat.mul(k, k))) : Nat}
 
+# LAW (rope2_partition): a head's 2*half_y + 2*half_x numbers are tiled by the two runs of pairs with nothing missed
+# and nothing twice. The y run's pair at j is (j, j + half_y); the x run's is (2*half_y + j, 2*half_y + j + half_x),
+# and the law says the x run starts exactly one half_y past the y pair at j = half_y — i.e. the two runs meet at the
+# boundary without a gap or an overlap. Each pair is used once because each run walks its own j from 0 to its half.
+law rope2_partition:
+  for +w: Nat
+  for +hy: Nat
+  for +hx: Nat
+  for +r: Nat
+  for +head: Nat
+  for +j: Nat
+  {T.rope2_xaddr(w, hy, hx, r, head, j) ==
+     Nat.add(T.rope2_yaddr(w, hy, hx, r, head, Nat.add(hy, j)), hy) : Nat}
+
+# LAW (rope2_is_rope): at tw = 1 and half_x = 0 the y run is RoPE. RoPE rotates the pair (c, c + half) of head `head`
+# in row r at address r*w + head*(half + half) + c, and the y run at half_y = half, half_x = 0 addresses the same pair
+# the same way — so the 2D layer is RoPE's general case, not a second implementation of the same rotation.
+law rope2_is_rope:
+  for +w: Nat
+  for +half: Nat
+  for +r: Nat
+  for +head: Nat
+  for +j: Nat
+  {T.rope2_yaddr(w, half, 0n, r, head, j) ==
+     Nat.add(Nat.add(Nat.mul(r, w), Nat.mul(head, Nat.add(half, half))), j) : Nat}
+
+# LAW (rope2_is_rope_tab): the same for the table: at tw = 1 the y entry (r mod (th*1))/1 * half + j is RoPE's
+# (r mod th)*half + j, so both layers read the same angles for the same positions.
+law rope2_is_rope_tab:
+  for +half: Nat
+  for +r: Nat
+  for +j: Nat
+  for +th: Nat
+  {T.rope2_yentry(Nat.mul(th, 1n), 1n, half, r, j) == Nat.add(Nat.mul(Nat.mod(r, th), half), j) : Nat}
+
 # LAW (conv_roundtrip): with a 1 x 1 kernel, no padding and a stride of 1, a patch is one cell: im2col reads the image
 # cell at the patch's own coordinates, (b, oy, ox, ch), and col2im writes that number back into it (its scatter is p_src
 # itself, in c2_go). So for k = 1, s = 1 and p = 0 the round trip col2im(im2col(x)) = x is the identity, cell for cell,
