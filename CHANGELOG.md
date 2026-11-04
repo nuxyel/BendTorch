@@ -39,6 +39,20 @@ only. Both by or with @adeerkhan.
 
 ### New
 
+- **`RoPE2d`**: 2D rotary positions, for an image transformer (BendTorch#18). A head's `2*half_y` numbers rotate
+  by the row's `y` and its `2*half_x` by its `x`, so rows `(0,1)` and `(1,0)` of a 2x2 grid rotate by different
+  angles at the same distance — the case one 1D rotation cannot express. `RoPE` itself is untouched. The pairs are
+  walked in two runs over disjoint dimensions rather than one run with a per-pair choice, which also removes a
+  `F32.pow` per pair (`Bool.pick` evaluates both branches). Tested against a hand-built 2D rotation
+  (`reference/rope2d_check.py`): `1.192e-07` forward and `1.192e-07` backward, tolerance `1e-6`. Three laws:
+  `rope2_partition` (the two runs tile the head: no gap, no overlap, each pair once) and `rope2_is_rope` /
+  `rope2_is_rope_tab` (at `tw = 1`, `half_x = 0` the y run is `RoPE`, address and entry). Stated over the addressing
+  defs in `main.bend` (`rope2_ht`, `rope2_yy`, `rope2_xx`, `rope2_yaddr`, `rope2_xaddr`, `rope2_yentry`,
+  `rope2_xentry`), which the layer's own `U32` code calls through `U32.from_nat`: no comparison, no pick, no `U32`
+  arithmetic left in the addressing, so the laws are about the code and not a copy of it. That move is free:
+  `1024x64`, 20 passes, 0.02 s before and 0.02 s after (median of three). Still not in this change: the device twin (no CUDA
+  toolkit here).
+
 - `Train.with_cfg(P, cfg, state)`: the same training state under another configuration from the next step on, for a
   schedule (warmup, decay) or a deliberate change mid-run. It keeps the parameters, the gradient, the moments and Adam's
   1 - b1^t and 1 - b2^t, so a change of learning rate continues the run. It must be of the state's family and pass
@@ -77,8 +91,8 @@ only. Both by or with @adeerkhan.
 
 ### Laws
 
-Six new laws in `LAWS.bend`, proved in `PROOF.bend` and checked again by `bend PROOF.bend --verdict`, 35 laws in all
-(with `dtype.bend`'s `unpair_pair`): Conv2d's two (above) and the guard's four:
+Nine new laws in `LAWS.bend`, proved in `PROOF.bend` and checked again by `bend PROOF.bend --verdict`, 38 laws
+in all (with `dtype.bend`'s `unpair_pair`): Conv2d's two (above), the guard's four, and the 2D rotary ones (below):
 
 - `guard_nomom`, `guard_onemom`, `guard_twomom`, `guard_packed`: for every configuration and each kind of state (no
   buffers, one, two, two packed in BF16), the optimizer `Opt.guard` hands the step is
