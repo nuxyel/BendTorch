@@ -1983,3 +1983,62 @@ Six new laws and one rewritten, all by `--verdict`, about the code the demos exe
   took 31 seconds, checkout and text rules included.
 - The full tier by hand on `devel` (0931e99, a dispatch: everything, as the Sunday run and a release will): green in
   58 minutes, `make check bits` 10, the 167 mutants 44 (163 as expected, the same 4 skipped), the JavaScript lane 4.
+## 2026-11-04: the im2col round trip at stride `k` (#29)
+
+`conv_roundtrip` had the `k = 1` case. What was missing was the general one: with a stride equal to the kernel size
+and no padding, slot `(ch, ky, kx)` of a patch row is image cell `(oy·k + ky, ox·k + kx)`, channel `ch`, so the gather
+and the scatter name the same cell for every `k`. The numbers said so at `k = s = 1, 2, 3, 4` (`test/im2col-ks`,
+all `0.000e+00`); now the law says it.
+
+### The lemma, beside `divmod_one`
+
+The centre is the mixed-radix decode `i = (p_ch·k + p_ky)·k + p_kx`, and Bend's division is repeated subtraction, so
+the first thing to prove is that `Nat.divmod.go` meets its spec. That is `divmod_go_spec`: with `b` the original
+divisor, at every step `a = n + d·b + r` **and** `b = m + r + 1`, hence at `n = 0` `a = d·b + r`. It is an induction
+on `n` with those two as the hypothesis, and `divmod_spec` is the instantiation at `Nat.divmod(a, b)`, one `def` each
+beside `divmod_one`. The statement had been instrumented over 41 `(a, b)` pairs and 860 steps before it was proved
+(0 invariant failures), so the induction was not guessed.
+
+### What the decode needed
+
+Each level of `i = (ch·k + ky)·k + kx` is a block count plus a rest, which is `gqa_head`'s idiom generalised:
+
+- `go_count`: `n` steps of the countdown leave the quotient and add `n` to the remainder.
+- `go_blocks`, `go_blocks_fst`, `go_blocks_snd`: `j` whole blocks of `1 + (n + t)` numbers, then `n` numbers that do
+  not complete one, give quotient `j` and remainder `n`. (`div_blocks` counts the blocks; `div_rest` only had the
+  quotient, and the decode needs both halves.)
+- `split_idx`: `(ch·k + ky)·k + kx = ch·(k·k) + (ky·k + kx)` (`mul_dist`, `mul_assoc`).
+- `radix_bound`: `k·k = 1 + ((ky·k + kx) + (k·a + b))` when `k = 1 + ky + a` and `k = 1 + kx + b`, which is the room
+  the inner cell leaves. It is a ten-step `Nat.add`/`Nat.mul` chain (`add4` earns its keep here).
+- then `p_ch_ks` (the outer quotient), `p_ky_mod` (the outer remainder), `p_ky_ks`/`p_kx_ks` (the inner quotient and
+  remainder), `p_iy_ks`/`p_ix_ks` (`sub0`).
+
+The bounds are hypotheses, as in `replayed_read` in bend-ml: `ky < k` is `k = 1 + ky + a`, `kx < k` is
+`k = 1 + kx + b`. Bend has no order predicate to assume, and the decode genuinely needs the bounds — a part larger
+than the radix does not decode — so they cannot be dropped, only written as decompositions.
+
+### What unblocked the proof
+
+Two things, both of which had stopped earlier attempts:
+
+- **`NL.add_succ`.** The step the kernel would not take definitionally is `1 + (np + X) = np + (1 + X)`; `add_succ`
+  is that, and the `m = 0` case of `divmod_go_spec` is three rewrites around it (`add_succ`, `add_comm`,
+  `add_assoc`). Before, the case failed with `expected 1n+Nat.add(np, …)`, `observed Nat.add(np, 1n+…)`.
+- **`+e` / `+f` on proof parameters.** A proof used twice in one branch is otherwise "consumed more than once"; the
+   `+` modifier makes it reusable. `divmod_go_spec` uses its invariant in both recursive calls and in the statement
+   of its helper lemma, so it needs it.
+
+### Runs
+
+- `bend PROOF.bend --check-only` and `bend PROOF.bend --verdict`: ALL PROOFS CHECK.
+- `make laws` (the whole gate: `torch/main.bend`, both `PROOF.bend` runs, `dtype.bend --verdict`, the `FAST_DEFS` /
+  `LOAD_DEFS` / `GPU_DEFS` pins, the `load.bend`/`gpu.bend`/`fast.bend` import bans and the ten `tests/bad_*.bend`
+  rejections): green, 36 laws in all.
+- The numbers are unchanged from `test/im2col-ks`: the `k = s` round trip exact at `k = 1, 2, 3, 4`.
+
+### Not covered, and said so
+
+The law is `s = k` and `p = 0`. A stride other than the kernel size, or padding, changes which cells a window reads
+and is not stated; the padded case reads `0` outside the window (`p_ok`), which is a statement about `p_rc`, not
+about the index. The adjoint of `im2col` (that `col2im` is the transpose of the gather) is not a law either; it is
+the next piece of #29.

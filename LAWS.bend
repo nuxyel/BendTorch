@@ -374,6 +374,32 @@ law im2col_rows:
   for d: Array<F32>
   {List.length(&2, F32, T.im2col_n(n, h, w, c, k, p, s, d)) == Nat.mul(Nat.mul(n, Nat.mul(T.ocount(h, p, k, s), T.ocount(w, p, k, s))), Nat.mul(c, Nat.mul(k, k))) : Nat}
 
+# LAW (conv_roundtrip_ks): the round trip at stride k. With a stride equal to the kernel size and no padding, one
+# gathered cell of a patch row is one image cell: slot (ch, ky, kx) of output position (oy, ox) is image cell
+# (oy*k + ky, ox*k + kx), channel ch. im2col reads that cell (p_src) and col2im writes the gradient back into it
+# (its scatter is p_src itself, in c2_go), so for k = s and p = 0 the two passes address the same number cell for
+# cell. `ky_lt` and `kx_lt` write ky < k and kx < k as k = 1 + ky + a and k = 1 + kx + b, which is how the decode
+# gets the bounds its division needs. The identity at the centre is the decode:
+# i = (p_ch(i,k)*k + p_ky(i,k))*k + p_kx(i,k), proved from the division algorithm's own block step.
+law conv_roundtrip_ks:
+  for +n: Nat
+  for +oy: Nat
+  for +ox: Nat
+  for +ch: Nat
+  for +ky: Nat
+  for +kx: Nat
+  for +h: Nat
+  for +w: Nat
+  for +c: Nat
+  for +k: Nat
+  for +a: Nat
+  for +b: Nat
+  for +ky_lt: {k == Nat.add(1n, Nat.add(ky, a)) : Nat}
+  for +kx_lt: {k == Nat.add(1n, Nat.add(kx, b)) : Nat}
+  {T.p_src(Nat.add(Nat.mul(Nat.add(Nat.mul(ch, k), ky), k), kx), n, oy, ox, h, w, c, k, 0n, k) ==
+    U32.from_nat(Nat.add(Nat.mul(Nat.add(Nat.mul(Nat.add(Nat.mul(n, h), Nat.add(Nat.mul(oy, k), ky)), w),
+      Nat.add(Nat.mul(ox, k), kx)), c), ch)) : U32}
+
 # LAW (conv_roundtrip): with a 1 x 1 kernel, no padding and a stride of 1, a patch is one cell: im2col reads the image
 # cell at the patch's own coordinates, (b, oy, ox, ch), and col2im writes that number back into it (its scatter is p_src
 # itself, in c2_go). So for k = 1, s = 1 and p = 0 the round trip col2im(im2col(x)) = x is the identity, cell for cell,
