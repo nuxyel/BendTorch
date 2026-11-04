@@ -114,7 +114,16 @@ Numbers marked "busy machine" were taken with other jobs running and are a first
 - Offsets and sizes are 64-bit (two U32s), so files past 4 GiB (1.7B's F32 weights, a 360M AdamW checkpoint) are read;
   the reader takes up to 2^32 - 1 numbers a file.
 
-## Features
+- `RoPE2d` (`main.bend`, BendTorch#18) rotates a head's first `2·half_y` numbers by the row's `y` and its last
+  `2·half_x` by its `x`, so an image's two axes carry their own frequencies: row `r` of `b·th·tw` gives
+  `y = (r mod (th·tw))/tw`, `x = r mod tw`. `RoPE` is untouched. Tested at one shape against a hand-built 2D rotation
+  (`reference/rope2d_check.py`: a 2x2 grid, head split 2+2, forward and backward, `1.192e-07` at a tolerance of
+  `1e-6`) which are stated over
+  the addressing defs in `main.bend` (`rope2_yaddr`, `rope2_xaddr`, `rope2_yentry`, `rope2_xentry`, which the layer's
+  `U32` code calls through `U32.from_nat`), so there is no comparison, no pick and no `U32` arithmetic left in the
+  addressing. The float claims (identity at `(0,0)`; `(y,x)`
+  then `(-y,-x)`) remain tests: a law cannot compare `F32`. **No device twin**: `gpu.bend` needs the same walk, which
+  needs a CUDA toolkit; absent here, so it is deferred rather than committed untested.
 
 - The layers work on matrices: a tensor is a `Mat<r, c>`, with batches and heads folded into rows and columns.
 - Convolution is `Conv2d`, `im2col` then `Linear`'s three products, in `main.bend` and, with the gather and scatter as
