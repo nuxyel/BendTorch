@@ -1233,3 +1233,30 @@ def Laws.conv_roundtrip(b, iy, ix, ch, h, w, c):
           Equal.cong(Nat, Nat, s => Nat.mul(Nat.add(Nat.mul(Nat.add(Nat.mul(b, h), py), w), s), c), px, ix, p_ix1(ch, ix))),
         Equal.cong(Nat, Nat, s => Nat.add(s, ch), m1, m2,
           Equal.cong(Nat, Nat, s => Nat.mul(Nat.add(Nat.mul(Nat.add(Nat.mul(b, h), s), w), ix), c), py, iy, p_iy1(ch, iy))))))
+
+# =====================================================================================================
+# Tile's laws (BendTorch#19): the row broadcast, and the backward as the sum of the tile's rows
+# =====================================================================================================
+
+# PROOF (tile_row): Nat.div(a, 1+s) is fst(go(a, s, 0, 0)); the i whole blocks of 1+s leave go(j, s, i, 0), and with
+# s = j + a a remainder j does not complete another block.
+def Laws.tile_row(i, s, j, a, es):
+  Equal.trans(Nat,
+    T.tile_row_of(Nat.add(1n, s), Nat.add(Nat.mul(i, Nat.add(1n, s)), j)),
+    Pair.fst(Nat, Nat, Nat.divmod.go(j, s, Nat.add(i, 0n), 0n)),
+    i,
+    Equal.cong(Nat & Nat, Nat, p => Pair.fst(Nat, Nat, p),
+      Nat.divmod.go(Nat.add(Nat.mul(i, Nat.add(1n, s)), j), s, 0n, 0n),
+      Nat.divmod.go(j, s, Nat.add(i, 0n), 0n), div_blocks(i, s, j, 0n)),
+    Equal.trans(Nat, Pair.fst(Nat, Nat, Nat.divmod.go(j, s, Nat.add(i, 0n), 0n)),
+      Pair.fst(Nat, Nat, Nat.divmod.go(j, Nat.add(j, a), Nat.add(i, 0n), 0n)), i,
+      Equal.cong(Nat, Nat, z => Pair.fst(Nat, Nat, Nat.divmod.go(j, z, Nat.add(i, 0n), 0n)), s, Nat.add(j, a), es),
+      Equal.trans(Nat, Pair.fst(Nat, Nat, Nat.divmod.go(j, Nat.add(j, a), Nat.add(i, 0n), 0n)), Nat.add(i, 0n), i,
+        div_rest(j, a, Nat.add(i, 0n), 0n),
+        NL.add_zero(i))))
+
+# PROOF (tile_sum): the cell is (input row)*c + k, and tile_row says the input row of every row of the tile is i
+def Laws.tile_sum(c, i, s, j, a, k, es):
+  Equal.cong(Nat, Nat, z => Nat.add(Nat.mul(z, c), k),
+    T.tile_row_of(Nat.add(1n, s), Nat.add(Nat.mul(i, Nat.add(1n, s)), j)), i,
+    Laws.tile_row(i, s, j, a, es))

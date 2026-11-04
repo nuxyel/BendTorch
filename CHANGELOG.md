@@ -39,6 +39,15 @@ only. Both by or with @adeerkhan.
 
 ### New
 
+- **`Tile`**: a per-image row broadcast, for adaLN-conditioned blocks (BendTorch#19). Row `i` of a `b x c` input
+  becomes rows `i·t .. i·t+t-1` of a `(b·t) x c` output, and the backward sums each image's `t` rows back into its
+  row, so `x * (1 + scale)` with a per-image scale is `Tile` then `Mul2` with the tiling on the device. The addressing
+  is two `Nat` defs the loop calls through `U32.from_nat` (no division in the hot path: the walk is images → rows →
+  row → cells). Two laws: `tile_row` (the `t` rows of image `i` are image row `i` — a division fact, `div_blocks`
+  then `div_rest`) and `tile_sum` (all `t` rows read and add into the same cell, so the backward is a sum). Tested
+  against PyTorch `repeat_interleave` and its autograd: `0.000e+00` on both, with a last-row backward off by
+  `2.000e+00`. Not in this change: the device lane (no CUDA toolkit here).
+
 - `Train.with_cfg(P, cfg, state)`: the same training state under another configuration from the next step on, for a
   schedule (warmup, decay) or a deliberate change mid-run. It keeps the parameters, the gradient, the moments and Adam's
   1 - b1^t and 1 - b2^t, so a change of learning rate continues the run. It must be of the state's family and pass
@@ -77,8 +86,8 @@ only. Both by or with @adeerkhan.
 
 ### Laws
 
-Six new laws in `LAWS.bend`, proved in `PROOF.bend` and checked again by `bend PROOF.bend --verdict`, 35 laws in all
-(with `dtype.bend`'s `unpair_pair`): Conv2d's two (above) and the guard's four:
+Eight new laws in `LAWS.bend`, proved in `PROOF.bend` and checked again by `bend PROOF.bend --verdict`, 37 laws
+in all (with `dtype.bend`'s `unpair_pair`): Conv2d's two (above), the guard's four, and Tile's two (below):
 
 - `guard_nomom`, `guard_onemom`, `guard_twomom`, `guard_packed`: for every configuration and each kind of state (no
   buffers, one, two, two packed in BF16), the optimizer `Opt.guard` hands the step is
