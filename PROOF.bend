@@ -1632,3 +1632,67 @@ def Laws.conv_roundtrip_window(n, oy, ox, ch, ky, kx, h, w, c, k, p, s, a, b, ty
 def Laws.conv_roundtrip_ks(n, oy, ox, ch, ky, kx, h, w, c, k, a, b, e1, e2):
   Laws.conv_roundtrip_window(n, oy, ox, ch, ky, kx, h, w, c, k, 0n, k, a, b,
     Nat.add(Nat.mul(oy, k), ky), Nat.add(Nat.mul(ox, k), kx), e1, e2, {==}, {==})
+# RoPE2d's laws (BendTorch#18): the tiling of a head, and RoPE as the tw = 1 case
+# =====================================================================================================
+
+# a*2 == a + a: mul counts 2 as 1 + 1, and one more mul peels 1 into a + 0
+def mul2(+a: Nat) -> {Nat.mul(a, 2n) == Nat.add(a, a) : Nat}:
+  Equal.trans(Nat, Nat.mul(a, 2n), Nat.add(a, Nat.mul(a, 1n)), Nat.add(a, a),
+    NL.mul_succ(a, 1n),
+    Equal.trans(Nat, Nat.add(a, Nat.mul(a, 1n)), Nat.add(a, Nat.add(a, 0n)), Nat.add(a, a),
+      Equal.cong(Nat, Nat, z => Nat.add(a, z), Nat.mul(a, 1n), Nat.add(a, 0n),
+        Equal.trans(Nat, Nat.mul(a, 1n), Nat.add(a, Nat.mul(a, 0n)), Nat.add(a, 0n),
+          NL.mul_succ(a, 0n),
+          Equal.cong(Nat, Nat, z => Nat.add(a, z), Nat.mul(a, 0n), 0n, NL.mul_zero(a)))),
+      Equal.cong(Nat, Nat, z => Nat.add(a, z), Nat.add(a, 0n), a, NL.add_zero(a))))
+
+# PROOF (rope2_partition): (B + 2*hy) + j = (B + (hy + j)) + hy, with 2*hy unfolded and the two sides regrouped
+def Laws.rope2_partition(w, hy, hx, r, head, j):
+  Equal.trans(Nat,
+    Nat.add(Nat.add(Nat.add(Nat.mul(r, w), Nat.mul(head, T.rope2_ht(hy, hx))), Nat.mul(hy, 2n)), j),
+    Nat.add(Nat.add(Nat.add(Nat.mul(r, w), Nat.mul(head, T.rope2_ht(hy, hx))), Nat.add(hy, hy)), j),
+    Nat.add(Nat.add(Nat.add(Nat.mul(r, w), Nat.mul(head, T.rope2_ht(hy, hx))), Nat.add(hy, j)), hy),
+    Equal.cong(Nat, Nat,
+      z => Nat.add(Nat.add(Nat.add(Nat.mul(r, w), Nat.mul(head, T.rope2_ht(hy, hx))), z), j),
+      Nat.mul(hy, 2n), Nat.add(hy, hy), mul2(hy)),
+    Equal.trans(Nat,
+      Nat.add(Nat.add(Nat.add(Nat.mul(r, w), Nat.mul(head, T.rope2_ht(hy, hx))), Nat.add(hy, hy)), j),
+      Nat.add(Nat.add(Nat.mul(r, w), Nat.mul(head, T.rope2_ht(hy, hx))), Nat.add(Nat.add(hy, hy), j)),
+      Nat.add(Nat.add(Nat.add(Nat.mul(r, w), Nat.mul(head, T.rope2_ht(hy, hx))), Nat.add(hy, j)), hy),
+      Equal.sym(Nat,
+        Nat.add(Nat.add(Nat.mul(r, w), Nat.mul(head, T.rope2_ht(hy, hx))), Nat.add(Nat.add(hy, hy), j)),
+        Nat.add(Nat.add(Nat.add(Nat.mul(r, w), Nat.mul(head, T.rope2_ht(hy, hx))), Nat.add(hy, hy)), j),
+        NL.add_assoc(Nat.add(Nat.mul(r, w), Nat.mul(head, T.rope2_ht(hy, hx))), Nat.add(hy, hy), j)),
+      Equal.trans(Nat,
+        Nat.add(Nat.add(Nat.mul(r, w), Nat.mul(head, T.rope2_ht(hy, hx))), Nat.add(Nat.add(hy, hy), j)),
+        Nat.add(Nat.add(Nat.mul(r, w), Nat.mul(head, T.rope2_ht(hy, hx))), Nat.add(Nat.add(hy, j), hy)),
+        Nat.add(Nat.add(Nat.add(Nat.mul(r, w), Nat.mul(head, T.rope2_ht(hy, hx))), Nat.add(hy, j)), hy),
+        Equal.cong(Nat, Nat, z => Nat.add(Nat.add(Nat.mul(r, w), Nat.mul(head, T.rope2_ht(hy, hx))), z),
+          Nat.add(Nat.add(hy, hy), j), Nat.add(Nat.add(hy, j), hy),
+          Equal.trans(Nat, Nat.add(Nat.add(hy, hy), j), Nat.add(hy, Nat.add(hy, j)), Nat.add(Nat.add(hy, j), hy),
+            Equal.sym(Nat, Nat.add(hy, Nat.add(hy, j)), Nat.add(Nat.add(hy, hy), j), NL.add_assoc(hy, hy, j)),
+            Equal.trans(Nat, Nat.add(hy, Nat.add(hy, j)), Nat.add(hy, Nat.add(j, hy)), Nat.add(Nat.add(hy, j), hy),
+              Equal.cong(Nat, Nat, z => Nat.add(hy, z), Nat.add(hy, j), Nat.add(j, hy), NL.add_comm(hy, j)),
+              NL.add_assoc(hy, j, hy)))),
+        NL.add_assoc(Nat.add(Nat.mul(r, w), Nat.mul(head, T.rope2_ht(hy, hx))), Nat.add(hy, j), hy))))
+
+# PROOF (rope2_is_rope): half_x = 0 leaves the head at 2*half numbers, and 2*half = half + half
+def Laws.rope2_is_rope(w, half, r, head, j):
+  Equal.cong(Nat, Nat,
+    z => Nat.add(Nat.add(Nat.mul(r, w), Nat.mul(head, z)), j),
+    Nat.add(Nat.mul(half, 2n), 0n), Nat.add(half, half),
+    Equal.trans(Nat, Nat.add(Nat.mul(half, 2n), 0n), Nat.mul(half, 2n), Nat.add(half, half),
+      NL.add_zero(Nat.mul(half, 2n)), mul2(half)))
+
+# PROOF (rope2_is_rope_tab): divide by 1 and multiply by 1 disappear, so both entries are (r mod th)*half + j
+def Laws.rope2_is_rope_tab(half, r, j, th):
+  Equal.trans(Nat,
+    Nat.add(Nat.mul(Nat.div(Nat.mod(r, Nat.mul(th, 1n)), 1n), half), j),
+    Nat.add(Nat.mul(Nat.mod(r, Nat.mul(th, 1n)), half), j),
+    Nat.add(Nat.mul(Nat.mod(r, th), half), j),
+    Equal.cong(Nat, Nat, z => Nat.add(Nat.mul(z, half), j),
+      Nat.div(Nat.mod(r, Nat.mul(th, 1n)), 1n), Nat.mod(r, Nat.mul(th, 1n)),
+      div_one(Nat.mod(r, Nat.mul(th, 1n)))),
+    Equal.cong(Nat, Nat, z => Nat.add(Nat.mul(z, half), j),
+      Nat.mod(r, Nat.mul(th, 1n)), Nat.mod(r, th),
+      Equal.cong(Nat, Nat, z => Nat.mod(r, z), Nat.mul(th, 1n), th, NL.mul_one_r(th))))

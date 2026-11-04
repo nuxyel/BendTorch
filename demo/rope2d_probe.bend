@@ -3,7 +3,7 @@
 # forward ("y") and, from a second forward of the same input, the backward of it ("back", which must give x again).
 # reference/rope2d_check.py builds the hand rotation and compares both.
 import Base
-import bend-ml-tensor-array@0.1.18.0/main.bend as TA
+import bend-ml-tensor-array@0.1.20.0/main.bend as TA
 import ../torch/main.bend as T
 
 def vals(+left: Nat, +i: Nat) -> List<&2, F32>:
