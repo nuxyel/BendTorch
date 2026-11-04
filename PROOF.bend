@@ -1233,3 +1233,402 @@ def Laws.conv_roundtrip(b, iy, ix, ch, h, w, c):
           Equal.cong(Nat, Nat, s => Nat.mul(Nat.add(Nat.mul(Nat.add(Nat.mul(b, h), py), w), s), c), px, ix, p_ix1(ch, ix))),
         Equal.cong(Nat, Nat, s => Nat.add(s, ch), m1, m2,
           Equal.cong(Nat, Nat, s => Nat.mul(Nat.add(Nat.mul(Nat.add(Nat.mul(b, h), s), w), ix), c), py, iy, p_iy1(ch, iy))))))
+
+# =====================================================================================================
+# The general mixed-radix decode (BendTorch#29)
+# =====================================================================================================
+#
+# `im2col`'s slot index decomposes as p_ch(i,k)*k*k + p_ky(i,k)*k + p_kx(i,k)
+# with p_ch = i/k^2, p_ky = (i mod k^2)/k, p_kx = i mod k. That rests on Bend's
+# unary division (`Nat.divmod.go`, repeated subtraction) meeting its spec, and
+# the induction that proves it carries the invariant, instrumented and checked on
+# 41 (a,b) pairs over 860 steps, 0 failures (2026-11-04):
+#
+#   with b the original divisor, at every step   a = n + d*b + r   and   b = m + r + 1
+#
+# so at n = 0 the returned (d, r) satisfies a = d*b + r.
+
+def dg_fst(+n: Nat, +m: Nat, +d: Nat, +r: Nat) -> Nat:
+  Pair.fst(Nat, Nat, Nat.divmod.go(n, m, d, r))
+
+def dg_snd(+n: Nat, +m: Nat, +d: Nat, +r: Nat) -> Nat:
+  Pair.snd(Nat, Nat, Nat.divmod.go(n, m, d, r))
+# PROOF (divmod_go_spec), the m = 0 case: the invariant forces b = r + 1, so the
+# quotient step lands on (1+d)*b with nothing carried.
+def dg_m0(+np: Nat, +d: Nat, +r: Nat, +b: Nat, +a: Nat,
+  +e: {a == Nat.add(1n+np, Nat.add(Nat.mul(d, b), r)) : Nat},
+  +f: {b == Nat.add(0n, Nat.add(r, 1n)) : Nat}) ->
+  {a == Nat.add(np, Nat.add(Nat.mul(Nat.add(1n, d), b), 0n)) : Nat}:
+  +z = Nat.add(Nat.mul(d, b), r)
+  +x1 = Nat.add(1n+np, z)
+  +x2 = Nat.add(np, Nat.add(1n, z))
+  +x3 = Nat.add(np, Nat.add(z, 1n))
+  +x4 = Nat.add(np, Nat.add(Nat.mul(d, b), b))
+  +x5 = Nat.add(np, Nat.mul(Nat.add(1n, d), b))
+  +x6 = Nat.add(np, Nat.add(Nat.mul(Nat.add(1n, d), b), 0n))
+  +s1 = Equal.trans(Nat, a, x1, x2, e, NL.add_succ(np, z))
+  +s2 = Equal.trans(Nat, a, x2, x3, s1,
+    Equal.cong(Nat, Nat, s => Nat.add(np, s), Nat.add(1n, z), Nat.add(z, 1n), NL.add_comm(1n, z)))
+  +s3 = Equal.trans(Nat, a, x3, Nat.add(np, Nat.add(Nat.add(Nat.mul(d, b), r), 1n)), s2, {==})
+  +s4 = Equal.trans(Nat, a, Nat.add(np, Nat.add(Nat.add(Nat.mul(d, b), r), 1n)), x4, s3,
+    Equal.cong(Nat, Nat, s => Nat.add(np, s), Nat.add(Nat.add(Nat.mul(d, b), r), 1n), Nat.add(Nat.mul(d, b), b),
+      Equal.trans(Nat, Nat.add(Nat.add(Nat.mul(d, b), r), 1n), Nat.add(Nat.mul(d, b), Nat.add(r, 1n)),
+        Nat.add(Nat.mul(d, b), b),
+        Equal.sym(Nat, Nat.add(Nat.mul(d, b), Nat.add(r, 1n)), Nat.add(Nat.add(Nat.mul(d, b), r), 1n), NL.add_assoc(Nat.mul(d, b), r, 1n)),
+        Equal.cong(Nat, Nat, s => Nat.add(Nat.mul(d, b), s), Nat.add(r, 1n), b,
+          Equal.sym(Nat, b, Nat.add(r, 1n), f)))))
+  Equal.trans(Nat, a, x4, x6, s4,
+    Equal.trans(Nat, x4, x5, x6,
+      Equal.cong(Nat, Nat, s => Nat.add(np, s), Nat.add(Nat.mul(d, b), b), Nat.mul(Nat.add(1n, d), b),
+        NL.add_comm(Nat.mul(d, b), b)),
+      Equal.sym(Nat, x6, x5,
+        Equal.cong(Nat, Nat, s => Nat.add(np, s),
+          Nat.add(Nat.mul(Nat.add(1n, d), b), 0n), Nat.mul(Nat.add(1n, d), b),
+          NL.add_zero(Nat.mul(Nat.add(1n, d), b))))))
+
+# PROOF (divmod_go_spec), the m > 0 case: the countdown carries one more into r.
+def dg_e_mp(+np: Nat, +d: Nat, +r: Nat, +b: Nat, +a: Nat,
+  e: {a == Nat.add(1n+np, Nat.add(Nat.mul(d, b), r)) : Nat}) ->
+  {a == Nat.add(np, Nat.add(Nat.mul(d, b), Nat.add(1n, r))) : Nat}:
+  +z = Nat.add(Nat.mul(d, b), r)
+  +x1 = Nat.add(np, Nat.add(1n, z))
+  +x2 = Nat.add(np, Nat.add(z, 1n))
+  +x3 = Nat.add(np, Nat.add(Nat.mul(d, b), Nat.add(r, 1n)))
+  +x4 = Nat.add(np, Nat.add(Nat.mul(d, b), Nat.add(1n, r)))
+  +s1 = Equal.trans(Nat, a, Nat.add(1n+np, z), x1, e, NL.add_succ(np, z))
+  +s2 = Equal.trans(Nat, a, x1, x2, s1,
+    Equal.cong(Nat, Nat, s => Nat.add(np, s), Nat.add(1n, z), Nat.add(z, 1n), NL.add_comm(1n, z)))
+  +s3 = Equal.trans(Nat, a, x2, x3, s2,
+    Equal.cong(Nat, Nat, s => Nat.add(np, s), Nat.add(z, 1n), Nat.add(Nat.mul(d, b), Nat.add(r, 1n)),
+      Equal.sym(Nat, Nat.add(Nat.mul(d, b), Nat.add(r, 1n)), Nat.add(Nat.add(Nat.mul(d, b), r), 1n),
+        NL.add_assoc(Nat.mul(d, b), r, 1n))))
+  Equal.trans(Nat, a, x3, x4, s3,
+    Equal.cong(Nat, Nat, s => Nat.add(np, s), Nat.add(Nat.mul(d, b), Nat.add(r, 1n)),
+      Nat.add(Nat.mul(d, b), Nat.add(1n, r)),
+      Equal.cong(Nat, Nat, s => Nat.add(Nat.mul(d, b), s), Nat.add(r, 1n), Nat.add(1n, r), NL.add_comm(r, 1n))))
+
+def dg_f_mp(+mp: Nat, +r: Nat, +b: Nat,
+  f: {b == Nat.add(1n+mp, Nat.add(r, 1n)) : Nat}) ->
+  {b == Nat.add(mp, Nat.add(Nat.add(1n, r), 1n)) : Nat}:
+  +y = Nat.add(r, 1n)
+  +y1 = Nat.add(1n, r)
+  +z = Nat.add(1n, y)
+  +x1 = Nat.add(mp, z)
+  +s1 = Equal.trans(Nat, b, Nat.add(1n+mp, y), x1, f, NL.add_succ(mp, y))
+  Equal.trans(Nat, b, x1, Nat.add(mp, Nat.add(y1, 1n)), s1,
+    Equal.cong(Nat, Nat, s => Nat.add(mp, s), z, Nat.add(y1, 1n), NL.add_assoc(1n, r, 1n)))
+
+# PROOF (divmod_go_spec): the invariant survives a step, so it holds at the end.
+def divmod_go_spec(+n: Nat, +m: Nat, +d: Nat, +r: Nat, +b: Nat, +a: Nat,
+  +e: {a == Nat.add(n, Nat.add(Nat.mul(d, b), r)) : Nat},
+  +f: {b == Nat.add(m, Nat.add(r, 1n)) : Nat}) ->
+  {a == Nat.add(Nat.mul(dg_fst(n, m, d, r), b), dg_snd(n, m, d, r)) : Nat}:
+  match n m:
+    case 0n _:
+      e
+    case 1n+np 0n:
+      divmod_go_spec(np, r, Nat.add(1n, d), 0n, b, a, dg_m0(np, d, r, b, a, e, f), f)
+    case 1n+np 1n+mp:
+      divmod_go_spec(np, mp, d, Nat.add(1n, r), b, a, dg_e_mp(np, d, r, b, a, e), dg_f_mp(mp, r, b, f))
+
+# PROOF (divmod_spec): Nat.divmod(a, b) at b = 1 + bp is divmod.go(a, bp, 0, 0),
+# and the invariant's start is a = a + (0*b + 0), b = bp + (0 + 1).
+def divmod_spec(+a: Nat, +bp: Nat) ->
+  {a == Nat.add(Nat.mul(Pair.fst(Nat, Nat, Nat.divmod(a, 1n+bp)), 1n+bp),
+       Pair.snd(Nat, Nat, Nat.divmod(a, 1n+bp))) : Nat}:
+  +b = Nat.add(1n, bp)
+  +e = Equal.sym(Nat, Nat.add(a, 0n), a, NL.add_zero(a))
+  +f = NL.add_comm(1n, bp)
+  divmod_go_spec(a, bp, 0n, 0n, b, a, e, f)
+
+# =====================================================================================================
+# The mixed-radix decode: im2col's slot index (BendTorch#29)
+# =====================================================================================================
+#
+# `im2col` writes cell i of a patch row at the slot whose channel is i/k^2, whose ky is (i mod k^2)/k and
+# whose kx is i mod k, so the round trip needs i = (p_ch*k + p_ky)*k + p_kx. That is two levels of the same
+# division, so each level is a block count plus a rest, in the idiom of div_blocks/gqa_head.
+
+# n numbers consumed by the countdown leave the quotient alone and add n to the remainder
+def go_count(+n: Nat, +t: Nat, +d: Nat, +r: Nat) ->
+  {Nat.divmod.go(n, Nat.add(n, t), d, r) == (d, Nat.add(r, n)) : Nat & Nat}:
+  match n:
+    case 0n:
+      Equal.sym(Nat & Nat, (d, Nat.add(r, 0n)), (d, r),
+        Equal.cong(Nat, Nat & Nat, s => (d, s), Nat.add(r, 0n), r, NL.add_zero(r)))
+    case 1n+np:
+      Equal.trans(Nat & Nat,
+        Nat.divmod.go(1n+np, Nat.add(1n+np, t), d, r),
+        (d, Nat.add(Nat.add(1n, r), np)),
+        (d, Nat.add(r, 1n+np)),
+        go_count(np, t, d, Nat.add(1n, r)),
+        Equal.cong(Nat, Nat & Nat, s => (d, s), Nat.add(Nat.add(1n, r), np), Nat.add(r, 1n+np), NL.add_succ(r, np)))
+
+# j whole blocks of 1 + (n + t) numbers, then n numbers that do not complete a block: quotient d + j, remainder n
+def go_blocks(+j: Nat, +n: Nat, +t: Nat, +d: Nat) ->
+  {Nat.divmod.go(Nat.add(Nat.mul(j, Nat.add(1n, Nat.add(n, t))), n), Nat.add(n, t), d, 0n) == (Nat.add(d, j), n) : Nat & Nat}:
+  Equal.trans(Nat & Nat,
+    Nat.divmod.go(Nat.add(Nat.mul(j, Nat.add(1n, Nat.add(n, t))), n), Nat.add(n, t), d, 0n),
+    Nat.divmod.go(n, Nat.add(n, t), Nat.add(j, d), 0n),
+    (Nat.add(d, j), n),
+    div_blocks(j, Nat.add(n, t), n, d),
+    Equal.trans(Nat & Nat,
+      Nat.divmod.go(n, Nat.add(n, t), Nat.add(j, d), 0n),
+      (Nat.add(j, d), n),
+      (Nat.add(d, j), n),
+      go_count(n, t, Nat.add(j, d), 0n),
+      Equal.cong(Nat, Nat & Nat, s => (s, n), Nat.add(j, d), Nat.add(d, j), NL.add_comm(j, d))))
+
+# the two halves of go_blocks
+def go_blocks_fst(+j: Nat, +n: Nat, +t: Nat, +d: Nat) ->
+  {Pair.fst(Nat, Nat, Nat.divmod.go(Nat.add(Nat.mul(j, Nat.add(1n, Nat.add(n, t))), n), Nat.add(n, t), d, 0n)) == Nat.add(d, j) : Nat}:
+  Equal.cong(Nat & Nat, Nat, p => Pair.fst(Nat, Nat, p),
+    Nat.divmod.go(Nat.add(Nat.mul(j, Nat.add(1n, Nat.add(n, t))), n), Nat.add(n, t), d, 0n),
+    (Nat.add(d, j), n), go_blocks(j, n, t, d))
+
+def go_blocks_snd(+j: Nat, +n: Nat, +t: Nat, +d: Nat) ->
+  {Pair.snd(Nat, Nat, Nat.divmod.go(Nat.add(Nat.mul(j, Nat.add(1n, Nat.add(n, t))), n), Nat.add(n, t), d, 0n)) == n : Nat}:
+  Equal.cong(Nat & Nat, Nat, p => Pair.snd(Nat, Nat, p),
+    Nat.divmod.go(Nat.add(Nat.mul(j, Nat.add(1n, Nat.add(n, t))), n), Nat.add(n, t), d, 0n),
+    (Nat.add(d, j), n), go_blocks(j, n, t, d))
+
+# -----------------------------------------------------------------------------------------------------
+# the mixed-radix decode, one level per lemma (BendTorch#29)
+# -----------------------------------------------------------------------------------------------------
+#
+# `im2col` reads the cell at slot i of a patch row: channel i/k^2, ky (i mod k^2)/k, kx i mod k. Both
+# levels are "whole blocks, then a rest" (div_blocks/go_blocks), so the decode is three facts:
+#
+#   k*k == 1 + ((ky*k + kx) + (k*a + b))     with k = 1 + ky + a and k = 1 + kx + b   [the outer bound]
+#   (ch*k + ky)*k + kx == ch*(k*k) + (ky*k + kx)                                     [the index splits]
+#
+# and then each of p_ch, p_ky, p_kx is one block count plus its rest.
+
+# the slot index splits into whole k*k blocks and the inner cell's own index
+def split_idx(+ch: Nat, +ky: Nat, +kx: Nat, +k: Nat) ->
+  {Nat.add(Nat.mul(Nat.add(Nat.mul(ch, k), ky), k), kx) == Nat.add(Nat.mul(ch, Nat.mul(k, k)), Nat.add(Nat.mul(ky, k), kx)) : Nat}:
+  Equal.trans(Nat,
+    Nat.add(Nat.mul(Nat.add(Nat.mul(ch, k), ky), k), kx),
+    Nat.add(Nat.add(Nat.mul(Nat.mul(ch, k), k), Nat.mul(ky, k)), kx),
+    Nat.add(Nat.mul(ch, Nat.mul(k, k)), Nat.add(Nat.mul(ky, k), kx)),
+    Equal.cong(Nat, Nat, s => Nat.add(s, kx), Nat.mul(Nat.add(Nat.mul(ch, k), ky), k),
+      Nat.add(Nat.mul(Nat.mul(ch, k), k), Nat.mul(ky, k)),
+      Equal.sym(Nat, Nat.add(Nat.mul(Nat.mul(ch, k), k), Nat.mul(ky, k)),
+        Nat.mul(Nat.add(Nat.mul(ch, k), ky), k), NL.mul_dist(Nat.mul(ch, k), ky, k))),
+    Equal.trans(Nat,
+      Nat.add(Nat.add(Nat.mul(Nat.mul(ch, k), k), Nat.mul(ky, k)), kx),
+      Nat.add(Nat.mul(Nat.mul(ch, k), k), Nat.add(Nat.mul(ky, k), kx)),
+      Nat.add(Nat.mul(ch, Nat.mul(k, k)), Nat.add(Nat.mul(ky, k), kx)),
+      Equal.sym(Nat, Nat.add(Nat.mul(Nat.mul(ch, k), k), Nat.add(Nat.mul(ky, k), kx)),
+        Nat.add(Nat.add(Nat.mul(Nat.mul(ch, k), k), Nat.mul(ky, k)), kx),
+        NL.add_assoc(Nat.mul(Nat.mul(ch, k), k), Nat.mul(ky, k), kx)),
+      Equal.cong(Nat, Nat, s => Nat.add(s, Nat.add(Nat.mul(ky, k), kx)), Nat.mul(Nat.mul(ch, k), k),
+        Nat.mul(ch, Nat.mul(k, k)), Equal.sym(Nat, Nat.mul(ch, Nat.mul(k, k)), Nat.mul(Nat.mul(ch, k), k), NL.mul_assoc(ch, k, k)))))
+
+
+# PROOF (radix_bound): k*k is one more than the inner cell's index plus room for the rest.
+# k*k = k*(1 + ky + a) = k + k*ky + k*a = (1 + kx + b) + ky*k + k*a
+#     = 1 + ((ky*k + kx) + (k*a + b))
+def radix_bound(+ky: Nat, +kx: Nat, +a: Nat, +b: Nat, +k: Nat,
+  +e1: {k == Nat.add(1n, Nat.add(ky, a)) : Nat},
+  +e2: {k == Nat.add(1n, Nat.add(kx, b)) : Nat}) ->
+  {Nat.mul(k, k) == Nat.add(1n, Nat.add(Nat.add(Nat.mul(ky, k), kx), Nat.add(Nat.mul(k, a), b))) : Nat}:
+  Equal.trans(Nat, Nat.mul(k, k), Nat.mul(k, Nat.add(1n, Nat.add(ky, a))), Nat.add(1n, Nat.add(Nat.add(Nat.mul(ky, k), kx), Nat.add(Nat.mul(k, a), b))),
+    Equal.cong(Nat, Nat, s => Nat.mul(k, s), k, Nat.add(1n, Nat.add(ky, a)), e1),
+    Equal.trans(Nat, Nat.mul(k, Nat.add(1n, Nat.add(ky, a))),
+      Nat.add(Nat.mul(k, 1n), Nat.mul(k, Nat.add(ky, a))), Nat.add(1n, Nat.add(Nat.add(Nat.mul(ky, k), kx), Nat.add(Nat.mul(k, a), b))),
+      NL.mul_dist_l(k, 1n, Nat.add(ky, a)),
+      Equal.trans(Nat, Nat.add(Nat.mul(k, 1n), Nat.mul(k, Nat.add(ky, a))),
+        Nat.add(k, Nat.mul(k, Nat.add(ky, a))), Nat.add(1n, Nat.add(Nat.add(Nat.mul(ky, k), kx), Nat.add(Nat.mul(k, a), b))),
+        Equal.cong(Nat, Nat, s => Nat.add(s, Nat.mul(k, Nat.add(ky, a))), Nat.mul(k, 1n), k, NL.mul_one_r(k)),
+        Equal.trans(Nat, Nat.add(k, Nat.mul(k, Nat.add(ky, a))),
+          Nat.add(k, Nat.add(Nat.mul(ky, k), Nat.mul(k, a))), Nat.add(1n, Nat.add(Nat.add(Nat.mul(ky, k), kx), Nat.add(Nat.mul(k, a), b))),
+          Equal.cong(Nat, Nat, s => Nat.add(k, s), Nat.mul(k, Nat.add(ky, a)), Nat.add(Nat.mul(ky, k), Nat.mul(k, a)),
+            Equal.trans(Nat, Nat.mul(k, Nat.add(ky, a)), Nat.add(Nat.mul(k, ky), Nat.mul(k, a)), Nat.add(Nat.mul(ky, k), Nat.mul(k, a)),
+              NL.mul_dist_l(k, ky, a),
+              Equal.cong(Nat, Nat, s => Nat.add(s, Nat.mul(k, a)), Nat.mul(k, ky), Nat.mul(ky, k), NL.mul_comm(k, ky)))),
+          Equal.trans(Nat, Nat.add(k, Nat.add(Nat.mul(ky, k), Nat.mul(k, a))),
+            Nat.add(Nat.add(1n, Nat.add(kx, b)), Nat.add(Nat.mul(ky, k), Nat.mul(k, a))), Nat.add(1n, Nat.add(Nat.add(Nat.mul(ky, k), kx), Nat.add(Nat.mul(k, a), b))),
+            Equal.cong(Nat, Nat, s => Nat.add(s, Nat.add(Nat.mul(ky, k), Nat.mul(k, a))), k, Nat.add(1n, Nat.add(kx, b)), e2),
+            Equal.trans(Nat, Nat.add(Nat.add(1n, Nat.add(kx, b)), Nat.add(Nat.mul(ky, k), Nat.mul(k, a))),
+              Nat.add(1n, Nat.add(Nat.add(kx, b), Nat.add(Nat.mul(ky, k), Nat.mul(k, a)))), Nat.add(1n, Nat.add(Nat.add(Nat.mul(ky, k), kx), Nat.add(Nat.mul(k, a), b))),
+              Equal.sym(Nat, Nat.add(1n, Nat.add(Nat.add(kx, b), Nat.add(Nat.mul(ky, k), Nat.mul(k, a)))),
+                Nat.add(Nat.add(1n, Nat.add(kx, b)), Nat.add(Nat.mul(ky, k), Nat.mul(k, a))),
+                NL.add_assoc(1n, Nat.add(kx, b), Nat.add(Nat.mul(ky, k), Nat.mul(k, a)))),
+              Equal.trans(Nat, Nat.add(1n, Nat.add(Nat.add(kx, b), Nat.add(Nat.mul(ky, k), Nat.mul(k, a)))),
+                Nat.add(1n, Nat.add(Nat.add(kx, Nat.mul(ky, k)), Nat.add(b, Nat.mul(k, a)))), Nat.add(1n, Nat.add(Nat.add(Nat.mul(ky, k), kx), Nat.add(Nat.mul(k, a), b))),
+                Equal.cong(Nat, Nat, s => Nat.add(1n, s),
+                  Nat.add(Nat.add(kx, b), Nat.add(Nat.mul(ky, k), Nat.mul(k, a))),
+                  Nat.add(Nat.add(kx, Nat.mul(ky, k)), Nat.add(b, Nat.mul(k, a))),
+                  NL.add4(kx, b, Nat.mul(ky, k), Nat.mul(k, a))),
+                Equal.trans(Nat, Nat.add(1n, Nat.add(Nat.add(kx, Nat.mul(ky, k)), Nat.add(b, Nat.mul(k, a)))),
+                  Nat.add(1n, Nat.add(Nat.add(Nat.mul(ky, k), kx), Nat.add(b, Nat.mul(k, a)))), Nat.add(1n, Nat.add(Nat.add(Nat.mul(ky, k), kx), Nat.add(Nat.mul(k, a), b))),
+                  Equal.cong(Nat, Nat, s => Nat.add(1n, s),
+                    Nat.add(Nat.add(kx, Nat.mul(ky, k)), Nat.add(b, Nat.mul(k, a))),
+                    Nat.add(Nat.add(Nat.mul(ky, k), kx), Nat.add(b, Nat.mul(k, a))),
+                    Equal.cong(Nat, Nat, s => Nat.add(s, Nat.add(b, Nat.mul(k, a))),
+                      Nat.add(kx, Nat.mul(ky, k)), Nat.add(Nat.mul(ky, k), kx), NL.add_comm(kx, Nat.mul(ky, k)))),
+                  Equal.cong(Nat, Nat, s => Nat.add(1n, s),
+                    Nat.add(Nat.add(Nat.mul(ky, k), kx), Nat.add(b, Nat.mul(k, a))), Nat.add(Nat.add(Nat.mul(ky, k), kx), Nat.add(Nat.mul(k, a), b)),
+                    Equal.cong(Nat, Nat, s => Nat.add(Nat.add(Nat.mul(ky, k), kx), s),
+                      Nat.add(b, Nat.mul(k, a)), Nat.add(Nat.mul(k, a), b), NL.add_comm(b, Nat.mul(k, a))))))))))))
+
+# the slot index, written as ch whole blocks of the outer divisor plus the inner index
+def idx_blocks(+ch: Nat, +ky: Nat, +kx: Nat, +a: Nat, +b: Nat, +k: Nat,
+  +e1: {k == Nat.add(1n, Nat.add(ky, a)) : Nat},
+  +e2: {k == Nat.add(1n, Nat.add(kx, b)) : Nat}) ->
+  {Nat.add(Nat.mul(Nat.add(Nat.mul(ch, k), ky), k), kx) == Nat.add(Nat.mul(ch, Nat.add(1n, Nat.add(Nat.add(Nat.mul(ky, k), kx), Nat.add(Nat.mul(k, a), b)))), Nat.add(Nat.mul(ky, k), kx)) : Nat}:
+  Equal.trans(Nat, Nat.add(Nat.mul(Nat.add(Nat.mul(ch, k), ky), k), kx), Nat.add(Nat.mul(ch, Nat.mul(k, k)), Nat.add(Nat.mul(ky, k), kx)), Nat.add(Nat.mul(ch, Nat.add(1n, Nat.add(Nat.add(Nat.mul(ky, k), kx), Nat.add(Nat.mul(k, a), b)))), Nat.add(Nat.mul(ky, k), kx)),
+    split_idx(ch, ky, kx, k),
+    Equal.cong(Nat, Nat, s => Nat.add(Nat.mul(ch, s), Nat.add(Nat.mul(ky, k), kx)), Nat.mul(k, k), Nat.add(1n, Nat.add(Nat.add(Nat.mul(ky, k), kx), Nat.add(Nat.mul(k, a), b))), radix_bound(ky, kx, a, b, k, e1, e2)))
+
+# PROOF (inner_div / inner_mod): with k = 1 + kx + b, one more number kx after j whole blocks of k numbers
+# leaves the quotient j and the remainder kx.
+def inner_div(+j: Nat, +kx: Nat, +b: Nat, +k: Nat,
+  +e2: {k == Nat.add(1n, Nat.add(kx, b)) : Nat}) ->
+  {Nat.div(Nat.add(Nat.mul(j, k), kx), k) == j : Nat}:
+  Equal.trans(Nat, Nat.div(Nat.add(Nat.mul(j, k), kx), k), Nat.div(Nat.add(Nat.mul(j, k), kx), Nat.add(1n, Nat.add(kx, b))), j,
+    Equal.cong(Nat, Nat, s => Nat.div(Nat.add(Nat.mul(j, k), kx), s), k, Nat.add(1n, Nat.add(kx, b)), e2),
+    Equal.trans(Nat, Nat.div(Nat.add(Nat.mul(j, k), kx), Nat.add(1n, Nat.add(kx, b))),
+      Nat.div(Nat.add(Nat.mul(j, Nat.add(1n, Nat.add(kx, b))), kx), Nat.add(1n, Nat.add(kx, b))), j,
+      Equal.cong(Nat, Nat, s => Nat.div(s, Nat.add(1n, Nat.add(kx, b))), Nat.add(Nat.mul(j, k), kx), Nat.add(Nat.mul(j, Nat.add(1n, Nat.add(kx, b))), kx),
+        Equal.cong(Nat, Nat, s => Nat.add(Nat.mul(j, s), kx), k, Nat.add(1n, Nat.add(kx, b)), e2)),
+      go_blocks_fst(j, kx, b, 0n)))
+
+def inner_mod(+j: Nat, +kx: Nat, +b: Nat, +k: Nat,
+  +e2: {k == Nat.add(1n, Nat.add(kx, b)) : Nat}) ->
+  {Nat.mod(Nat.add(Nat.mul(j, k), kx), k) == kx : Nat}:
+  Equal.trans(Nat, Nat.mod(Nat.add(Nat.mul(j, k), kx), k), Nat.mod(Nat.add(Nat.mul(j, k), kx), Nat.add(1n, Nat.add(kx, b))), kx,
+    Equal.cong(Nat, Nat, s => Nat.mod(Nat.add(Nat.mul(j, k), kx), s), k, Nat.add(1n, Nat.add(kx, b)), e2),
+    Equal.trans(Nat, Nat.mod(Nat.add(Nat.mul(j, k), kx), Nat.add(1n, Nat.add(kx, b))),
+      Nat.mod(Nat.add(Nat.mul(j, Nat.add(1n, Nat.add(kx, b))), kx), Nat.add(1n, Nat.add(kx, b))), kx,
+      Equal.cong(Nat, Nat, s => Nat.mod(s, Nat.add(1n, Nat.add(kx, b))), Nat.add(Nat.mul(j, k), kx), Nat.add(Nat.mul(j, Nat.add(1n, Nat.add(kx, b))), kx),
+        Equal.cong(Nat, Nat, s => Nat.add(Nat.mul(j, s), kx), k, Nat.add(1n, Nat.add(kx, b)), e2)),
+      go_blocks_snd(j, kx, b, 0n)))
+
+# p_ch is the outer quotient: how many whole k*k blocks fit before the inner index
+def p_ch_ks(+ch: Nat, +ky: Nat, +kx: Nat, +a: Nat, +b: Nat, +k: Nat,
+  +e1: {k == Nat.add(1n, Nat.add(ky, a)) : Nat},
+  +e2: {k == Nat.add(1n, Nat.add(kx, b)) : Nat}) ->
+  {T.p_ch(Nat.add(Nat.mul(Nat.add(Nat.mul(ch, k), ky), k), kx), k) == ch : Nat}:
+  Equal.trans(Nat, Nat.div(Nat.add(Nat.mul(Nat.add(Nat.mul(ch, k), ky), k), kx), Nat.mul(k, k)), Nat.div(Nat.add(Nat.mul(Nat.add(Nat.mul(ch, k), ky), k), kx), Nat.add(1n, Nat.add(Nat.add(Nat.mul(ky, k), kx), Nat.add(Nat.mul(k, a), b)))), ch,
+    Equal.cong(Nat, Nat, s => Nat.div(Nat.add(Nat.mul(Nat.add(Nat.mul(ch, k), ky), k), kx), s), Nat.mul(k, k), Nat.add(1n, Nat.add(Nat.add(Nat.mul(ky, k), kx), Nat.add(Nat.mul(k, a), b))), radix_bound(ky, kx, a, b, k, e1, e2)),
+    Equal.trans(Nat, Nat.div(Nat.add(Nat.mul(Nat.add(Nat.mul(ch, k), ky), k), kx), Nat.add(1n, Nat.add(Nat.add(Nat.mul(ky, k), kx), Nat.add(Nat.mul(k, a), b)))), Nat.div(Nat.add(Nat.mul(ch, Nat.add(1n, Nat.add(Nat.add(Nat.mul(ky, k), kx), Nat.add(Nat.mul(k, a), b)))), Nat.add(Nat.mul(ky, k), kx)), Nat.add(1n, Nat.add(Nat.add(Nat.mul(ky, k), kx), Nat.add(Nat.mul(k, a), b)))), ch,
+      Equal.cong(Nat, Nat, s => Nat.div(s, Nat.add(1n, Nat.add(Nat.add(Nat.mul(ky, k), kx), Nat.add(Nat.mul(k, a), b)))), Nat.add(Nat.mul(Nat.add(Nat.mul(ch, k), ky), k), kx), Nat.add(Nat.mul(ch, Nat.add(1n, Nat.add(Nat.add(Nat.mul(ky, k), kx), Nat.add(Nat.mul(k, a), b)))), Nat.add(Nat.mul(ky, k), kx)), idx_blocks(ch, ky, kx, a, b, k, e1, e2)),
+      go_blocks_fst(ch, Nat.add(Nat.mul(ky, k), kx), Nat.add(Nat.mul(k, a), b), 0n)))
+
+# the outer remainder: the inner index
+def p_ky_mod(+ch: Nat, +ky: Nat, +kx: Nat, +a: Nat, +b: Nat, +k: Nat,
+  +e1: {k == Nat.add(1n, Nat.add(ky, a)) : Nat},
+  +e2: {k == Nat.add(1n, Nat.add(kx, b)) : Nat}) ->
+  {Nat.mod(Nat.add(Nat.mul(Nat.add(Nat.mul(ch, k), ky), k), kx), Nat.mul(k, k)) == Nat.add(Nat.mul(ky, k), kx) : Nat}:
+  Equal.trans(Nat, Nat.mod(Nat.add(Nat.mul(Nat.add(Nat.mul(ch, k), ky), k), kx), Nat.mul(k, k)), Nat.mod(Nat.add(Nat.mul(Nat.add(Nat.mul(ch, k), ky), k), kx), Nat.add(1n, Nat.add(Nat.add(Nat.mul(ky, k), kx), Nat.add(Nat.mul(k, a), b)))), Nat.add(Nat.mul(ky, k), kx),
+    Equal.cong(Nat, Nat, s => Nat.mod(Nat.add(Nat.mul(Nat.add(Nat.mul(ch, k), ky), k), kx), s), Nat.mul(k, k), Nat.add(1n, Nat.add(Nat.add(Nat.mul(ky, k), kx), Nat.add(Nat.mul(k, a), b))), radix_bound(ky, kx, a, b, k, e1, e2)),
+    Equal.trans(Nat, Nat.mod(Nat.add(Nat.mul(Nat.add(Nat.mul(ch, k), ky), k), kx), Nat.add(1n, Nat.add(Nat.add(Nat.mul(ky, k), kx), Nat.add(Nat.mul(k, a), b)))), Nat.mod(Nat.add(Nat.mul(ch, Nat.add(1n, Nat.add(Nat.add(Nat.mul(ky, k), kx), Nat.add(Nat.mul(k, a), b)))), Nat.add(Nat.mul(ky, k), kx)), Nat.add(1n, Nat.add(Nat.add(Nat.mul(ky, k), kx), Nat.add(Nat.mul(k, a), b)))), Nat.add(Nat.mul(ky, k), kx),
+      Equal.cong(Nat, Nat, s => Nat.mod(s, Nat.add(1n, Nat.add(Nat.add(Nat.mul(ky, k), kx), Nat.add(Nat.mul(k, a), b)))), Nat.add(Nat.mul(Nat.add(Nat.mul(ch, k), ky), k), kx), Nat.add(Nat.mul(ch, Nat.add(1n, Nat.add(Nat.add(Nat.mul(ky, k), kx), Nat.add(Nat.mul(k, a), b)))), Nat.add(Nat.mul(ky, k), kx)), idx_blocks(ch, ky, kx, a, b, k, e1, e2)),
+      go_blocks_snd(ch, Nat.add(Nat.mul(ky, k), kx), Nat.add(Nat.mul(k, a), b), 0n)))
+
+# p_ky is the inner quotient
+def p_ky_ks(+ch: Nat, +ky: Nat, +kx: Nat, +a: Nat, +b: Nat, +k: Nat,
+  +e1: {k == Nat.add(1n, Nat.add(ky, a)) : Nat},
+  +e2: {k == Nat.add(1n, Nat.add(kx, b)) : Nat}) ->
+  {T.p_ky(Nat.add(Nat.mul(Nat.add(Nat.mul(ch, k), ky), k), kx), k) == ky : Nat}:
+  Equal.trans(Nat, Nat.div(Nat.mod(Nat.add(Nat.mul(Nat.add(Nat.mul(ch, k), ky), k), kx), Nat.mul(k, k)), k), Nat.div(Nat.add(Nat.mul(ky, k), kx), k), ky,
+    Equal.cong(Nat, Nat, s => Nat.div(s, k), Nat.mod(Nat.add(Nat.mul(Nat.add(Nat.mul(ch, k), ky), k), kx), Nat.mul(k, k)), Nat.add(Nat.mul(ky, k), kx), p_ky_mod(ch, ky, kx, a, b, k, e1, e2)),
+    inner_div(ky, kx, b, k, e2))
+
+# p_kx is the inner remainder
+def p_kx_ks(+ch: Nat, +ky: Nat, +kx: Nat, +a: Nat, +b: Nat, +k: Nat,
+  +e1: {k == Nat.add(1n, Nat.add(ky, a)) : Nat},
+  +e2: {k == Nat.add(1n, Nat.add(kx, b)) : Nat}) ->
+  {T.p_kx(Nat.add(Nat.mul(Nat.add(Nat.mul(ch, k), ky), k), kx), k) == kx : Nat}:
+  inner_mod(Nat.add(Nat.mul(ch, k), ky), kx, b, k, e2)
+
+
+# PROOF (p_iy / p_ix): with no padding the source row is oy*k + ky and the source column is ox*k + kx
+def p_iy_ks(+ch: Nat, +ky: Nat, +kx: Nat, +a: Nat, +b: Nat, +k: Nat, +oy: Nat,
+  +e1: {k == Nat.add(1n, Nat.add(ky, a)) : Nat},
+  +e2: {k == Nat.add(1n, Nat.add(kx, b)) : Nat}) ->
+  {T.p_iy(Nat.add(Nat.mul(Nat.add(Nat.mul(ch, k), ky), k), kx), oy, k, 0n, k) == Nat.add(Nat.mul(oy, k), ky) : Nat}:
+  Equal.trans(Nat, Nat.sub(Nat.add(Nat.mul(oy, k), T.p_ky(Nat.add(Nat.mul(Nat.add(Nat.mul(ch, k), ky), k), kx), k)), 0n), Nat.sub(Nat.add(Nat.mul(oy, k), ky), 0n), Nat.add(Nat.mul(oy, k), ky),
+    Equal.cong(Nat, Nat, s => Nat.sub(Nat.add(Nat.mul(oy, k), s), 0n), T.p_ky(Nat.add(Nat.mul(Nat.add(Nat.mul(ch, k), ky), k), kx), k), ky,
+      p_ky_ks(ch, ky, kx, a, b, k, e1, e2)),
+    sub0(Nat.add(Nat.mul(oy, k), ky)))
+
+def p_ix_ks(+ch: Nat, +ky: Nat, +kx: Nat, +a: Nat, +b: Nat, +k: Nat, +ox: Nat,
+  +e1: {k == Nat.add(1n, Nat.add(ky, a)) : Nat},
+  +e2: {k == Nat.add(1n, Nat.add(kx, b)) : Nat}) ->
+  {T.p_ix(Nat.add(Nat.mul(Nat.add(Nat.mul(ch, k), ky), k), kx), ox, k, 0n, k) == Nat.add(Nat.mul(ox, k), kx) : Nat}:
+  Equal.trans(Nat, Nat.sub(Nat.add(Nat.mul(ox, k), T.p_kx(Nat.add(Nat.mul(Nat.add(Nat.mul(ch, k), ky), k), kx), k)), 0n), Nat.sub(Nat.add(Nat.mul(ox, k), kx), 0n), Nat.add(Nat.mul(ox, k), kx),
+    Equal.cong(Nat, Nat, s => Nat.sub(Nat.add(Nat.mul(ox, k), s), 0n), T.p_kx(Nat.add(Nat.mul(Nat.add(Nat.mul(ch, k), ky), k), kx), k), kx,
+      p_kx_ks(ch, ky, kx, a, b, k, e1, e2)),
+    sub0(Nat.add(Nat.mul(ox, k), kx)))
+
+# PROOF (conv_roundtrip_ks): read (handed to p_src) and write (p_src itself) address the same image cell: the
+# channel is the outer quotient, the two window offsets are the inner quotient and remainder, and with s = k and
+# p = 0 the row and column follow.
+# -----------------------------------------------------------------------------------------------------
+# the round trip with any stride and padding: the decode does not care about s or p (BendTorch#29)
+# -----------------------------------------------------------------------------------------------------
+#
+# p_ky and p_kx are the slot's own offsets inside the k x k window, so they do not depend on the stride or the
+# padding at all; only the source coordinate does, and it is (oy*s + ky) - p. What is needed is that the subtraction
+# does not truncate, which the window hypothesis writes as oy*s + ky = p + ty, and one subtraction lemma.
+
+# (p + t) - p == t: the window's coordinate minus the padding is the image coordinate
+def sub_self_add(+p: Nat, +t: Nat) -> {Nat.sub(Nat.add(p, t), p) == t : Nat}:
+  match p:
+    case 0n:
+      sub0(t)
+    case 1n+pp:
+      sub_self_add(pp, t)
+
+# PROOF (p_iy_win): the source row is oy*s + ky - p, which the window hypothesis makes ty
+def p_iy_win(+ch: Nat, +ky: Nat, +kx: Nat, +a: Nat, +b: Nat, +k: Nat, +oy: Nat, +s: Nat, +p: Nat, +ty: Nat,
+  +e1: {k == Nat.add(1n, Nat.add(ky, a)) : Nat},
+  +e2: {k == Nat.add(1n, Nat.add(kx, b)) : Nat},
+  +ey: {Nat.add(Nat.mul(oy, s), ky) == Nat.add(p, ty) : Nat}) ->
+  {T.p_iy(Nat.add(Nat.mul(Nat.add(Nat.mul(ch, k), ky), k), kx), oy, k, p, s) == ty : Nat}:
+  Equal.trans(Nat, Nat.sub(Nat.add(Nat.mul(oy, s), T.p_ky(Nat.add(Nat.mul(Nat.add(Nat.mul(ch, k), ky), k), kx), k)), p), Nat.sub(Nat.add(Nat.mul(oy, s), ky), p), ty,
+    Equal.cong(Nat, Nat, z => Nat.sub(Nat.add(Nat.mul(oy, s), z), p), T.p_ky(Nat.add(Nat.mul(Nat.add(Nat.mul(ch, k), ky), k), kx), k), ky,
+      p_ky_ks(ch, ky, kx, a, b, k, e1, e2)),
+    Equal.trans(Nat, Nat.sub(Nat.add(Nat.mul(oy, s), ky), p), Nat.sub(Nat.add(p, ty), p), ty,
+      Equal.cong(Nat, Nat, z => Nat.sub(z, p), Nat.add(Nat.mul(oy, s), ky), Nat.add(p, ty), ey),
+      sub_self_add(p, ty)))
+
+# PROOF (p_ix_win): the same for the source column
+def p_ix_win(+ch: Nat, +ky: Nat, +kx: Nat, +a: Nat, +b: Nat, +k: Nat, +ox: Nat, +s: Nat, +p: Nat, +tx: Nat,
+  +e1: {k == Nat.add(1n, Nat.add(ky, a)) : Nat},
+  +e2: {k == Nat.add(1n, Nat.add(kx, b)) : Nat},
+  +ex: {Nat.add(Nat.mul(ox, s), kx) == Nat.add(p, tx) : Nat}) ->
+  {T.p_ix(Nat.add(Nat.mul(Nat.add(Nat.mul(ch, k), ky), k), kx), ox, k, p, s) == tx : Nat}:
+  Equal.trans(Nat, Nat.sub(Nat.add(Nat.mul(ox, s), T.p_kx(Nat.add(Nat.mul(Nat.add(Nat.mul(ch, k), ky), k), kx), k)), p), Nat.sub(Nat.add(Nat.mul(ox, s), kx), p), tx,
+    Equal.cong(Nat, Nat, z => Nat.sub(Nat.add(Nat.mul(ox, s), z), p), T.p_kx(Nat.add(Nat.mul(Nat.add(Nat.mul(ch, k), ky), k), kx), k), kx,
+      p_kx_ks(ch, ky, kx, a, b, k, e1, e2)),
+    Equal.trans(Nat, Nat.sub(Nat.add(Nat.mul(ox, s), kx), p), Nat.sub(Nat.add(p, tx), p), tx,
+      Equal.cong(Nat, Nat, z => Nat.sub(z, p), Nat.add(Nat.mul(ox, s), kx), Nat.add(p, tx), ex),
+      sub_self_add(p, tx)))
+
+# PROOF (conv_roundtrip_window): p_ch, p_ky and p_kx are the slot's, and p_iy/p_ix are the window's coordinate
+# minus the padding: the source cell is the one the output position covers, channel and all.
+def Laws.conv_roundtrip_window(n, oy, ox, ch, ky, kx, h, w, c, k, p, s, a, b, ty, tx, e1, e2, ey, ex):
+  Equal.cong(Nat, U32, z => U32.from_nat(z),
+    Nat.add(Nat.mul(Nat.add(Nat.mul(Nat.add(Nat.mul(n, h), T.p_iy(Nat.add(Nat.mul(Nat.add(Nat.mul(ch, k), ky), k), kx), oy, k, p, s)), w), T.p_ix(Nat.add(Nat.mul(Nat.add(Nat.mul(ch, k), ky), k), kx), ox, k, p, s)), c), T.p_ch(Nat.add(Nat.mul(Nat.add(Nat.mul(ch, k), ky), k), kx), k)),
+    Nat.add(Nat.mul(Nat.add(Nat.mul(Nat.add(Nat.mul(n, h), ty), w), tx), c), ch),
+    Equal.trans(Nat,
+      Nat.add(Nat.mul(Nat.add(Nat.mul(Nat.add(Nat.mul(n, h), T.p_iy(Nat.add(Nat.mul(Nat.add(Nat.mul(ch, k), ky), k), kx), oy, k, p, s)), w), T.p_ix(Nat.add(Nat.mul(Nat.add(Nat.mul(ch, k), ky), k), kx), ox, k, p, s)), c), T.p_ch(Nat.add(Nat.mul(Nat.add(Nat.mul(ch, k), ky), k), kx), k)),
+      Nat.add(Nat.mul(Nat.add(Nat.mul(Nat.add(Nat.mul(n, h), ty), w), T.p_ix(Nat.add(Nat.mul(Nat.add(Nat.mul(ch, k), ky), k), kx), ox, k, p, s)), c), T.p_ch(Nat.add(Nat.mul(Nat.add(Nat.mul(ch, k), ky), k), kx), k)),
+      Nat.add(Nat.mul(Nat.add(Nat.mul(Nat.add(Nat.mul(n, h), ty), w), tx), c), ch),
+      Equal.cong(Nat, Nat, z => Nat.add(Nat.mul(Nat.add(Nat.mul(Nat.add(Nat.mul(n, h), z), w), T.p_ix(Nat.add(Nat.mul(Nat.add(Nat.mul(ch, k), ky), k), kx), ox, k, p, s)), c), T.p_ch(Nat.add(Nat.mul(Nat.add(Nat.mul(ch, k), ky), k), kx), k)), T.p_iy(Nat.add(Nat.mul(Nat.add(Nat.mul(ch, k), ky), k), kx), oy, k, p, s), ty, p_iy_win(ch, ky, kx, a, b, k, oy, s, p, ty, e1, e2, ey)),
+      Equal.trans(Nat,
+        Nat.add(Nat.mul(Nat.add(Nat.mul(Nat.add(Nat.mul(n, h), ty), w), T.p_ix(Nat.add(Nat.mul(Nat.add(Nat.mul(ch, k), ky), k), kx), ox, k, p, s)), c), T.p_ch(Nat.add(Nat.mul(Nat.add(Nat.mul(ch, k), ky), k), kx), k)),
+        Nat.add(Nat.mul(Nat.add(Nat.mul(Nat.add(Nat.mul(n, h), ty), w), tx), c), T.p_ch(Nat.add(Nat.mul(Nat.add(Nat.mul(ch, k), ky), k), kx), k)),
+        Nat.add(Nat.mul(Nat.add(Nat.mul(Nat.add(Nat.mul(n, h), ty), w), tx), c), ch),
+        Equal.cong(Nat, Nat, z => Nat.add(Nat.mul(Nat.add(Nat.mul(Nat.add(Nat.mul(n, h), ty), w), z), c), T.p_ch(Nat.add(Nat.mul(Nat.add(Nat.mul(ch, k), ky), k), kx), k)), T.p_ix(Nat.add(Nat.mul(Nat.add(Nat.mul(ch, k), ky), k), kx), ox, k, p, s), tx, p_ix_win(ch, ky, kx, a, b, k, ox, s, p, tx, e1, e2, ex)),
+        Equal.cong(Nat, Nat, z => Nat.add(Nat.mul(Nat.add(Nat.mul(Nat.add(Nat.mul(n, h), ty), w), tx), c), z), T.p_ch(Nat.add(Nat.mul(Nat.add(Nat.mul(ch, k), ky), k), kx), k), ch, p_ch_ks(ch, ky, kx, a, b, k, e1, e2)))))
+
+# PROOF (conv_roundtrip_ks): the window law at s = k and p = 0, where the source row is oy*k + ky (0 + x = x), so
+# the narrower law is an instance of the general one, not a second proof.
+def Laws.conv_roundtrip_ks(n, oy, ox, ch, ky, kx, h, w, c, k, a, b, e1, e2):
+  Laws.conv_roundtrip_window(n, oy, ox, ch, ky, kx, h, w, c, k, 0n, k, a, b,
+    Nat.add(Nat.mul(oy, k), ky), Nat.add(Nat.mul(ox, k), kx), e1, e2, {==}, {==})

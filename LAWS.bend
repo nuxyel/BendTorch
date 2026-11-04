@@ -374,6 +374,67 @@ law im2col_rows:
   for d: Array<F32>
   {List.length(&2, F32, T.im2col_n(n, h, w, c, k, p, s, d)) == Nat.mul(Nat.mul(n, Nat.mul(T.ocount(h, p, k, s), T.ocount(w, p, k, s))), Nat.mul(c, Nat.mul(k, k))) : Nat}
 
+# LAW (conv_roundtrip_ks): the round trip at stride k. With a stride equal to the kernel size and no padding, one
+# gathered cell of a patch row is one image cell: slot (ch, ky, kx) of output position (oy, ox) is image cell
+# (oy*k + ky, ox*k + kx), channel ch. im2col reads that cell (p_src) and col2im writes the gradient back into it
+# (its scatter is p_src itself, in c2_go), so for k = s and p = 0 the two passes address the same number cell for
+# cell. `ky_lt` and `kx_lt` write ky < k and kx < k as k = 1 + ky + a and k = 1 + kx + b, which is how the decode
+# gets the bounds its division needs. The identity at the centre is the decode:
+# i = (p_ch(i,k)*k + p_ky(i,k))*k + p_kx(i,k), proved from the division algorithm's own block step.
+law conv_roundtrip_ks:
+  for +n: Nat
+  for +oy: Nat
+  for +ox: Nat
+  for +ch: Nat
+  for +ky: Nat
+  for +kx: Nat
+  for +h: Nat
+  for +w: Nat
+  for +c: Nat
+  for +k: Nat
+  for +a: Nat
+  for +b: Nat
+  for +ky_lt: {k == Nat.add(1n, Nat.add(ky, a)) : Nat}
+  for +kx_lt: {k == Nat.add(1n, Nat.add(kx, b)) : Nat}
+  {T.p_src(Nat.add(Nat.mul(Nat.add(Nat.mul(ch, k), ky), k), kx), n, oy, ox, h, w, c, k, 0n, k) ==
+    U32.from_nat(Nat.add(Nat.mul(Nat.add(Nat.mul(Nat.add(Nat.mul(n, h), Nat.add(Nat.mul(oy, k), ky)), w),
+      Nat.add(Nat.mul(ox, k), kx)), c), ch)) : U32}
+
+# LAW (conv_roundtrip_window): the round trip at any stride and padding, per cell. Slot (ch, ky, kx) of output
+# position (oy, ox) reads image cell (oy*s + ky - p, ox*s + kx - p), channel ch: im2col reads that cell and col2im
+# writes the gradient back into it, because both address it with p_src. The window hypotheses write the two bounds:
+# ky < k and kx < k as k = 1 + ky + a and k = 1 + kx + b, and "the window's row is inside the image" as
+# oy*s + ky = p + ty, ox*s + kx = p + tx (without them the subtraction p_iy/p_ix truncates and the cell is not read
+# at all: p_ok is false there, and the gather uses 0).
+#
+# The decode does not care about the stride or the padding: p_ch is i/k^2, p_ky is (i mod k^2)/k and p_kx is i mod k,
+# whatever s and p are, so this is conv_roundtrip_ks' proof with two subtraction facts instead of sub(x, 0) = x. It
+# covers the geometry the layers use (the UNet's k = 3, s = 2, p = 1 among them), and the two narrower laws,
+# conv_roundtrip (k = 1, s = 1, p = 0) and conv_roundtrip_ks (s = k, p = 0), are its instances.
+law conv_roundtrip_window:
+  for +n: Nat
+  for +oy: Nat
+  for +ox: Nat
+  for +ch: Nat
+  for +ky: Nat
+  for +kx: Nat
+  for +h: Nat
+  for +w: Nat
+  for +c: Nat
+  for +k: Nat
+  for +p: Nat
+  for +s: Nat
+  for +a: Nat
+  for +b: Nat
+  for +ty: Nat
+  for +tx: Nat
+  for +ky_lt: {k == Nat.add(1n, Nat.add(ky, a)) : Nat}
+  for +kx_lt: {k == Nat.add(1n, Nat.add(kx, b)) : Nat}
+  for +row_in: {Nat.add(Nat.mul(oy, s), ky) == Nat.add(p, ty) : Nat}
+  for +col_in: {Nat.add(Nat.mul(ox, s), kx) == Nat.add(p, tx) : Nat}
+  {T.p_src(Nat.add(Nat.mul(Nat.add(Nat.mul(ch, k), ky), k), kx), n, oy, ox, h, w, c, k, p, s) ==
+    U32.from_nat(Nat.add(Nat.mul(Nat.add(Nat.mul(Nat.add(Nat.mul(n, h), ty), w), tx), c), ch)) : U32}
+
 # LAW (conv_roundtrip): with a 1 x 1 kernel, no padding and a stride of 1, a patch is one cell: im2col reads the image
 # cell at the patch's own coordinates, (b, oy, ox, ch), and col2im writes that number back into it (its scatter is p_src
 # itself, in c2_go). So for k = 1, s = 1 and p = 0 the round trip col2im(im2col(x)) = x is the identity, cell for cell,

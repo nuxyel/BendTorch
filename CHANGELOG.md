@@ -77,8 +77,8 @@ only. Both by or with @adeerkhan.
 
 ### Laws
 
-Six new laws in `LAWS.bend`, proved in `PROOF.bend` and checked again by `bend PROOF.bend --verdict`, 35 laws in all
-(with `dtype.bend`'s `unpair_pair`): Conv2d's two (above) and the guard's four:
+Eight new laws in `LAWS.bend`, proved in `PROOF.bend` and checked again by `bend PROOF.bend --verdict`, 37 laws
+in all (with `dtype.bend`'s `unpair_pair`): Conv2d's two (above), the guard's four, and the round trips' two (below):
 
 - `guard_nomom`, `guard_onemom`, `guard_twomom`, `guard_packed`: for every configuration and each kind of state (no
   buffers, one, two, two packed in BF16), the optimizer `Opt.guard` hands the step is
@@ -87,6 +87,20 @@ Six new laws in `LAWS.bend`, proved in `PROOF.bend` and checked again by `bend P
   proof takes the five configurations one by one, and in each both sides compute to the same optimizer. The guard is
   written as that `Opt.when` so that they do. What is read from the code rather than proved: that `Train.step` and
   `Train.step_at` hand the guard's optimizer to `Layer.step` (`ts4g`, `train_at_g`).
+- `conv_roundtrip_window`: the round trip at **any** stride and padding, per cell. Slot `(ch, ky, kx)` of output
+  position `(oy, ox)` is image cell `(oy·s + ky - p, ox·s + kx - p)`, channel `ch`, so the gather and the scatter name
+  the same cell for every kernel, stride and padding — the UNet's `k = 3, s = 2, p = 1` among them. The decode does
+  not care about `s` or `p`, so this is one subtraction lemma (`(p + t) - p = t`) away from `conv_roundtrip_ks`, which
+  is now proved as its instance (`s = k`, `p = 0`) rather than by a second proof. The bounds are four hypotheses:
+  `k = 1 + ky + a`, `k = 1 + kx + b`, and the window being inside the image, `oy·s + ky = p + ty`, `ox·s + kx = p + tx`.
+- `conv_roundtrip_ks`: the im2col/col2im round trip at a stride equal to the kernel size. With `s = k` and no
+  padding, slot `(ch, ky, kx)` of output position `(oy, ox)` is image cell `(oy·k + ky, ox·k + kx)` of channel `ch`,
+  so the gather and the scatter name the same cell — `p_src` both times. That needs the mixed-radix decode
+  `i = (p_ch·k + p_ky)·k + p_kx`, which is Bend's unary division twice: the proof of `Nat.divmod.go`'s invariant
+  (`divmod_go_spec`, a `def` beside `divmod_one`) then one block count plus a rest per level. `ky < k` and
+  `kx < k` are `k = 1 + ky + a` and `k = 1 + kx + b`, as `gqa_head` writes one bound; the bound that `k·k` leaves
+  for the inner cell is `radix_bound`. #29's numbers at `k = s = 2, 3, 4` were already exact; the law is what makes
+  them so for every `k`.
 
 ### Tests
 
