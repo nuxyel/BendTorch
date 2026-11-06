@@ -1997,3 +1997,16 @@ Six new laws and one rewritten, all by `--verdict`, about the code the demos exe
   file's bits through 0.2.0.1. The release notes fix none of CLAUDE.md's pitfalls.
 - Not run: `mutate-smol`, which stops at its AdamW mutant on devel whatever the Bend (its text is in torch/main.bend
   three times since 860d12f, and the driver expects it once); a fix of the driver is its own change.
+
+## v2.0.1 on BendHub (2026-11-06)
+
+- Release PR #35, its full CI run green (44 min), merged as 79e22e0, tagged v2.0.1.
+- Published from `build/packages/` (`make package CORE=bendtorch VERSION=2.0.1.0` at the tag's content, every package
+  test green): `bendtorch@2.0.1.0` `0x9fcea48a66fe9c6efe7d054f27f7e989` (the core's files are 2.0.0.0's byte for byte,
+  so the same hash; the first try got an empty answer from the hub, the second published it), `bendtorch-fast@2.0.1.0`
+  `0x1737fb8027ec4c219faeb92b75d3287d`, `bendtorch-gpu@2.0.1.0` `0xe81f3454e006e753846e13041c7f754a`,
+  `bendtorch-load@2.0.1.0` `0xc277e4bbef36b2eb02a5c715f7375deb` (on binary-read 0.2.0.1).
+- From a clean folder importing the published packages, on Bend 2.0.40: `demo/reader_test.bend` over
+  `bendtorch-load@2.0.1.0` passes `reference/test_reader.py` on the C lane and on the JavaScript lane, the one 2.0.0.0
+  fails on 2.0.40; `demo/fast_test.bend` over `bendtorch-fast@2.0.1.0` prints its fifteen zeros on 1 and 16 threads.
+- The GitHub release v2.0.1 carries the CHANGELOG's entry and these hashes.
