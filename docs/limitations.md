@@ -43,7 +43,8 @@ Numbers marked "busy machine" were taken with other jobs running and are a first
   100 steps (0.50x with the constants). `OptCfg.check` stops a program whose `c1`, `c2` disagree with its betas, but
   only where the program calls it; `Train.new` cannot stop a pure computation, so without the call a wrong configuration
   shows up as NaN losses from the second step. The same holds for a configuration given to `Train.with_cfg` and for one
-  of another family than the state's buffers: the step is refused with NaN, not stopped. Adam/AdamW checkpoints written
+  of another family than the state's buffers: the step is refused with NaN, not stopped, and the NaN cannot say which
+  field disagreed; a change of kind shows up only as NaN at the next step (#27). Adam/AdamW checkpoints written
   before 2026-10-18 cannot be resumed.
 - Edge cases accepted for now, to be compared later:
   - attention gives 0 where PyTorch gives NaN at a position that cannot see a -inf in V (PyTorch's 0 · inf);
