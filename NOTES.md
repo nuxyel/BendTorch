@@ -1983,3 +1983,17 @@ Six new laws and one rewritten, all by `--verdict`, about the code the demos exe
   took 31 seconds, checkout and text rules included.
 - The full tier by hand on `devel` (0931e99, a dispatch: everything, as the Sunday run and a release will): green in
   58 minutes, `make check bits` 10, the 167 mutants 44 (163 as expected, the same 4 skipped), the JavaScript lane 4.
+
+## Bend 2.0.40 (2026-11-06)
+
+- The pin moves from 2.0.39 to 2.0.40: `scripts/setup.sh` (the two Linux SHA256 are the release's asset digests), the
+  CI step, the READMEs, CONTRIBUTING, CLAUDE.md and the docs that name the pin; dated numbers stay as measured.
+- `torch/load.bend` and the reader test move to `bend-ml-binary-read@0.2.0.1`. 2.0.40 removed the runtime's internal
+  pread binding that 0.2.0.0's JavaScript lane called (bendlang/bend#2063), and 0.2.0.1 reads through `fs` as Base
+  does; the C lane is the same. The published `bendtorch-load` 2.0.0.0 imports 0.2.0.0, so its JavaScript lane fails
+  on 2.0.40 until its next version.
+- Checks on 2.0.40 (a busy machine, so bits and pass/fail only): `make check bits gpu smol smol-gpu bits-smol reader`,
+  all green in 25 minutes; the reader's 22 reads around 2, 4 and 8 GiB and the 10,019 PyTorch BF16 numbers give the
+  file's bits through 0.2.0.1. The release notes fix none of CLAUDE.md's pitfalls.
+- Not run: `mutate-smol`, which stops at its AdamW mutant on devel whatever the Bend (its text is in torch/main.bend
+  three times since 860d12f, and the driver expects it once); a fix of the driver is its own change.
