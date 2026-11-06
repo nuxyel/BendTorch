@@ -2010,3 +2010,12 @@ Six new laws and one rewritten, all by `--verdict`, about the code the demos exe
   `bendtorch-load@2.0.1.0` passes `reference/test_reader.py` on the C lane and on the JavaScript lane, the one 2.0.0.0
   fails on 2.0.40; `demo/fast_test.bend` over `bendtorch-fast@2.0.1.0` prints its fifteen zeros on 1 and 16 threads.
 - The GitHub release v2.0.1 carries the CHANGELOG's entry and these hashes.
+
+## mutate-smol runs again (2026-11-06)
+
+- `scripts/mutate_smol.py` stopped at its fourth mutant ("AdamW: no weight decay") since 860d12f (CAdamWBF16,
+  2026-10-21): it asserted `adam_decay(dec, lr, wd, x)` is in `torch/main.bend` once, and `adam_l`, `adamh_l` and
+  `adamhv_l` (the BF16 moments) each call it. A mutant may now give how many times its text is there (1 unless given),
+  every one is mutated, and the AdamW mutant says 3: "no weight decay" drops it from all three loops.
+- `make mutate-smol` on devel (Bend 2.0.40): the control passes and 6 mutants, 6 as expected (three caught, the three
+  that survive at this scale with their reason).
