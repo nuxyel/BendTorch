@@ -177,7 +177,8 @@ The workflow exists and has never run (Actions is off on the private remote). Th
 to private repositories, and a full run (setup, `check`, `bits`, `mutate`, `check-js`) should take 10-15 minutes, so not
 everything on every push: `make check` and `make bits` on each push to `devel`, cancelling a run still in progress
 when a newer push arrives, and the full run on pull requests to `main` and nightly. Measure the first runs and fix
-whatever differs on a clean Ubuntu runner. Done: quick 6.4 min (cold caches), full 10.4 min, both green (NOTES).
+whatever differs on a clean Ubuntu runner. Done: quick 6.4 min (cold caches), full 10.4 min, both green (NOTES). Since 2026-11-03
+pushes and pull requests to `devel` run what the change reads (`scripts/affected.py`), and the full run is weekly (NOTES).
 
 ### M14 · A frozen, held-out numerical corpus (~2 days)
 

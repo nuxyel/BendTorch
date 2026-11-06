@@ -38,7 +38,7 @@ one-thread timings with `taskset -c 3`), 32 GB RAM, RTX 4050 6 GB.
 
 ## Rules
 
-1. Bend is pinned to **2.0.39** (and Lean 4.34.0 for `--verdict`). Before writing code, read `bend guide`,
+1. Bend is pinned to **2.0.40** (and Lean 4.34.0 for `--verdict`). Before writing code, read `bend guide`,
    `bend base <name>` and the Base source (`~/.bend/bend2/base.bend`). A version bump goes in `NOTES.md`.
 2. Run the checker on every change; it takes a fraction of a second. `make check` before a commit that changes code.
 3. Every proof is real: no `@unsafe`, no `?TODO`, no axioms. A law that cannot be proved yet is recorded in `NOTES.md`
@@ -66,7 +66,7 @@ one-thread timings with `taskset -c 3`), 32 GB RAM, RTX 4050 6 GB.
 8. Public text (READMEs, `NOTES.md`, `docs/`) is written in Renan's first person singular: "I measured", never "we".
    This file stays in the third person.
 
-## Bend 2.0.39 pitfalls (paid for in bend-ml and llama.bend)
+## Bend 2.0.40 pitfalls (paid for in bend-ml and llama.bend)
 
 - A compiled program's runtime options go between `+RTS` and `-RTS` (since 2.0.38): `./x +RTS --threads 16 -RTS`, or
   `BENDRTS="--threads 1"` in the environment. A bare `./x --threads 16` passes `--threads 16` to the program and runs on

@@ -5,7 +5,7 @@
 <p align="center">
   <a href="https://github.com/nuxyel/BendTorch/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/nuxyel/BendTorch/ci.yml?branch=main&style=flat-square&label=ci&labelColor=4d4a44&color=7e9a5e" alt="CI"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-8b83b5?style=flat-square&labelColor=4d4a44" alt="MIT license"></a>
-  <a href="https://bend-lang.com"><img src="https://img.shields.io/badge/Bend-2.0.39-8b83b5?style=flat-square&labelColor=4d4a44" alt="Bend 2.0.39"></a>
+  <a href="https://bend-lang.com"><img src="https://img.shields.io/badge/Bend-2.0.40-8b83b5?style=flat-square&labelColor=4d4a44" alt="Bend 2.0.40"></a>
   <img src="https://img.shields.io/badge/laws%20proved-35-7e9a5e?style=flat-square&labelColor=4d4a44" alt="35 laws proved">
   <img src="https://img.shields.io/badge/planted%20bugs-167%2F167%20as%20expected-7e9a5e?style=flat-square&labelColor=4d4a44" alt="167 planted bugs, 167 as expected">
 </p>
@@ -25,7 +25,7 @@ training against PyTorch, not llama.bend's model; the plan after v1 is for llama
 layers, so that one implementation serves both.
 
 Early research code: the CPU and one CUDA GPU, F32 training, matrices only (higher ranks are folded into rows and
-columns). Bend **2.0.39**, MIT. On BendHub as `bendtorch` and three companion packages ([05 · Use it](#05--use-it)).
+columns). Bend **2.0.40**, MIT. On BendHub as `bendtorch` and three companion packages ([05 · Use it](#05--use-it)).
 
 <p align="center"><img src="docs/media/learning.webp" alt="The two-layer Llama in Bend 2: what it writes after 0 to 2,000 AdamW steps, and its training loss falling from 4.228 to 2.359 (a mean of 50 steps) next to PyTorch's twin" width="90%"></p>
 
@@ -180,14 +180,14 @@ against PyTorch's.
 
 ## 05 · Use it
 
-Four packages on BendHub, all at version 2.0.0.0. Import the files you need in your own Bend program:
+Four packages on BendHub, all at version 2.0.1.0. Import the files you need in your own Bend program:
 
 ```python
-import bendtorch@2.0.0.0/main.bend as T          # layers, combinators, losses, optimizers, Train
-import bendtorch@2.0.0.0/tensor.bend as TT       # general tensors: any rank, broadcasting, their gradients
-import bendtorch-fast@2.0.0.0/main.bend as F     # the same layers and bits, in parallel on the CPU
-import bendtorch-gpu@2.0.0.0/main.bend as G      # the layers on one CUDA GPU (all but GELUErf)
-import bendtorch-load@2.0.0.0/main.bend as L     # weights from flat binary and safetensors files, checkpoints
+import bendtorch@2.0.1.0/main.bend as T          # layers, combinators, losses, optimizers, Train
+import bendtorch@2.0.1.0/tensor.bend as TT       # general tensors: any rank, broadcasting, their gradients
+import bendtorch-fast@2.0.1.0/main.bend as F     # the same layers and bits, in parallel on the CPU
+import bendtorch-gpu@2.0.1.0/main.bend as G      # the layers on one CUDA GPU (all but GELUErf)
+import bendtorch-load@2.0.1.0/main.bend as L     # weights from flat binary and safetensors files, checkpoints
 ```
 
 `bendtorch` holds the laws and their proofs. The other three are outside the proofs on purpose: `-fast` and `-gpu` share
@@ -200,7 +200,7 @@ some inputs differently ([`docs/limitations.md`](docs/limitations.md)). [`torch/
 Linux x86_64, clang, Python 3.14, `curl`. The Python venv with PyTorch takes about 1.2 GB.
 
 ```bash
-make setup   # Bend 2.0.39 (SHA256-checked), Lean 4.34.0, the Python venv of reference/; no sudo
+make setup   # Bend 2.0.40 (SHA256-checked), Lean 4.34.0, the Python venv of reference/; no sudo
 make data    # MNIST and Tiny Shakespeare into data/, the twins' initial weights and batches (seed 0)
 make check   # the laws (--verdict), the rejected programs, every layer, the MLP, MNIST, the Llama and a SmolLM2-sized block against PyTorch (~2 min)
 make mutate  # the 167 deliberate faults

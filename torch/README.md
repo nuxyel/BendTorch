@@ -40,12 +40,12 @@ not meet, does not compile ([`tests/`](../tests/)). Layers are passed as templat
 time, so `Seq`, `Fork`, `Both` and `Residual` compose any layers whose types meet, with no closure called twice and no
 cost at run time.
 
-- Bend: **2.0.39** · License: MIT · Depends on `bend-ml-tensor-array@0.1.18.0` (the matrices and their products) and
+- Bend: **2.0.40** · License: MIT · Depends on `bend-ml-tensor-array@0.1.18.0` (the matrices and their products) and
   `bend-ml-nat-lemmas@0.1.2.0`.
 - `bend PROOF.bend --verdict` (from the repository's root) → `ALL PROOFS CHECK`, with no `@unsafe`, no `?TODO` and no
   axioms.
-- On BendHub as `bendtorch@2.0.0.0`: `import bendtorch@2.0.0.0/main.bend as T`, and
-  `import bendtorch@2.0.0.0/tensor.bend as TT` for the general tensors (below); `fast.bend`, `gpu.bend` and `load.bend`
+- On BendHub as `bendtorch@2.0.1.0`: `import bendtorch@2.0.1.0/main.bend as T`, and
+  `import bendtorch@2.0.1.0/tensor.bend as TT` for the general tensors (below); `fast.bend`, `gpu.bend` and `load.bend`
   are the packages `bendtorch-fast`, `bendtorch-gpu` and `bendtorch-load`. The programs in `demo/` import the local copy
   (`import ../torch/main.bend as T`).
 
@@ -196,7 +196,7 @@ import ../torch/load.bend as L
 #   layout : List<&2, L.Entry> = [L.Entry{"model.embed_tokens.weight", [49152, 576]}, ...]  (Layer.dump order)
 ```
 
-`load.bend` reads an exact-size little-endian F32 file with `bend-ml-binary-read@0.2.0.0` (BendHub), checks the byte
+`load.bend` reads an exact-size little-endian F32 file with `bend-ml-binary-read@0.2.0.1` (BendHub), checks the byte
 count and fills the model through its array cursor. MNIST and the tiny Llama each load `data/<demo>/init.bin`, written
 in `dump` order by their preparation scripts. The foreign C/JavaScript reader is a temporary loading-only exception: no
 file with laws imports it, and `make laws` pins its definitions outside the proofs. It is replaced when Bend gains

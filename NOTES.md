@@ -1912,3 +1912,88 @@ Six new laws and one rewritten, all by `--verdict`, about the code the demos exe
   `LLAMA_BEND` set (167 mutants, 167 as expected, none skipped: 164 caught, the 3 known equivalent ones survive),
   `make package CORE=bendtorch VERSION=2.0.0.0` over local copies. All passed; `bench/bits.txt` does not move. The
   READMEs import 2.0.0.0.
+
+## v2.0.0 on BendHub (2026-11-03)
+
+- Release PR #30, its full CI run green (163 mutants as expected, the 4 that need a CUDA device or SmolLM2's weights
+  skipped on the runner; all 167 ran here), merged as aa2d406, tagged v2.0.0.
+- Published from `build/packages/` (`make package CORE=bendtorch VERSION=2.0.0.0` at the tag): `bendtorch@2.0.0.0`
+  `0x9fcea48a66fe9c6efe7d054f27f7e989`, `bendtorch-fast@2.0.0.0` `0xa0b60eb85d843e953594a06d8990f25d`,
+  `bendtorch-gpu@2.0.0.0` `0x834e8b1233bf4139c7d28acb926bb23b`, `bendtorch-load@2.0.0.0`
+  `0xca731afb33db06f4eb255f46ef20dba3`: the core carries the configuration in the `Train`, the guard and Conv2d; `-gpu`
+  carries Conv2d's device lane.
+- From a clean folder importing the published packages: the core checks and `--verdict` passes; the satellites check
+  with the same defs outside the proofs as `torch/` (64, 135, 22; `-gpu` had 131 at 1.3.0); `fast_test` and `gpu_test`
+  print 0 on 1 and 16 threads; `test_infra` and `test_dtype` pass; the tiny Llama's `train 50` gives `bench/bits.txt`'s
+  digest on 1 and 16 threads. The check script stopped silently at first: a satellite's `--check-only` exits non-zero
+  (its `@unsafe` or foreign defs), and under `pipefail` that ended it before it compared the lists; it now reads the
+  list and ignores the status.
+- The GitHub release v2.0.0 carries the CHANGELOG's entry and these hashes.
+
+## CI runs what a change reads (2026-11-03)
+
+- Until now every push to `devel` ran `make check` and `make bits` (11 to 19 minutes on the runner) whatever it changed,
+  a pull request to `devel` ran nothing (#22 and #27 show no checks), and the mutants and the JavaScript lane ran only on
+  pull requests to `main` and every night. On 2026-11-03 two pushes that touched only `CHANGELOG.md` and `NOTES.md` each
+  started a run, and the release PR ran all 167 mutants again on code I had gated at 44c6b85.
+- `make check` is now one target per test (`check-cfg`, `check-ops`, ...), each building its demos as `build-<demo>`, a
+  pattern rule that builds again on every run and once per run; `check-rts` left `laws`, and `bits` builds its four
+  demos. `make check`'s output is the release run's line for line, but for the per-demo build lines and the
+  `rts_probe` timing.
+- `scripts/affected.py` (standard library only) picks the targets and mutants a change reads. It follows each target's
+  recipe and prerequisites, then each file's reads: a .bend file's relative imports and the paths in its strings, a
+  Python file's imports of its neighbours and the strings in its code (not its docstrings, which name files they only
+  describe), a shell script's code. A change to the Makefile reaches the targets whose rule, variables or prerequisites
+  changed; one that touches only comments needs nothing. The workflow, the selector, the setup and data scripts, and a
+  file nothing is seen to read call for every target. A mutant runs when its file changes, when what judges it changes
+  (the test program, the reference script, the twin, the oracle, the laws, the specification), or when it or its gate
+  is new or edited in `scripts/mutate.py`. `make affected` prints the same choice locally, with the release gates that
+  need this machine.
+- Its own checks run in CI before the choice (`make affected-check`): every mutant's text is in its file and its gate
+  is seen to read that file (167 of 167), every gate is a test a make target runs, the Makefile's diff and the comment
+  filter pass 9 planted edits, and a negative control: without .bend imports, 125 of the 167 mutants' files are not
+  seen by their gates, so the check can fail.
+- `scripts/mutate.py --only <file>` (`make mutate ONLY=<file>`) runs the mutants it names. tiny16 now builds the tiny
+  Llama it compares against from the unmutated code: it read `make check`'s binary, so it failed when mutate ran alone.
+  Three selected mutants from an empty `.scratch/`: 3 as expected, in 2 min 8 s.
+- The workflow: pushes and pull requests to `devel` run the selection. A push counts from the newest commit with a green
+  run whose tree is this one's or that is in its history (a cancelled or failed run's change runs again; a release's
+  merge into `main` needs nothing), a pull request from its base. Pull requests to `main`, Sundays (no longer every
+  night), a dispatch and `[full]` in a pushed commit's message run everything. The text rules, the self-check and the
+  choice run before any setup, so a documentation change should finish in about a minute.
+- Replayed over the 180 commits on `devel` since v1.0.0 with today's graph: 118 would run nothing (notes, READMEs,
+  docs, comments), 46 a selection (a median of one target and 15 mutants), 16 every target (Bend's pins, the
+  workflow, and old Makefile lines no target holds now). On my machine, with each target timed once, that is 923
+  minutes against 945 for the old push runs: about the same time in all, but two thirds of the commits wait for
+  nothing, and the rest run the mutants and the JavaScript lane they read, which pushes never ran. The loss: a code
+  change waits as long as before or longer (main.bend: every target, the JavaScript lane and its 102 mutants, about
+  26 minutes of them here; mutate.py's machinery: all 167 mutants, about 42 minutes).
+- A first version ran all 167 mutants whenever a file called for every target: 1179 minutes in the replay, more than
+  the old push runs, so a file every run reads now runs every target and leaves the mutants to their rule. Another kept
+  main.bend's 102 mutants for the full run when only main.bend changed (730 minutes); I dropped it: those 102 are most
+  of the mutants, and a change to main.bend that lets one of them survive (as `q_start` did in #27) should show on
+  its push, not on Sunday.
+- Limits: a file read through a path assembled at run time is not seen. If nothing else names it, it calls for every
+  target; if something does, the weekly run and the release are the net.
+- The first runs on the new workflow: #31's two, each every target, the JavaScript lane and all 167 mutants (it changed
+  the workflow and mutate.py's machinery), green in 59 and 58 minutes, the text rules, the self-check and the choice in
+  2 s of them. The merge's push to `devel` (5b48cd1) counted from 4209297, the newest commit with a green push run,
+  found through the API: the same choice, green in 38 minutes (167 mutants, 163 as expected and the 4 that need a CUDA
+  device or SmolLM2's weights skipped). This entry was the first documentation-only push: its run chose nothing and
+  took 31 seconds, checkout and text rules included.
+- The full tier by hand on `devel` (0931e99, a dispatch: everything, as the Sunday run and a release will): green in
+  58 minutes, `make check bits` 10, the 167 mutants 44 (163 as expected, the same 4 skipped), the JavaScript lane 4.
+
+## Bend 2.0.40 (2026-11-06)
+
+- The pin moves from 2.0.39 to 2.0.40: `scripts/setup.sh` (the two Linux SHA256 are the release's asset digests), the
+  CI step, the READMEs, CONTRIBUTING, CLAUDE.md and the docs that name the pin; dated numbers stay as measured.
+- `torch/load.bend` and the reader test move to `bend-ml-binary-read@0.2.0.1`. 2.0.40 removed the runtime's internal
+  pread binding that 0.2.0.0's JavaScript lane called (bendlang/bend#2063), and 0.2.0.1 reads through `fs` as Base
+  does; the C lane is the same. The published `bendtorch-load` 2.0.0.0 imports 0.2.0.0, so its JavaScript lane fails
+  on 2.0.40 until its next version.
+- Checks on 2.0.40 (a busy machine, so bits and pass/fail only): `make check bits gpu smol smol-gpu bits-smol reader`,
+  all green in 25 minutes; the reader's 22 reads around 2, 4 and 8 GiB and the 10,019 PyTorch BF16 numbers give the
+  file's bits through 0.2.0.1. The release notes fix none of CLAUDE.md's pitfalls.
+- Not run: `mutate-smol`, which stops at its AdamW mutant on devel whatever the Bend (its text is in torch/main.bend
+  three times since 860d12f, and the driver expects it once); a fix of the driver is its own change.
