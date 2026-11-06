@@ -17,8 +17,11 @@ and every output is `bench/bits.txt`'s.
   same code. `torch/load.bend` and the reader test import it.
 - **Checks on Bend 2.0.40**: laws, check, bits, corpus, gpu, smol, smol-gpu, bits-smol, reader and check-js, and every
   mutant in CI.
+- **CI** runs what a change reads on pushes and pull requests to `devel` (`make affected`, `scripts/affected.py`);
+  releases, Sundays and manual runs still run everything.
 - **Moving from 2.0.0**: the import lines only, `2.0.0.0` to `2.0.1.0` in all four packages; checkpoints read as before.
 
+## 2.0.0 (2026-11-03)
 
 A major release, with two changes. The optimizer configuration has one owner, the training state: until 1.3.0 a
 `Train` was made with one configuration and every step was given another, and the step's won; now `Train.new` takes the
