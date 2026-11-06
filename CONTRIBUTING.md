@@ -22,7 +22,7 @@ request myself. Bug reports, numbers from other machines, new layers, new laws a
 ## Setup and checks
 
 ```bash
-make setup   # the pinned Bend 2.0.39, Lean 4.34.0 and the Python venv of reference/
+make setup   # the pinned Bend 2.0.40, Lean 4.34.0 and the Python venv of reference/
 make data    # MNIST and Tiny Shakespeare (not committed), the twins' weights and batches
 make laws    # the proofs, by bend and again by --verdict; tests/bad_*.bend must be rejected with their expected error
 make check   # the laws, then every layer, the MLP, MNIST and the tiny Llama against PyTorch
@@ -38,7 +38,7 @@ and a pull request to `main` runs everything. A first-time contributor's run wai
 
 ## Rules for code
 
-- **Bend stays pinned to 2.0.39.** A version bump is its own change, with an entry in `NOTES.md`.
+- **Bend stays pinned to 2.0.40.** A version bump is its own change, with an entry in `NOTES.md`.
 - **Every proof is real.** No `@unsafe`, no `?TODO`, no axioms. A law that cannot be proved yet goes into an issue, not
   into `LAWS.bend`. The exceptions are three files outside the laws, each with its own package below: `torch/fast.bend`
   and `torch/gpu.bend` (Base's `@unsafe` `Array.fork`, inside bend-ml's packages) and `torch/load.bend` (foreign C and

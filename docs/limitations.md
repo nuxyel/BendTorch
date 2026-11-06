@@ -21,7 +21,7 @@ Numbers marked "busy machine" were taken with other jobs running and are a first
   parallel blocks through Base's `@unsafe` `Array.fork`/`Array.join`, which Bend's model does not describe. Nothing
   checks that two blocks never write the same cell; that is by construction, and the tests compare the bits with
   `main.bend`'s. No file with laws imports them; `make laws` pins the defs that reach `@unsafe` code.
-- Loading weights uses bend-ml-binary-read, foreign C and JavaScript, because Bend 2.0.39 reads files only as byte lists.
+- Loading weights uses bend-ml-binary-read, foreign C and JavaScript, because Bend 2.0.40 still reads files only as byte lists.
   It is temporary, and only loading code imports it.
 
 ## Numerics: where the results differ from PyTorch
