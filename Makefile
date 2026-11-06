@@ -3,7 +3,7 @@ export BEND_NO_TELEMETRY := 1
 export PATH := $(HOME)/.bend/bin:$(HOME)/.elan/bin:$(PATH)
 PY := reference/.venv/bin/python
 DEMOS := mlp_test ops_test mnist tiny_llama tiny_rt tensor_test imap_check fast_test gpu_test gpu_layers_test depth_check smol_block infra_test dtype_test tiny_mixed reader_test safetensors_test tiny_bf16opt loop_test fullattn_test fullattn_lane cfg_test conv2d_probe im2col_probe
-# torch/load.bend's defs that reach the foreign binary reader (bend-ml-binary-read@0.2.0.0): the list may change only on purpose
+# torch/load.bend's defs that reach the foreign binary reader (bend-ml-binary-read@0.2.0.1): the list may change only on purpose
 LOAD_DEFS := read_go read_sized read read_f32_at read_bf16_at size weights train_read train St.read St.then St.fill tensors_from tensors piece safetensors
 # torch/gpu.bend's defs that rely on bend-ml-tensor-gpu's @unsafe Array.fork (its leaves do not: they are plain Bend)
 GPU_DEFS := lin_fwd lin_b2 lin_bwd Mat.dup Mat.sum2 silu_f silu_b SiLU mul2_f mul2_b Mul2 add2_f Add2 Residual opt_mat mat_step lin_step2 lin_step LinearF linf_bwd LinearFirstF lnb_b2 LinearNBF rms_f rms_b2 rms_b RMSNorm gn_f gn_b2 gn_b ln_step2 ln_step GroupNorm rope_go2 rope_go RoPE af2 af1 af0 attn_f ab3 ab2 ab1 attn_b af2_f af1_f af0_f attn_f_f ab3_f ab2_f ab1_f attn_b_f Attention FullAttention mse_go MSE emb_f2 emb_f emb_b2 emb_bwd Embedding cx_4 cx_3 cx_2 cx_1 CrossEntropy im2col col2im conv_b2 Conv2d Linear LinearFirst LinearNB

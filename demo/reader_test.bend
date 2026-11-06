@@ -1,4 +1,4 @@
-# The weights reader past 4 GiB and on BF16 files (bend-ml-binary-read@0.2.0.0, torch/load.bend), driven by
+# The weights reader past 4 GiB and on BF16 files (bend-ml-binary-read@0.2.0.1, torch/load.bend), driven by
 # reference/test_reader.py, which writes the files and knows every expected bit. Offsets are decimal byte counts of up
 # to 19 digits, read with torch/load.bend's W64.read.
 #
@@ -16,7 +16,7 @@
 import Base
 import ../torch/main.bend as T
 import ../torch/load.bend as L
-import bend-ml-binary-read@0.2.0.0/main.bend as R
+import bend-ml-binary-read@0.2.0.1/main.bend as R
 
 # " b_0 b_1 .. b_i" (the cells' bits in decimal), built from the end so each step only prepends
 def dump(k: Nat, r: Array<F32> & F32, +i: U32, acc: String) -> String:

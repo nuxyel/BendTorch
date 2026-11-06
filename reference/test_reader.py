@@ -1,4 +1,4 @@
-"""The weights reader past 4 GiB and on BF16 files (bend-ml-binary-read@0.2.0.0, torch/load.bend), through demo/reader_test.bend.
+"""The weights reader past 4 GiB and on BF16 files (bend-ml-binary-read@0.2.0.1, torch/load.bend), through demo/reader_test.bend.
 
   (a) F32 and BF16 numbers at offsets just below and above 2^31, 2^32 and 2^33 of a sparse file of 8 GiB + 6 bytes
       (only a few pages are written), a read cut short by the end of the file, a read past it, a hole, the file's size;
