@@ -5,7 +5,20 @@ the packages are or in how they are used, MINOR for a new capability, PATCH for 
 four BendHub packages (`bendtorch`, `bendtorch-fast`, `bendtorch-gpu`, `bendtorch-load`) carry the release's number
 with a fourth digit (`2.0.0.0`). The engineering log behind each entry, measurement by measurement, is `NOTES.md`.
 
-## 2.0.0 (2026-11-03)
+## 2.0.1 (2026-11-06)
+
+A patch release: Bend 2.0.40, and the weights reader on bend-ml-binary-read 0.2.0.1. No layer, law or API changes,
+and every output is `bench/bits.txt`'s.
+
+- **Bend 2.0.40.** The pin moves from 2.0.39; `make setup` installs it, checked by SHA256.
+- **The reader on bend-ml-binary-read 0.2.0.1.** Bend 2.0.40 removed a runtime binding that binary-read 0.2.0.0's
+  JavaScript lane called (bendlang/bend#2063), so on 2.0.40 its reads fail there with `sys.pread is not a function`,
+  and `bendtorch-load@2.0.0.0` imports 0.2.0.0. 0.2.0.1 reads through `fs`, as Base's own reads do; the C lane is the
+  same code. `torch/load.bend` and the reader test import it.
+- **Checks on Bend 2.0.40**: laws, check, bits, corpus, gpu, smol, smol-gpu, bits-smol, reader and check-js, and every
+  mutant in CI.
+- **Moving from 2.0.0**: the import lines only, `2.0.0.0` to `2.0.1.0` in all four packages; checkpoints read as before.
+
 
 A major release, with two changes. The optimizer configuration has one owner, the training state: until 1.3.0 a
 `Train` was made with one configuration and every step was given another, and the step's won; now `Train.new` takes the
