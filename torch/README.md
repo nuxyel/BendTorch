@@ -40,7 +40,7 @@ not meet, does not compile ([`tests/`](../tests/)). Layers are passed as templat
 time, so `Seq`, `Fork`, `Both` and `Residual` compose any layers whose types meet, with no closure called twice and no
 cost at run time.
 
-- Bend: **2.0.40** · License: MIT · Depends on `bend-ml-tensor-array@0.1.18.0` (the matrices and their products) and
+- Bend: **2.0.40** · License: MIT · Depends on `bend-ml-tensor-array@0.1.20.0` (the matrices and their products) and
   `bend-ml-nat-lemmas@0.1.2.0`.
 - `bend PROOF.bend --verdict` (from the repository's root) → `ALL PROOFS CHECK`, with no `@unsafe`, no `?TODO` and no
   axioms.
@@ -242,7 +242,7 @@ A model is a layer. Its types are written once, in small defs, and the layers ar
 ```python
 import Base
 import ../torch/main.bend as T
-import bend-ml-tensor-array@0.1.14.0/main.bend as TA
+import bend-ml-tensor-array@0.1.20.0/main.bend as TA
 
 # Linear(784, 128) -> ReLU on batches of 100 rows
 def Hidden() -> T.Layer<T.Two<T.Lin<784n, 128n>, Unit>, TA.Mat<100n, 784n>, TA.Mat<100n, 128n>, T.Two<TA.Mat<100n, 784n>, TA.Mat<100n, 128n>>>:
