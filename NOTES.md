@@ -2052,3 +2052,19 @@ Six new laws and one rewritten, all by `--verdict`, about the code the demos exe
   (8.58x PyTorch F32's distance from float64; 7.16x and 7.92x in the others), as on 2026-10-24 (8.51x in one round of
   three). Over three nights it fails two rounds of nine. 132 of their 163 cells are within 5% of 2026-10-24's; the
   largest moves are 16-thread cells and Flux.jl's and Lux.jl's GPU block, which swing by 2x within the night.
+
+## v2.0.2 on BendHub (2026-11-07)
+
+- Release PR #38, its full CI run green (57 min), merged as be3d1ba, tagged v2.0.2.
+- Gates on Bend 2.0.40: `make check bits gpu smol smol-gpu bits-smol reader mutate-smol` at b725924 (the package move,
+  above); `make corpus check-js` at 9c55899, whose code is b725924's (corpus sha256 a9b9fa1cffdef55c, 1.3.0's, the same
+  bits on 1 and 16 threads); `make package CORE=bendtorch VERSION=2.0.2.0`, every package test green.
+- Published from `build/packages/` at the tag's content: `bendtorch@2.0.2.0` `0x126b6a38011ee25cff0be3f38ba4be79`,
+  `bendtorch-fast@2.0.2.0` `0x3887e0154e90fde4cd50297e70c0c4a3`, `bendtorch-gpu@2.0.2.0`
+  `0xa28f5e4637d47d1d04bb2a054051fa0b`, `bendtorch-load@2.0.2.0` `0x1ca41758012c9b3d91a53720cdf95521`. Each published on
+  the first try.
+- From a clean folder importing the published packages, on Bend 2.0.40: `demo/reader_test.bend` over
+  `bendtorch-load@2.0.2.0` passes `reference/test_reader.py` on the C lane and on the JavaScript lane;
+  `demo/fast_test.bend` over `bendtorch-fast@2.0.2.0` prints its fifteen zeros on 1 and 16 threads, and
+  `demo/gpu_test.bend` over `bendtorch-gpu@2.0.2.0` its eight on 1 and 16 CPU threads.
+- The GitHub release v2.0.2 carries the CHANGELOG's entry and these hashes.
