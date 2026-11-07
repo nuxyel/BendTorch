@@ -2030,3 +2030,25 @@ Six new laws and one rewritten, all by `--verdict`, about the code the demos exe
   morning); tensor-gpu 0.1.5.x's code is 0.1.5.0's. The products keep their bits.
 - Gates on a busy machine (bits and pass/fail only): `make check bits` (the laws, every test, `bench/bits.txt`'s
   outputs identical), `make gpu`, `smol`, `smol-gpu`, `bits-smol`, `reader`, and `make mutate-smol` (6 of 6 as expected).
+
+## Idle round on Bend 2.0.40 (2026-11-07)
+
+- **What.** The 2026-10-24 idle round again, on 2.0.40 and commit b725924 (bend-ml-tensor-array 0.1.20.0,
+  -tensor-fork 0.1.7.1, -tensor-gpu 0.1.5.2): the same cases, 5 rounds (SmolLM2: 3) for BendTorch against PyTorch and
+  3 for the eleven other systems, alternated, 3 h 13 min overnight with nothing else running. `BENCHMARK.md` and the
+  README's speed table now carry it. Every output on the CPU is the same bits as before (MNIST's loss 0.5148658 and
+  9,108 hits, the tiny Llama's 364 numbers, the block's and SmolLM2's losses), and on the GPU MNIST's and the tiny
+  Llama's. The block's first loss on the GPU moved by 1 ulp, onto the CPU's bits: on 2026-10-24 it was 1059735630
+  against the CPU's 1059735631 (CUDA's float `exp`), and now all four of its losses are the CPU's. I have not looked
+  at which change moved it.
+- **What changed for BendTorch.** SmolLM2-135M on 16 threads 4.3 s to 3.3 s a step (-25%); the block 140 to 123 ms on
+  16 threads (-12%) and 205 to 189 ms on the GPU (-8%); MNIST 1.3 s to 1.1 s an epoch on 16 threads and 1.7 s to 1.6 s
+  on one (0.1 s resolution); the tiny Llama at most 0.75 ms a step on one thread, 0.85 on 16 and 82 ms on the GPU (0.8,
+  1.0 and 84 before). One thread on the block and on SmolLM2 did not move (659 to 660 ms, +0.2%; 14.2 s to 14.3 s,
+  +0.7%). Bend and the code both changed between the two rounds: attention's key/value groups and the parallel zeros
+  (2026-10-25), and the tensor packages from 0.1.14.0, 0.1.2.0 and 0.1.2.1. So these numbers do not say which one gave
+  what; the 2026-10-25 change alone was -14% on SmolLM2's 16 threads.
+- **The other systems** gave the same verdicts but one: torch.compile on the GPU in W2 failed one round of three
+  (8.58x PyTorch F32's distance from float64; 7.16x and 7.92x in the others), as on 2026-10-24 (8.51x in one round of
+  three). Over three nights it fails two rounds of nine. 132 of their 163 cells are within 5% of 2026-10-24's; the
+  largest moves are 16-thread cells and Flux.jl's and Lux.jl's GPU block, which swing by 2x within the night.
