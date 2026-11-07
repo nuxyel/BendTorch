@@ -2093,3 +2093,130 @@ behaviour is now a law), the adjoint is a reindexing of one sum,
 of the image picks each slot's term exactly once. For `s = k` that last one is a bijection and the decode gives it;
 for overlapping windows it is the fiber sum, which needs `Nat` equality reasoning the codebase does not have yet.
 That is the work, and it is a piece of its own rather than an afternoon's extension of tonight's lemma.
+
+## Bend 2.0.40 (2026-11-06)
+
+- The pin moves from 2.0.39 to 2.0.40: `scripts/setup.sh` (the two Linux SHA256 are the release's asset digests), the
+  CI step, the READMEs, CONTRIBUTING, CLAUDE.md and the docs that name the pin; dated numbers stay as measured.
+- `torch/load.bend` and the reader test move to `bend-ml-binary-read@0.2.0.1`. 2.0.40 removed the runtime's internal
+  pread binding that 0.2.0.0's JavaScript lane called (bendlang/bend#2063), and 0.2.0.1 reads through `fs` as Base
+  does; the C lane is the same. The published `bendtorch-load` 2.0.0.0 imports 0.2.0.0, so its JavaScript lane fails
+  on 2.0.40 until its next version.
+- Checks on 2.0.40 (a busy machine, so bits and pass/fail only): `make check bits gpu smol smol-gpu bits-smol reader`,
+  all green in 25 minutes; the reader's 22 reads around 2, 4 and 8 GiB and the 10,019 PyTorch BF16 numbers give the
+  file's bits through 0.2.0.1. The release notes fix none of CLAUDE.md's pitfalls.
+- Not run: `mutate-smol`, which stops at its AdamW mutant on devel whatever the Bend (its text is in torch/main.bend
+  three times since 860d12f, and the driver expects it once); a fix of the driver is its own change.
+
+## v2.0.1 on BendHub (2026-11-06)
+
+- Release PR #35, its full CI run green (44 min), merged as 79e22e0, tagged v2.0.1.
+- Published from `build/packages/` (`make package CORE=bendtorch VERSION=2.0.1.0` at the tag's content, every package
+  test green): `bendtorch@2.0.1.0` `0x9fcea48a66fe9c6efe7d054f27f7e989` (the core's files are 2.0.0.0's byte for byte,
+  so the same hash; the first try got an empty answer from the hub, the second published it), `bendtorch-fast@2.0.1.0`
+  `0x1737fb8027ec4c219faeb92b75d3287d`, `bendtorch-gpu@2.0.1.0` `0xe81f3454e006e753846e13041c7f754a`,
+  `bendtorch-load@2.0.1.0` `0xc277e4bbef36b2eb02a5c715f7375deb` (on binary-read 0.2.0.1).
+- From a clean folder importing the published packages, on Bend 2.0.40: `demo/reader_test.bend` over
+  `bendtorch-load@2.0.1.0` passes `reference/test_reader.py` on the C lane and on the JavaScript lane, the one 2.0.0.0
+  fails on 2.0.40; `demo/fast_test.bend` over `bendtorch-fast@2.0.1.0` prints its fifteen zeros on 1 and 16 threads.
+- The GitHub release v2.0.1 carries the CHANGELOG's entry and these hashes.
+
+## mutate-smol runs again (2026-11-06)
+
+- `scripts/mutate_smol.py` stopped at its fourth mutant ("AdamW: no weight decay") since 860d12f (CAdamWBF16,
+  2026-10-21): it asserted `adam_decay(dec, lr, wd, x)` is in `torch/main.bend` once, and `adam_l`, `adamh_l` and
+  `adamhv_l` (the BF16 moments) each call it. A mutant may now give how many times its text is there (1 unless given),
+  every one is mutated, and the AdamW mutant says 3: "no weight decay" drops it from all three loops.
+- `make mutate-smol` on devel (Bend 2.0.40): the control passes and 6 mutants, 6 as expected (three caught, the three
+  that survive at this scale with their reason).
+
+## tensor-array 0.1.20.0, tensor-fork 0.1.7.1, tensor-gpu 0.1.5.2 (2026-11-06)
+
+- Every import moves from tensor-array 0.1.18.0 (0.1.14.0 in torch/README's example), tensor-fork 0.1.5.0 and
+  tensor-gpu 0.1.5.0 to the versions bend-ml published the same day, which take the same `Mat` again. What changed
+  under BendTorch: tensor-array 0.1.19.0's Array laws and its two faster defs (the dot product unrolled by four,
+  `Mat.to_list` without a reverse), 0.1.20.0's law `matvec_l_len` (only lines added); tensor-fork 0.1.6.0's
+  `softmax_ce` and 0.1.7.x's cells read with `Array.get_unchecked`, which needs Bend 2.0.40 (the pin since this
+  morning); tensor-gpu 0.1.5.x's code is 0.1.5.0's. The products keep their bits.
+- Gates on a busy machine (bits and pass/fail only): `make check bits` (the laws, every test, `bench/bits.txt`'s
+  outputs identical), `make gpu`, `smol`, `smol-gpu`, `bits-smol`, `reader`, and `make mutate-smol` (6 of 6 as expected).
+
+## Idle round on Bend 2.0.40 (2026-11-07)
+
+- **What.** The 2026-10-24 idle round again, on 2.0.40 and commit b725924 (bend-ml-tensor-array 0.1.20.0,
+  -tensor-fork 0.1.7.1, -tensor-gpu 0.1.5.2): the same cases, 5 rounds (SmolLM2: 3) for BendTorch against PyTorch and
+  3 for the eleven other systems, alternated, 3 h 13 min overnight with nothing else running. `BENCHMARK.md` and the
+  README's speed table now carry it. Every output on the CPU is the same bits as before (MNIST's loss 0.5148658 and
+  9,108 hits, the tiny Llama's 364 numbers, the block's and SmolLM2's losses), and on the GPU MNIST's and the tiny
+  Llama's. The block's first loss on the GPU moved by 1 ulp, onto the CPU's bits: on 2026-10-24 it was 1059735630
+  against the CPU's 1059735631 (CUDA's float `exp`), and now all four of its losses are the CPU's. I have not looked
+  at which change moved it.
+- **What changed for BendTorch.** SmolLM2-135M on 16 threads 4.3 s to 3.3 s a step (-25%); the block 140 to 123 ms on
+  16 threads (-12%) and 205 to 189 ms on the GPU (-8%); MNIST 1.3 s to 1.1 s an epoch on 16 threads and 1.7 s to 1.6 s
+  on one (0.1 s resolution); the tiny Llama at most 0.75 ms a step on one thread, 0.85 on 16 and 82 ms on the GPU (0.8,
+  1.0 and 84 before). One thread on the block and on SmolLM2 did not move (659 to 660 ms, +0.2%; 14.2 s to 14.3 s,
+  +0.7%). Bend and the code both changed between the two rounds: attention's key/value groups and the parallel zeros
+  (2026-10-25), and the tensor packages from 0.1.14.0, 0.1.2.0 and 0.1.2.1. So these numbers do not say which one gave
+  what; the 2026-10-25 change alone was -14% on SmolLM2's 16 threads.
+- **The other systems** gave the same verdicts but one: torch.compile on the GPU in W2 failed one round of three
+  (8.58x PyTorch F32's distance from float64; 7.16x and 7.92x in the others), as on 2026-10-24 (8.51x in one round of
+  three). Over three nights it fails two rounds of nine. 132 of their 163 cells are within 5% of 2026-10-24's; the
+  largest moves are 16-thread cells and Flux.jl's and Lux.jl's GPU block, which swing by 2x within the night.
+
+## v2.0.2 on BendHub (2026-11-07)
+
+- Release PR #38, its full CI run green (57 min), merged as be3d1ba, tagged v2.0.2.
+- Gates on Bend 2.0.40: `make check bits gpu smol smol-gpu bits-smol reader mutate-smol` at b725924 (the package move,
+  above); `make corpus check-js` at 9c55899, whose code is b725924's (corpus sha256 a9b9fa1cffdef55c, 1.3.0's, the same
+  bits on 1 and 16 threads); `make package CORE=bendtorch VERSION=2.0.2.0`, every package test green.
+- Published from `build/packages/` at the tag's content: `bendtorch@2.0.2.0` `0x126b6a38011ee25cff0be3f38ba4be79`,
+  `bendtorch-fast@2.0.2.0` `0x3887e0154e90fde4cd50297e70c0c4a3`, `bendtorch-gpu@2.0.2.0`
+  `0xa28f5e4637d47d1d04bb2a054051fa0b`, `bendtorch-load@2.0.2.0` `0x1ca41758012c9b3d91a53720cdf95521`. Each published on
+  the first try.
+- From a clean folder importing the published packages, on Bend 2.0.40: `demo/reader_test.bend` over
+  `bendtorch-load@2.0.2.0` passes `reference/test_reader.py` on the C lane and on the JavaScript lane;
+  `demo/fast_test.bend` over `bendtorch-fast@2.0.2.0` prints its fifteen zeros on 1 and 16 threads, and
+  `demo/gpu_test.bend` over `bendtorch-gpu@2.0.2.0` its eight on 1 and 16 CPU threads.
+- The GitHub release v2.0.2 carries the CHANGELOG's entry and these hashes.
+
+## GELUErf on the GPU lane, GroupNorm on the parallel lane (2026-11-01)
+
+- `torch/gpu.bend`'s `GELUErf`: SiLU's two element-wise bangs with `main.bend`'s `gelu_erf_v` and `gelu_erf_d` as their
+  leaves, so every number is `main.bend`'s expression. Its three defs that reach tensor-gpu are in `GPU_DEFS`.
+- `demo/gpu_layers_test.bend` cases 16 and 17: y and dx apart, at SiLU's 512 x 1536, inputs in [-6, 6) so that
+  `erf(x / sqrt 2)` reaches every piece. 0 ulps on 1 and 16 CPU threads. On the RTX 4050 y is 0, so `erf` in plain F32
+  arithmetic gives the host's bits on CUDA too (the comment in `main.bend` said that was not checked yet); dx is 113
+  ulps off, through CUDA's float `exp` in the pdf: with `exp_cr` in its place it is 0, as all 18 cases are. 113 is far
+  above SiLU's 4, so `make gpu` bounds y at 0 and lets dx through to the `exp_cr` check, as it does for attention.
+- `torch/fast.bend`'s `GroupNorm`, `main.bend`'s types and names, with `main.bend`'s block code (`gnf_grp`, `gnb_grp`)
+  in tensor-fork blocks. Forward: ranges of the n·ng (image, group) blocks, each writing only its own cells of y.
+  Backward: ranges of groups, each running its group's blocks image by image, so a range writes only its columns of dx
+  and its channels of dg and db, and each channel's terms are added in `main.bend`'s order from +0.0. A backward block
+  needs six arrays and `par4` shares four, so g, dg and db travel in one array of 3c; each range copies g out, works on
+  its own zeroed dg and db and copies its channels back. The step is this file's `opt_mat` on the two `1 x c`
+  matrices. At most `ew_depth`'s blocks, and no more than there are blocks or groups; a range with no work returns
+  its arrays unchanged.
+- `demo/fast_test.bend`: 8 images of 256 pixels in 8 groups of 16 (16 forward ranges, 8 backward), 4 of 1024 in 3
+  groups of 16 (ranges with no work in both passes), 3 of 5 in 3 groups of 2 (one range), with gradients that are not
+  zero, and the AdamW step on the gain and the bias. Its inputs leave out the specials: one NaN in a block makes the
+  whole block NaN on both sides and hides the rest. 19 zeros on 1 and 16 threads and in JavaScript; the Makefile,
+  `check_js.sh`, `package.sh` and `mutate.py` expect 19.
+- Seven mutants, each first checked to build and to move the numbers: on the fast lane a forward block taking its
+  group's number as its image, every backward group on the first group's channels, a backward range starting at
+  channel i0, dg copied back over g, and the gain's and bias's optimizer states swapped; on the device lane GELUErf's
+  forward in the tanh form and its backward with SiLU's derivative. `make mutate`: 156 mutants.
+- `fast.bend` still has no GELU of either form, so a program using `GELUErf` cannot move between the parallel and GPU
+  lanes by its import line alone.
+- Gates on this branch (busy machine; no timing taken): laws, check, bits, gpu (SiLU 4, cross-entropy 4, attention
+  176,128, small 7,680, full 172,032, full small 8,192, GELUErf's dx 113; all 18 cases 0 with `exp_cr`), check-js,
+  mutate (156 of 156 as expected, none skipped). Not merged until #22 is rebased and in: it touches `gpu.bend`, the
+  Makefile's `GPU_DEFS` and `gpu_layers_test` too, and its counts move with these.
+- Rebased on devel at 2.0.1 with tensor-array 0.1.20.0 (2026-11-06): devel had added Conv2d as `gpu_layers_test`'s
+  case 16, so GELUErf's y and dx are cases 17 and 18 and the test prints 19 numbers (`make gpu` holds y and Conv2d at 0
+  and lets dx through to the `exp_cr` check); `GPU_DEFS` has Conv2d's defs and GELUErf's; `fast_test` prints 19 zeros
+  as above; `make mutate` has devel's 167 and these seven, 174. The published `bendtorch-gpu@2.0.1.0` has no GELUErf, so
+  the README keeps "all but GELUErf" on its import line until the next release.
+- Gates after the rebase (Bend 2.0.40, busy machine): `make check bits` (every output identical), `make gpu` (SiLU 4
+  ulps, cross-entropy 4, attention 176,128, small 7,680, full 172,032, full small 8,192, GELUErf's dx 113; all 19 cases
+  0 with `exp_cr`), `reader`, `smol`, `smol-gpu`, `bits-smol`, `check-js`, and `make mutate`: 174 of 174 as expected
+  (171 caught, the 3 that survive by design), 44 minutes.

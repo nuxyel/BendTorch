@@ -10,11 +10,16 @@ step of SmolLM2-1.7B against PyTorch alone (W6).
 
 - Intel Core Ultra 7 155H (6 performance cores, 22 threads), 32 GB, NVIDIA RTX 4050 Laptop GPU 6 GB (driver 615.78.08),
   Linux 7.2.8, on AC power with the performance profile.
-- Bend 2.0.39 (BendTorch at commit 92f0486), clang 23.1.3, Python 3.14.8, PyTorch 2.14.1.
-- One idle round on 2026-10-24 (3 h 13 min, nothing else running): every case 5 times for BendTorch against PyTorch (SmolLM2-135M:
+- Bend 2.0.40 (BendTorch at commit b725924, on bend-ml-tensor-array 0.1.20.0 and bend-ml-tensor-fork 0.1.7.1), clang
+  23.1.3, Python 3.14.8, PyTorch 2.14.1.
+- One idle round on 2026-11-07 (3 h 13 min, nothing else running): every case 5 times for BendTorch against PyTorch (SmolLM2-135M:
   3) and 3 times for the eleven systems, in alternated rounds (even rounds run each group in reverse order). The SmolLM2-135M
-  step on one CPU thread ran once per system (marked ¹), because it alone took 44 minutes a round. The first full round,
-  on 2026-10-18 with Bend 2.0.37, gave the same verdicts and, for the other systems, the same times within a few percent.
+  step on one CPU thread ran once per system (marked ¹), because it alone took 44 minutes a round. The rounds before,
+  on 2026-10-18 (Bend 2.0.37) and 2026-10-24 (Bend 2.0.39, commit 92f0486), gave the same verdicts but one (torch.compile
+  on the GPU in W2, below). 132 of the other systems' 163 cells are within 5% of 2026-10-24's; the largest moves are
+  16-thread cells (PyTorch eager and torch.compile in W2) and Flux.jl's and Lux.jl's GPU block in W3, which swing by 2x
+  or more within one night. BendTorch's own cells moved with both Bend and its code: what changed is in the README's
+  speed section.
 - "1 thread" is pinned to one performance core (`taskset -c 3`) with every library's thread count set to 1; "16
   threads" is unpinned with every count set to 16. "GPU" runs the model on the RTX 4050.
 - Each cell is the median of the rounds, in ms per batch (MNIST) or per training step, from the program's own clock
@@ -36,18 +41,18 @@ PyTorch eager on one CPU thread, in F32, is the reference, and the rule is BendT
 
 | system | 1 thread | 16 threads | GPU | losses |
 |---|---:|---:|---:|---|
-| **BendTorch** | 2.83 | 2.17 | 14.3 | pass: loss 0.5148658 as PyTorch's, 9,108 hits as PyTorch's |
-| PyTorch 2.14.1, eager | 0.61 | 0.83 | 0.40 | pass: RMS 0.01-1.00x |
-| torch.compile (PyTorch 2.14.1) | 0.67 | 0.52 | 0.50 | pass: RMS 0.01-1.00x |
-| JAX 0.11.2 + optax 0.2.8 | 0.39 | 0.30 | 0.05 | pass: RMS 0.01-1.00x |
-| tinygrad 0.14.0 | 3.91 | 3.79 | 2.16 | pass: RMS 0.02-1.00x |
-| TensorFlow 2.21.0 / Keras 3.15.1 | 0.60 | 0.67 | 0.30 | pass: RMS 0.01-1.00x |
-| candle 0.11.0 | 0.79 | 0.61 | 0.40 | pass: RMS 0.01-1.00x |
-| burn 0.22.0 | 0.66 | 0.65 | 3.63 | CPU pass 1.00x; GPU fail 82x (its F32 matmuls run as TF32) |
+| **BendTorch** | 2.67 | 1.83 | 14.0 | pass: loss 0.5148658 as PyTorch's, 9,108 hits as PyTorch's |
+| PyTorch 2.14.1, eager | 0.61 | 0.49 | 0.41 | pass: RMS 0.01-1.00x |
+| torch.compile (PyTorch 2.14.1) | 0.67 | 0.53 | 0.49 | pass: RMS 0.01-1.00x |
+| JAX 0.11.2 + optax 0.2.8 | 0.39 | 0.29 | 0.05 | pass: RMS 0.01-1.00x |
+| tinygrad 0.14.0 | 3.79 | 3.75 | 2.16 | pass: RMS 0.02-1.00x |
+| TensorFlow 2.21.0 / Keras 3.15.1 | 0.59 | 0.68 | 0.30 | pass: RMS 0.01-1.00x |
+| candle 0.11.0 | 0.80 | 0.60 | 0.40 | pass: RMS 0.01-1.00x |
+| burn 0.22.0 | 0.65 | 0.64 | 3.64 | CPU pass 1.00x; GPU fail 82x (its F32 matmuls run as TF32) |
 | burn 0.22.0, TF32 off (patched) | - | - | 3.65 | pass: RMS 1.00x |
-| dfdx 0.13.0 | 0.77 | 0.59 | 0.22 | pass: RMS 0.01-0.02x |
-| Flux.jl 0.16.12 | 0.57 | 2.21 | 0.29 | pass: RMS 0.01-1.00x |
-| Lux.jl 1.31.4 | 0.75 | 2.62 | 0.31 | pass: RMS 0.01-1.00x |
+| dfdx 0.13.0 | 0.76 | 0.59 | 0.22 | pass: RMS 0.01-0.02x |
+| Flux.jl 0.16.12 | 0.55 | 1.67 | 0.29 | pass: RMS 0.01-1.00x |
+| Lux.jl 1.31.4 | 0.73 | 3.39 | 0.31 | pass: RMS 0.01-1.00x |
 
 llm.c has no MLP path. BendTorch's clock covers all 600 batches at a resolution of 0.1 s (the others: batches
 51-600). The losses of the other systems were judged on the last 189-190 steps their logs kept, and in full in the
@@ -57,49 +62,50 @@ preparation runs, with the same verdicts.
 
 | system | 1 thread | 16 threads | GPU | losses |
 |---|---:|---:|---:|---|
-| **BendTorch** | ≤ 0.80 | ≤ 1.00 | ≤ 84.3 | pass: RMS 0.49x, the same bits on 1 and 16 threads and on the GPU |
-| PyTorch 2.14.1, eager | 2.74 | 7.43 | 5.14 | pass: RMS 0.74-1.00x |
-| torch.compile (PyTorch 2.14.1) | 0.78 | 0.86 | 1.80 | CPU fail 10.15x; GPU 7.13-8.51x, a fail in one of six rounds over two nights |
-| JAX 0.11.2 + optax 0.2.8 | 0.32 | 0.22 | 0.32 | fail: RMS 10.12-10.16x |
-| tinygrad 0.14.0 | 8.06 | 8.29 | 3.04 | fail: RMS 10.58-10.64x |
-| TensorFlow 2.21.0 / Keras 3.15.1 | 0.88 | 1.24 | 3.16 | fail: RMS 18.52-18.54x |
-| TensorFlow, AdamW in PyTorch's order (mine) | 0.85 | 1.21 | 2.35 | pass: RMS 0.51-2.91x |
-| candle 0.11.0 | 0.54 | 0.54 | 4.49 | pass: RMS 0.75-1.28x |
-| burn 0.22.0 | 0.69 | 0.68 | 65.5 | fail: RMS 9.09-14.43x |
-| burn 0.22.0, TF32 off (patched) | - | - | 68.2 | fail: RMS 9.10x |
-| dfdx 0.13.0 (wrong gradients) | 0.34 | 0.34 | 1.91 | fail: RMS 19.24-23.80x |
-| dfdx 0.13.0 with workarounds (mine) | 0.34 | 0.35 | 1.87 | CPU fail 9.05x; GPU pass 6.66x |
-| Flux.jl 0.16.12 | 0.93 | 1.17 | 4.62 | fail: RMS 9.46-9.57x |
-| Flux.jl, AdamW in PyTorch's order (mine) | 1.40 | 0.97 | 4.73 | pass: RMS 0.94-2.46x |
-| Lux.jl 1.31.4 | 1.11 | 1.27 | 4.31 | fail: RMS 9.46-9.48x |
-| Lux.jl, AdamW in PyTorch's order (mine) | 1.06 | 1.10 | 4.41 | pass: RMS 0.72-2.46x |
+| **BendTorch** | ≤ 0.75 | ≤ 0.85 | ≤ 81.8 | pass: RMS 0.49x, the same bits on 1 and 16 threads and on the GPU |
+| PyTorch 2.14.1, eager | 2.76 | 3.71 | 5.20 | pass: RMS 0.74-1.00x |
+| torch.compile (PyTorch 2.14.1) | 0.78 | 3.80 | 1.79 | CPU fail 10.15x; GPU 7.13-8.58x, a fail in two of nine rounds over three nights |
+| JAX 0.11.2 + optax 0.2.8 | 0.31 | 0.24 | 0.32 | fail: RMS 10.08-10.16x |
+| tinygrad 0.14.0 | 8.21 | 8.27 | 3.04 | fail: RMS 10.58-10.64x |
+| TensorFlow 2.21.0 / Keras 3.15.1 | 0.85 | 1.27 | 3.01 | fail: RMS 18.52-18.54x |
+| TensorFlow, AdamW in PyTorch's order (mine) | 0.84 | 1.23 | 2.33 | pass: RMS 0.51-4.09x |
+| candle 0.11.0 | 0.54 | 0.54 | 4.78 | pass: RMS 0.75-1.28x |
+| burn 0.22.0 | 0.68 | 0.68 | 64.6 | fail: RMS 9.09-14.43x |
+| burn 0.22.0, TF32 off (patched) | - | - | 68.4 | fail: RMS 9.10x |
+| dfdx 0.13.0 (wrong gradients) | 0.34 | 0.36 | 1.93 | fail: RMS 19.24-23.80x |
+| dfdx 0.13.0 with workarounds (mine) | 0.34 | 0.35 | 1.88 | CPU fail 9.05x; GPU pass 5.87x |
+| Flux.jl 0.16.12 | 0.99 | 0.96 | 4.36 | fail: RMS 9.46-9.52x |
+| Flux.jl, AdamW in PyTorch's order (mine) | 1.31 | 1.14 | 4.69 | pass: RMS 1.46-2.46x |
+| Lux.jl 1.31.4 | 1.02 | 1.08 | 4.62 | fail: RMS 9.46-9.48x |
+| Lux.jl, AdamW in PyTorch's order (mine) | 1.08 | 1.07 | 4.56 | pass: RMS 0.72-2.46x |
 | llm.c, llama3 branch + my driver | does not run | does not run | 0.31 | fail: RMS 8.86x |
 
 BendTorch's cells are the wall time of the whole program over 200 steps, start-up and loading included (10 ms
 resolution), so they are upper bounds; the others are steps 2-200 on the program's clock. PyTorch eager on 16 threads
-swung between 3.1 and 7.6 ms a step from round to round. BendTorch's own PyTorch twin, timed with its start-up taken
-out, gives 1.9 ms a step on one thread, so on one thread BendTorch is 2.4x to 3.5x faster than PyTorch eager here.
+swung between 3.1 and 7.6 ms a step from round to round, and torch.compile between 0.83 and 4.5 ms. BendTorch's own
+PyTorch twin, timed with its start-up taken out, gives 1.9 ms a step on one thread, so on one thread BendTorch is 2.5x
+to 3.7x faster than PyTorch eager here.
 
 ## W3 · one decoder block at SmolLM2-135M's sizes (8 x 64 rows, width 576), AdamW, MSE: ms per step
 
 | system | 1 thread | 16 threads | GPU | losses |
 |---|---:|---:|---:|---|
-| **BendTorch** | 659 | 140 | 205 | pass: worst 0.016x |
-| PyTorch 2.14.1, eager | 103 | 39.9 | 4.60 | pass: worst 0.00-0.02x |
-| torch.compile (PyTorch 2.14.1) | 102 | 32.5 | 3.47 | pass: worst 0.01-0.09x |
-| JAX 0.11.2 + optax 0.2.8 | 101 | 24.4 | 3.30 | pass: worst 0.01-0.02x |
-| tinygrad 0.14.0 | 12,359 | 12,098 | 75.7 | pass: worst 0.01-0.05x |
-| TensorFlow 2.21.0 / Keras 3.15.1 | 105 | 27.7 | 5.40 | fail: worst 1.94-1.96x |
-| TensorFlow, AdamW in PyTorch's order (mine) | 105 | 29.9 | 5.33 | pass: worst 0.01-0.02x |
-| candle 0.11.0 | 171 | 124 | 11.0 | CPU fail 8.82x; GPU pass 0.01x |
-| burn 0.22.0 | 135 | 136 | 31.3 | CPU fail 8.83x; GPU pass 0.03x |
+| **BendTorch** | 660 | 123 | 189 | pass: worst 0.016x |
+| PyTorch 2.14.1, eager | 101 | 37.3 | 4.57 | pass: worst 0.00-0.02x |
+| torch.compile (PyTorch 2.14.1) | 97.7 | 33.0 | 3.50 | pass: worst 0.01-0.09x |
+| JAX 0.11.2 + optax 0.2.8 | 102 | 25.5 | 3.17 | pass: worst 0.01-0.02x |
+| tinygrad 0.14.0 | 12,399 | 12,208 | 79.7 | pass: worst 0.01-0.05x |
+| TensorFlow 2.21.0 / Keras 3.15.1 | 102 | 28.8 | 5.43 | fail: worst 1.94-1.96x |
+| TensorFlow, AdamW in PyTorch's order (mine) | 104 | 29.3 | 5.27 | pass: worst 0.01-0.02x |
+| candle 0.11.0 | 170 | 114 | 11.0 | CPU fail 8.82x; GPU pass 0.01x |
+| burn 0.22.0 | 131 | 130 | 33.0 | CPU fail 8.83x; GPU pass 0.03x |
 | burn 0.22.0, TF32 off (patched) | - | - | 32.3 | pass: worst 0.02x |
-| dfdx 0.13.0 (wrong gradients) | 134 | 77.0 | 4.33 | fail: worst 7.96-8.43x |
-| dfdx 0.13.0 with workarounds (mine) | 135 | 81.7 | 4.67 | CPU fail 8.82x; GPU pass 0.08x |
-| Flux.jl 0.16.12 | 204 | 181 | 16.7 | pass: worst 0.01-0.02x |
-| Flux.jl, AdamW in PyTorch's order (mine) | 210 | 190 | 34.7 | pass: worst 0.01-0.02x |
-| Lux.jl 1.31.4 | 206 | 175 | 21.7 | pass: worst 0.02-0.07x |
-| Lux.jl, AdamW in PyTorch's order (mine) | 197 | 173 | 25.0 | pass: worst 0.02-0.07x |
+| dfdx 0.13.0 (wrong gradients) | 134 | 80.3 | 4.33 | fail: worst 7.96-8.43x |
+| dfdx 0.13.0 with workarounds (mine) | 134 | 77.7 | 4.67 | CPU fail 8.82x; GPU pass 0.08x |
+| Flux.jl 0.16.12 | 203 | 146 | 32.7 | pass: worst 0.01-0.02x |
+| Flux.jl, AdamW in PyTorch's order (mine) | 180 | 174 | 37.3 | pass: worst 0.01-0.02x |
+| Lux.jl 1.31.4 | 176 | 179 | 48.7 | pass: worst 0.02-0.07x |
+| Lux.jl, AdamW in PyTorch's order (mine) | 191 | 179 | 21.7 | pass: worst 0.02-0.07x |
 | llm.c, llama3 branch + my driver | does not run | does not run | 4.80 | pass: worst 0.01x |
 
 BendTorch times 3 steps after one warm-up step, the others 3 after two.
@@ -108,27 +114,28 @@ BendTorch times 3 steps after one warm-up step, the others 3 after two.
 
 | system | 1 thread | 16 threads | GPU | losses |
 |---|---:|---:|---:|---|
-| **BendTorch** | 14,244 | 4,335 | no GPU build | pass: worst 0.414x |
-| PyTorch 2.14.1, eager | 2,354 ¹ | 924 | 125 | pass: worst 0.00-0.56x |
-| torch.compile (PyTorch 2.14.1) | 2,109 ¹ | 625 | 77.5 | pass: worst 0.01-0.55x |
-| JAX 0.11.2 + optax 0.2.8 | 2,099 ¹ | 544 | 68.4 | pass: worst 0.47-0.52x |
-| tinygrad 0.14.0 | 122,570 ¹ | 120,442 | 511 | pass: worst 0.54x |
-| TensorFlow 2.21.0 / Keras 3.15.1 | 2,445 ¹ | 650 | 145 | fail: worst 4.75-4.76x |
-| TensorFlow, AdamW in PyTorch's order (mine) | 2,427 ¹ | 643 | 139 | pass: worst 0.51-0.57x |
-| candle 0.11.0 | 4,365 ¹ | 3,256 | 267 | CPU fail 3.78x; GPU pass 0.57x |
-| burn 0.22.0 | 3,451 ¹ | 3,462 | 854 | fail: worst 4.01-53.64x |
-| burn 0.22.0, TF32 off (patched) | - | - | 871 | fail: worst 1.23x |
-| dfdx 0.13.0 (wrong gradients) | 2,806 ¹ | 1,763 | 140 | fail: worst 275.54-408.44x |
-| dfdx 0.13.0 with workarounds (mine) | 2,808 ¹ | 1,759 | 142 | CPU fail 4.04x; GPU pass 0.59x |
-| Flux.jl 0.16.12 | 3,253 ¹ | 2,740 | 207 | pass: worst 0.52-0.54x |
-| Flux.jl, AdamW in PyTorch's order (mine) | 3,092 ¹ | 2,852 | 382 | pass: worst 0.52-0.54x |
-| Lux.jl 1.31.4 | 3,328 ¹ | 2,780 | 309 | pass: worst 0.51-0.54x |
-| Lux.jl, AdamW in PyTorch's order (mine) | 3,332 ¹ | 2,788 | 302 | pass: worst 0.52-0.54x |
-| llm.c, llama3 branch + my driver | does not run | does not run | 78.2 | pass: worst 0.57x |
+| **BendTorch** | 14,347 | 3,256 | not timed | pass: worst 0.414x |
+| PyTorch 2.14.1, eager | 2,332 ¹ | 920 | 125 | pass: worst 0.00-0.56x |
+| torch.compile (PyTorch 2.14.1) | 2,119 ¹ | 632 | 76.7 | pass: worst 0.01-0.56x |
+| JAX 0.11.2 + optax 0.2.8 | 2,098 ¹ | 550 | 69.0 | pass: worst 0.48-0.52x |
+| tinygrad 0.14.0 | 121,793 ¹ | 119,982 | 514 | pass: worst 0.54x |
+| TensorFlow 2.21.0 / Keras 3.15.1 | 2,375 ¹ | 655 | 146 | fail: worst 4.74-4.76x |
+| TensorFlow, AdamW in PyTorch's order (mine) | 2,388 ¹ | 643 | 140 | pass: worst 0.51-0.55x |
+| candle 0.11.0 | 4,318 ¹ | 3,047 | 267 | CPU fail 3.78x; GPU pass 0.57x |
+| burn 0.22.0 | 3,337 ¹ | 3,325 | 845 | fail: worst 4.01-53.64x |
+| burn 0.22.0, TF32 off (patched) | - | - | 868 | fail: worst 1.23x |
+| dfdx 0.13.0 (wrong gradients) | 2,757 ¹ | 1,715 | 141 | fail: worst 275.54-408.42x |
+| dfdx 0.13.0 with workarounds (mine) | 2,789 ¹ | 1,710 | 144 | CPU fail 4.04x; GPU pass 0.57x |
+| Flux.jl 0.16.12 | 3,128 ¹ | 2,782 | 216 | pass: worst 0.51-0.54x |
+| Flux.jl, AdamW in PyTorch's order (mine) | 3,195 ¹ | 2,779 | 380 | pass: worst 0.52-0.54x |
+| Lux.jl 1.31.4 | 3,254 ¹ | 2,739 | 326 | pass: worst 0.51-0.54x |
+| Lux.jl, AdamW in PyTorch's order (mine) | 3,222 ¹ | 2,731 | 318 | pass: worst 0.52-0.54x |
+| llm.c, llama3 branch + my driver | does not run | does not run | 79.7 | pass: worst 0.57x |
 
 ¹ one run. BendTorch times its 2 steps with no warm-up, so its first step includes making AdamW's moments; the others
-time 3 steps after two warm-up steps. BendTorch has no GPU build of the full model yet; on the CPU it trains in 4.3 GiB
-(one thread) to 4.6 GiB (16) of peak memory.
+time 3 steps after two warm-up steps. BendTorch's GPU build of the full model (`make smol-gpu`) was not timed in this
+round ([`docs/limitations.md`](docs/limitations.md#speed) has its time, slower than 16 CPU threads); on the CPU it trains in
+4.3 GiB of peak memory on one thread and on 16.
 
 ## W6 · SmolLM2-1.7B, two AdamW steps on 2 x 128 tokens from the real weights: s per step
 
@@ -144,10 +151,10 @@ warm-up.
 | **BendTorch** | 42.0 | 24.1 GB | pass: 0.66x, 0.90x |
 | PyTorch 2.14.1, eager, same BF16 moments | 13.3 | 23.6 GB | reference |
 
-BendTorch is 3.2x slower here, against 4.7x on SmolLM2-135M in W4. Its losses are 2.6379600 and 2.5548434, PyTorch's
-2.6379418 and 2.5548196, the same bits in every round. The first loss is 1.0e-6 from PyTorch's float64 one (PyTorch F32:
-1.7e-5); the second step has no float64 reference, because a float64 run does not fit in memory. I did not time it on
-one thread.
+BendTorch is 3.2x slower here; on SmolLM2-135M in W4 it was 4.7x slower in that 2026-10-24 round, and is 3.5x in this
+one (the 1.7B has not been timed again since). Its losses are 2.6379600 and 2.5548434, PyTorch's 2.6379418 and
+2.5548196, the same bits in every round. The first loss is 1.0e-6 from PyTorch's float64 one (PyTorch F32: 1.7e-5); the
+second step has no float64 reference, because a float64 run does not fit in memory. I did not time it on one thread.
 
 ## Why the failures fail
 
@@ -176,21 +183,22 @@ causes I found:
 
 Several GPU paths (dfdx, TensorFlow, torch.compile, JAX, Flux) and TensorFlow on one CPU thread give different losses
 from run to run, by up to 2% at the end of W2 and 1e-7 to 6e-7 in W3 and W4; every verdict above was the same in every
-round but one: torch.compile on the GPU in W2 sits near the line, at 7.13-7.46x in five rounds over two nights and
-8.51x in one. BendTorch gives the same bits run after run and on 1 and 16 threads; on the GPU too, except where CUDA's float
-`exp` rounds differently (the block's first loss is 1 ulp off the CPU's).
+round but one: torch.compile on the GPU in W2 sits near the line, at 7.13-7.92x in seven rounds over three nights and
+8.51x and 8.58x in two. BendTorch gives the same bits run after run and on 1 and 16 threads; on the GPU too, except
+where CUDA's float `exp` rounds differently. In this round the block's four losses on the GPU are the CPU's bits; on
+2026-10-24 its first loss was 1 ulp off the CPU's.
 
 ## What it says about BendTorch
 
 - **Correct everywhere**: BendTorch passes all four workloads, on the CPU and on the GPU. Of the eleven systems as they
   ship, only PyTorch eager passes every workload on every device; on the tiny Llama only PyTorch eager, candle and
-  torch.compile on the GPU (in five rounds of six) pass without a rewrite of their AdamW.
-- **Slower where products dominate**: 4.6x slower than PyTorch eager on MNIST (5.2x over the whole epoch), 6.4x (one thread) and 3.5x (16
-  threads) on the block, 6.1x and 4.7x on SmolLM2-135M. Its products are chains of scalar F32 operations in Bend,
-  with no BLAS: the math is Bend.
-- **Faster where PyTorch's per-operation overhead dominates**: on the tiny Llama, 2.4x to 3.5x faster than PyTorch
-  eager on one thread and 3x to 7x on 16 (PyTorch's own time swings there), about even with torch.compile and burn, slower than candle, dfdx and JAX (which
-  fail W2 as they ship, except candle).
+  torch.compile on the GPU (in seven rounds of nine) pass without a rewrite of their AdamW.
+- **Slower where products dominate**: 4.4x slower than PyTorch eager on MNIST (4.9x over the whole epoch), 6.5x (one
+  thread) and 3.3x (16 threads) on the block, 6.2x and 3.5x on SmolLM2-135M. Its products are chains of scalar F32
+  operations in Bend, with no BLAS: the math is Bend.
+- **Faster where PyTorch's per-operation overhead dominates**: on the tiny Llama, 2.5x to 3.7x faster than PyTorch
+  eager on one thread and 3.7x to 9x on 16 (PyTorch's own time swings there), about even with torch.compile and burn
+  on one thread, slower than candle, dfdx and JAX (which fail W2 as they ship, except candle).
 - **The GPU path is slower than 16 CPU threads** at every size here: most of a GPU step is Bend's runtime (filling
   new arrays on one lane, a fixed cost between kernels), not the arithmetic ([`docs/limitations.md`](docs/limitations.md)).
 

@@ -14,8 +14,10 @@ ROOT = Path(__file__).resolve().parent.parent
 WT = ROOT / ".scratch/mutate-smol"
 ENV = dict(os.environ, BEND_NO_TELEMETRY="1", PATH=f"{Path.home()}/.bend/bin:{os.environ['PATH']}")
 
-# (name, file, before, after, expected): expected is "caught", or why the mutant cannot be seen at this scale (its effect
-# is below float32's resolution over 3 steps; measured separately), with the test that catches it
+# (name, file, before, after, expected[, times]): expected is "caught", or why the mutant cannot be seen at this scale (its
+# effect is below float32's resolution over 3 steps; measured separately), with the test that catches it; times is how
+# many times `before` is in the file (1 unless given), every one of them mutated. AdamW's decay is in its three loops
+# (adam_l, and adamh_l and adamhv_l for the BF16 moments since 860d12f): "no weight decay" drops it from all three.
 CE_LAST = "survives: the class it drops has probability <= 1.8e-6 here; scripts/mutate.py catches it (MNIST)"
 NO_DECAY = "survives: lr x wd moves each weight by 1e-6 a step; scripts/mutate.py catches it ('adamw: no decoupled weight decay')"
 EPS = "survives: the final norm's mean of squares is >= 255, so eps moves 1/rms by <= 1.8e-7; a constant of the demo"
@@ -29,7 +31,7 @@ MUTANTS = [
      "emb_add(q, (gi + 1 : U32), (di + 1 : U32), Array.get(F32, Array.set(F32, g, gi, (a + b : F32))",
      "emb_add(q, (gi + 1 : U32), (di + 1 : U32), Array.get(F32, Array.set(F32, g, gi, b)", "caught"),
     ("AdamW: no weight decay in main.bend's step (the norms and the embedding)", "torch/main.bend",
-     "adam_decay(dec, lr, wd, x)", "x", NO_DECAY),
+     "adam_decay(dec, lr, wd, x)", "x", NO_DECAY, 3),
     ("attention: scale 0.124 instead of 1/8", "demo/smol.bend",
      "64n, 0.125, {==}, {==}, {==})", "64n, 0.124, {==}, {==}, {==})", "caught"),
     ("final RMSNorm: eps 1e-4 instead of 1e-5", "demo/smol.bend",
@@ -54,11 +56,12 @@ def main():
     assert control.returncode == 0, "the unmutated program fails test_smol.py:\n" + control.stdout[-2000:]
     print("control: the unmutated program passes", flush=True)
     results = []
-    for name, path, before, after, expected in MUTANTS:
+    for name, path, before, after, expected, *times in MUTANTS:
         sh("git", "checkout", "--", ".")
         p = WT / path
         src = p.read_text()
-        assert src.count(before) == 1, f"{name}: the text to mutate is not once in {path}"
+        n = times[0] if times else 1
+        assert src.count(before) == n, f"{name}: the text to mutate is not {n} times in {path}"
         p.write_text(src.replace(before, after))
         build = sh("bend", "demo/smol.bend", "-o", ".scratch/smol", check=False)
         if build.returncode != 0 or not (WT / ".scratch/smol").exists():

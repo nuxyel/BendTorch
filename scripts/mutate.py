@@ -65,11 +65,11 @@ SMOLST = smol_st
 
 
 def fast():
-    # torch/fast.bend's layers and optimizer step must keep main.bend's bits (demo/fast_test.bend prints 15 zeros)
+    # torch/fast.bend's layers and optimizer step must keep main.bend's bits (demo/fast_test.bend prints 19 zeros)
     b = subprocess.run(["bend", "demo/fast_test.bend", "-o", ".scratch/mut_fast_test"], capture_output=True, env=ENV)
     if b.returncode != 0:
         return False
-    return subprocess.run([".scratch/mut_fast_test", "+RTS", "--threads", "16", "-RTS"], capture_output=True, text=True).stdout.split() == ["0"] * 15
+    return subprocess.run([".scratch/mut_fast_test", "+RTS", "--threads", "16", "-RTS"], capture_output=True, text=True).stdout.split() == ["0"] * 19
 
 
 FAST = fast
@@ -89,11 +89,11 @@ GPU = gpu
 
 def gpu_layers():
     # torch/gpu.bend's other layers, optimizer step, losses and embedding must keep main.bend's bits with +RTS --gpu off -RTS:
-    # demo/gpu_layers_test.bend prints 17 zeros (Conv2d's case is the last)
+    # demo/gpu_layers_test.bend prints 19 zeros (Conv2d's case, then GELUErf's y and dx)
     b = subprocess.run(["bend", "demo/gpu_layers_test.bend", "-o", ".scratch/mut_gpu_layers"], capture_output=True, env=ENV)
     if b.returncode != 0:
         return False
-    return subprocess.run([".scratch/mut_gpu_layers", "+RTS", "--gpu", "off", "--threads", "16", "-RTS"], capture_output=True, text=True).stdout.split() == ["0"] * 17
+    return subprocess.run([".scratch/mut_gpu_layers", "+RTS", "--gpu", "off", "--threads", "16", "-RTS"], capture_output=True, text=True).stdout.split() == ["0"] * 19
 
 
 GPUL = gpu_layers
@@ -101,9 +101,9 @@ GPUL = gpu_layers
 
 def gpu_expcr():
     # make gpu's exactness check: with exp_cr in place of F32.exp, every GPU layer case gives main.bend's bits on the
-    # device (scripts/gpu_expcr.sh prints 17 zeros); needs CUDA, and make mutate runs under the heavy-run lock
+    # device (scripts/gpu_expcr.sh prints 19 zeros); needs CUDA, and make mutate runs under the heavy-run lock
     r = subprocess.run(["scripts/gpu_expcr.sh"], capture_output=True, text=True, env=ENV)
-    return r.returncode == 0 and r.stdout.strip().splitlines()[-1].split() == ["0"] * 17
+    return r.returncode == 0 and r.stdout.strip().splitlines()[-1].split() == ["0"] * 19
 
 
 EXPCR = gpu_expcr
@@ -209,12 +209,26 @@ MUTANTS = [
      "T.lnb_b3(n, i, o, w, dx, TF.matmul_tn_acc(o, n, i, par, dy, x, g))", "T.lnb_b3(n, i, o, w, dx, TF.matmul_tn(o, n, i, par, dy, x))", FAST, "caught"),
     ("fast Linear (main.bend's name): delegates to LinearFirstF, which passes no gradient back", "torch/fast.bend",
      "LinearF(n, i, o, par)\n\ndef LinearFirst(", "LinearFirstF(n, i, o, par)\n\ndef LinearFirst(", MNIST, "caught"),
+    ("fast GroupNorm: a forward block takes the image of its group's number", "torch/fast.bend",
+     "T.gnf_grp(hw, (U32.div(t, ng) * (U32.from_nat(hw) * c : U32) : U32)", "T.gnf_grp(hw, (U32.mod(t, ng) * (U32.from_nat(hw) * c : U32) : U32)", FAST, "caught"),
+    ("fast GroupNorm: every group's backward blocks run on the first group's channels", "torch/fast.bend",
+     "gnb_imgs(n, 0, j, hwc, hw, c, cg, nf, eps, s))", "gnb_imgs(n, 0, 0, hwc, hw, c, cg, nf, eps, s))", FAST, "caught"),
+    ("fast GroupNorm: a backward range starts at channel i0, not at its first group's", "torch/fast.bend",
+     "gnb_go2(k, (i0 * U32.from_nat(cg) : U32), e,", "gnb_go2(k, i0, e,", FAST, "caught"),
+    ("fast GroupNorm: a range's dg is copied back over the gain, not after it", "torch/fast.bend",
+     "T.copy_n(len1, j0, (c + j0 : U32), w, Array.get(F32, dg, j0))", "T.copy_n(len1, j0, j0, w, Array.get(F32, dg, j0))", FAST, "caught"),
+    ("fast GroupNorm: the gain's and the bias's optimizer states swapped", "torch/fast.bend",
+     "T.ln_s2(d, opt_mat(1n, d, op, w, gw, sw), opt_mat(1n, d, op, b, gb, sb))", "T.ln_s2(d, opt_mat(1n, d, op, w, gw, sb), opt_mat(1n, d, op, b, gb, sw))", FAST, "caught"),
     ("gpu linear: the weight gradient is not accumulated", "torch/gpu.bend",
      "T.lin_b3(n, i, o, w, b, dx, gb, TG.matmul_tn_acc(o, n, i, 0n, dy, x, gw))", "T.lin_b3(n, i, o, w, b, dx, gb, TG.matmul_tn(o, n, i, 0n, dy, x))", GPU, "caught"),
     ("gpu element-wise: each leaf skips its last cell", "torch/gpu.bend",
      "case EN{+n}: ew1_loop(~f, TG.share(t, n, l), t, l, o, Array.get(F32, x, t))", "case EN{+n}: ew1_loop(~f, Nat.sub(TG.share(t, n, l), 1n), t, l, o, Array.get(F32, x, t))", GPUL, "caught"),
     ("gpu RMSNorm: the gain's gradient overwrites the one it is given", "torch/gpu.bend",
      "Array.set(F32, ga, j, (v + s : F32))", "Array.set(F32, ga, j, s)", GPUL, "caught"),
+    ("gpu GELUErf: the forward pass is the tanh form's", "torch/gpu.bend",
+     "ew1(~T.gelu_erf_v, t, l, e, x1, o)", "ew1(~T.gelu_v, t, l, e, x1, o)", GPUL, "caught"),
+    ("gpu GELUErf: the backward pass takes SiLU's derivative", "torch/gpu.bend",
+     "ewi(~T.gelu_erf_d, t, l, e, o, x1)", "ewi(~T.silu_d, t, l, e, o, x1)", GPUL, "caught"),
     ("gpu GroupNorm: a leaf takes the first image's block of its group", "torch/gpu.bend",
      "r4_y(T.gnf_grp(hw, (U32.div(t, ng) * hwc : U32)", "r4_y(T.gnf_grp(hw, (U32.mod(t, ng) * hwc : U32)", GPUL, "caught"),
     ("gpu GroupNorm: dx swaps the two means", "torch/gpu.bend",

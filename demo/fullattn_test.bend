@@ -6,7 +6,7 @@
 #
 #   bend demo/fullattn_test.bend -o .scratch/fullattn_test && reference/.venv/bin/python reference/test_fullattn.py .scratch/fullattn_test
 import Base
-import bend-ml-tensor-array@0.1.18.0/main.bend as TA
+import bend-ml-tensor-array@0.1.20.0/main.bend as TA
 import ../torch/main.bend as T
 
 def qv() -> List<&2, F32>:

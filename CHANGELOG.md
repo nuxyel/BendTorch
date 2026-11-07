@@ -5,6 +5,62 @@ the packages are or in how they are used, MINOR for a new capability, PATCH for 
 four BendHub packages (`bendtorch`, `bendtorch-fast`, `bendtorch-gpu`, `bendtorch-load`) carry the release's number
 with a fourth digit (`2.0.0.0`). The engineering log behind each entry, measurement by measurement, is `NOTES.md`.
 
+## Unreleased
+
+### Laws
+
+Two new laws in `LAWS.bend`, proved in `PROOF.bend` and checked again by `bend PROOF.bend --verdict`, 37 laws in all
+(with `dtype.bend`'s `unpair_pair`). Both by @adeerkhan (#32).
+
+- `conv_roundtrip_window`: the round trip at **any** stride and padding, per cell. Slot `(ch, ky, kx)` of output
+  position `(oy, ox)` is image cell `(oy·s + ky - p, ox·s + kx - p)`, channel `ch`, so the gather and the scatter name
+  the same cell for every kernel, stride and padding — the UNet's `k = 3, s = 2, p = 1` among them. The decode does
+  not care about `s` or `p`, so this is one subtraction lemma (`(p + t) - p = t`) away from `conv_roundtrip_ks`, which
+  is now proved as its instance (`s = k`, `p = 0`) rather than by a second proof. The bounds are four hypotheses:
+  `k = 1 + ky + a`, `k = 1 + kx + b`, and the window being inside the image, `oy·s + ky = p + ty`, `ox·s + kx = p + tx`.
+- `conv_roundtrip_ks`: the im2col/col2im round trip at a stride equal to the kernel size. With `s = k` and no
+  padding, slot `(ch, ky, kx)` of output position `(oy, ox)` is image cell `(oy·k + ky, ox·k + kx)` of channel `ch`,
+  so the gather and the scatter name the same cell — `p_src` both times. That needs the mixed-radix decode
+  `i = (p_ch·k + p_ky)·k + p_kx`, which is Bend's unary division twice: the proof of `Nat.divmod.go`'s invariant
+  (`divmod_go_spec`, a `def` beside `divmod_one`) then one block count plus a rest per level. `ky < k` and
+  `kx < k` are `k = 1 + ky + a` and `k = 1 + kx + b`, as `gqa_head` writes one bound; the bound that `k·k` leaves
+  for the inner cell is `radix_bound`. #29's numbers at `k = s = 2, 3, 4` were already exact; the law is what makes
+  them so for every `k`.
+
+## 2.0.2 (2026-11-07)
+
+A patch release: the tensor packages bend-ml published on 2026-11-06, and the speed numbers on Bend 2.0.40. No layer,
+law or API changes, and every output is `bench/bits.txt`'s.
+
+- **bend-ml-tensor-array 0.1.20.0, -tensor-fork 0.1.7.1 and -tensor-gpu 0.1.5.2** in every import (from 0.1.18.0,
+  0.1.5.0 and 0.1.5.0), which take the same `Mat` again. What changed under BendTorch: tensor-array's dot product
+  unrolled by four and `Mat.to_list` without a reverse (0.1.19.0), tensor-fork's `softmax_ce` (0.1.6.0) and its
+  products' cells read with `Array.get_unchecked` (0.1.7.x, which needs Bend 2.0.40); tensor-gpu's code is 0.1.5.0's.
+  The products keep their bits.
+- **The speed table and `BENCHMARK.md` on Bend 2.0.40**, from a round on an idle machine on 2026-11-07: SmolLM2-135M's
+  step on 16 threads 4.3 s to 3.3 s, the decoder block 12% faster on 16 threads and 8% on the GPU; one thread did not
+  move. Bend and the code both changed since the last round (2026-10-24), so the numbers do not say which gave what.
+  The block's first loss on the GPU is now the CPU's bits; it was 1 ulp off before.
+- **Checks on Bend 2.0.40**: laws, check, bits, corpus, gpu, smol, smol-gpu, bits-smol, reader, check-js and
+  mutate-smol, and every mutant in CI.
+- **Moving from 2.0.1**: the import lines only, `2.0.1.0` to `2.0.2.0` in all four packages; checkpoints read as before.
+
+## 2.0.1 (2026-11-06)
+
+A patch release: Bend 2.0.40, and the weights reader on bend-ml-binary-read 0.2.0.1. No layer, law or API changes,
+and every output is `bench/bits.txt`'s.
+
+- **Bend 2.0.40.** The pin moves from 2.0.39; `make setup` installs it, checked by SHA256.
+- **The reader on bend-ml-binary-read 0.2.0.1.** Bend 2.0.40 removed a runtime binding that binary-read 0.2.0.0's
+  JavaScript lane called (bendlang/bend#2063), so on 2.0.40 its reads fail there with `sys.pread is not a function`,
+  and `bendtorch-load@2.0.0.0` imports 0.2.0.0. 0.2.0.1 reads through `fs`, as Base's own reads do; the C lane is the
+  same code. `torch/load.bend` and the reader test import it.
+- **Checks on Bend 2.0.40**: laws, check, bits, corpus, gpu, smol, smol-gpu, bits-smol, reader and check-js, and every
+  mutant in CI.
+- **CI** runs what a change reads on pushes and pull requests to `devel` (`make affected`, `scripts/affected.py`);
+  releases, Sundays and manual runs still run everything.
+- **Moving from 2.0.0**: the import lines only, `2.0.0.0` to `2.0.1.0` in all four packages; checkpoints read as before.
+
 ## 2.0.0 (2026-11-03)
 
 A major release, with two changes. The optimizer configuration has one owner, the training state: until 1.3.0 a
@@ -77,8 +133,8 @@ only. Both by or with @adeerkhan.
 
 ### Laws
 
-Eight new laws in `LAWS.bend`, proved in `PROOF.bend` and checked again by `bend PROOF.bend --verdict`, 37 laws
-in all (with `dtype.bend`'s `unpair_pair`): Conv2d's two (above), the guard's four, and the round trips' two (below):
+Six new laws in `LAWS.bend`, proved in `PROOF.bend` and checked again by `bend PROOF.bend --verdict`, 35 laws in all
+(with `dtype.bend`'s `unpair_pair`): Conv2d's two (above) and the guard's four:
 
 - `guard_nomom`, `guard_onemom`, `guard_twomom`, `guard_packed`: for every configuration and each kind of state (no
   buffers, one, two, two packed in BF16), the optimizer `Opt.guard` hands the step is
@@ -87,20 +143,6 @@ in all (with `dtype.bend`'s `unpair_pair`): Conv2d's two (above), the guard's fo
   proof takes the five configurations one by one, and in each both sides compute to the same optimizer. The guard is
   written as that `Opt.when` so that they do. What is read from the code rather than proved: that `Train.step` and
   `Train.step_at` hand the guard's optimizer to `Layer.step` (`ts4g`, `train_at_g`).
-- `conv_roundtrip_window`: the round trip at **any** stride and padding, per cell. Slot `(ch, ky, kx)` of output
-  position `(oy, ox)` is image cell `(oy·s + ky - p, ox·s + kx - p)`, channel `ch`, so the gather and the scatter name
-  the same cell for every kernel, stride and padding — the UNet's `k = 3, s = 2, p = 1` among them. The decode does
-  not care about `s` or `p`, so this is one subtraction lemma (`(p + t) - p = t`) away from `conv_roundtrip_ks`, which
-  is now proved as its instance (`s = k`, `p = 0`) rather than by a second proof. The bounds are four hypotheses:
-  `k = 1 + ky + a`, `k = 1 + kx + b`, and the window being inside the image, `oy·s + ky = p + ty`, `ox·s + kx = p + tx`.
-- `conv_roundtrip_ks`: the im2col/col2im round trip at a stride equal to the kernel size. With `s = k` and no
-  padding, slot `(ch, ky, kx)` of output position `(oy, ox)` is image cell `(oy·k + ky, ox·k + kx)` of channel `ch`,
-  so the gather and the scatter name the same cell — `p_src` both times. That needs the mixed-radix decode
-  `i = (p_ch·k + p_ky)·k + p_kx`, which is Bend's unary division twice: the proof of `Nat.divmod.go`'s invariant
-  (`divmod_go_spec`, a `def` beside `divmod_one`) then one block count plus a rest per level. `ky < k` and
-  `kx < k` are `k = 1 + ky + a` and `k = 1 + kx + b`, as `gqa_head` writes one bound; the bound that `k·k` leaves
-  for the inner cell is `radix_bound`. #29's numbers at `k = s = 2, 3, 4` were already exact; the law is what makes
-  them so for every `k`.
 
 ### Tests
 

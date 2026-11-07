@@ -140,9 +140,9 @@ general here is Bend's **templates**: a `Layer` record passed as `~l` is substit
 | An Adam configuration's `c1`, `c2` agree with its `b1`, `b2` (`OptCfg.ok`); a program stops on one that does not (`OptCfg.check`), and without the check every step refuses it, so every loss after the first is NaN | **tested** at run time (F32 is opaque to the checker, so it cannot be a law): 5,486 configurations, 5 mutants | `reference/test_infra.py` |
 | MNIST and a two-layer Llama train like their PyTorch twins | **tested** | `test_mnist.py`, `test_tiny.py` |
 | The F32 code computes the formulas of the `Nat` model | **tested only** | the same tests |
-| `torch/fast.bend`'s layers (over bend-ml-tensor-fork, `@unsafe` `Array.fork`) give `main.bend`'s bits: the linear layers forward and backward, the optimizer step (SGD, momentum, AdamW) and the element-wise layers (SiLU, Mul2, Residual's copies and sums) | **tested**, bit for bit, at MNIST's, the tiny Llama's and splitting sizes, 1 and 16 threads and JavaScript; 7 mutants | `demo/fast_test.bend` (12 cases); `make laws` pins its defs outside the proofs |
+| `torch/fast.bend`'s layers (over bend-ml-tensor-fork, `@unsafe` `Array.fork`) give `main.bend`'s bits: the linear layers forward and backward, the optimizer step (SGD, momentum, AdamW), the element-wise layers (SiLU, Mul2, Residual's copies and sums) and GroupNorm | **tested**, bit for bit, at MNIST's, the tiny Llama's and splitting sizes, 1 and 16 threads and JavaScript; 13 mutants | `demo/fast_test.bend` (19 cases); `make laws` pins its defs outside the proofs |
 | `torch/gpu.bend`'s linear layers (over bend-ml-tensor-gpu, one `!` call a product, `@unsafe` `Array.fork`) give `main.bend`'s bits | **tested**, bit for bit, forward and backward at MNIST's, the tiny Llama's and SmolLM2-135M's sizes, on the GPU and 1 and 16 CPU threads; MNIST and the tiny Llama trained on the GPU give `bench/bits.txt`'s outputs; 1 mutant (tensor-gpu's code is tested in bend-ml) | `demo/gpu_test.bend` (8 cases), `make gpu`; `make laws` pins its defs outside the proofs |
-| `torch/gpu.bend`'s other layers and optimizer step (leaves in plain Bend over tensor-gpu's `run1`..`run4`) give `main.bend`'s bits | **tested** at SmolLM2-135M's sizes: exact with `+RTS --gpu off -RTS` on 1 and 16 threads; on the GPU exact except SiLU (up to 4 ulps, CUDA's float `exp`; accepted, debt in NOTES); the block trained on the GPU against PyTorch; 26 mutants | `demo/gpu_layers_test.bend` (17 cases), `make gpu` |
+| `torch/gpu.bend`'s other layers and optimizer step (leaves in plain Bend over tensor-gpu's `run1`..`run4`) give `main.bend`'s bits | **tested** at SmolLM2-135M's sizes: exact with `+RTS --gpu off -RTS` on 1 and 16 threads; on the GPU exact except where CUDA's float `exp` is taken (SiLU up to 4 ulps, cross-entropy, attention, GELUErf's dX; accepted, debt in NOTES; exact with `exp_cr`); the block trained on the GPU against PyTorch; 28 mutants | `demo/gpu_layers_test.bend` (19 cases), `make gpu` |
 | im2col's gathered matrix is `n·oh·ow` rows of `c·k·k` numbers, every one an image cell or 0 outside a padded window; with a 1 x 1 kernel, no padding and stride 1, `col2im` writes each cell back into the cell it came from; and for every kernel, stride and padding, slot `(ch, ky, kx)` of output position `(oy, ox)` is image cell `(oy·s + ky - p, ox·s + kx - p)`, channel `ch`, so the gather and the scatter name the same cell | **law** about the package's own `im2col_n`, `p_src` and `c2_go` | `im2col_rows`, `conv_roundtrip`, `conv_roundtrip_ks`, `conv_roundtrip_window` |
 | | The non-linear layers' gradient formulas | **tested only** | `test_ops.py` |
 | Bend's checker and kernel, the translation to C, clang, the CPU | **trusted** | |
@@ -158,7 +158,7 @@ algebra of the formulas (`dy·(W·x) == (Wᵀ·dy)·x`), with no rounding to rea
 (`F32.mul(3.0, 3.0)` does not reduce), so a law about F32 values can only treat the operations as uninterpreted; no
 IEEE 754 property is claimed anywhere.
 
-`scripts/mutate.py` changes the code and the specification on purpose (167 mutants) and checks that a gate fails. A
+`scripts/mutate.py` changes the code and the specification on purpose (174 mutants) and checks that a gate fails. A
 mutant that survives a gate is listed with the reason (today three: the whole-tensor sum's index map, which the
 numbers miss by accident and a bounds check catches, and two equivalent mutants, the GPU cross-entropy's block size and
 the packed AdamW's last block; since M8 the laws catch the two that used to slip past them, `kv_of` bypassed and a softmax over one
@@ -191,7 +191,7 @@ position too few).
   kernel by kernel, with its check moved from bits to the tolerance; a fixed split, the same at any thread count, keeps
   the rule.
 
-- **CPU first.** Native code from Bend 2.0.39, clang. Products run in `2^par` parallel blocks (`par` is an argument of
+- **CPU first.** Native code from Bend 2.0.40, clang. Products run in `2^par` parallel blocks (`par` is an argument of
   each linear layer; 8, 256 blocks, at SmolLM2's sizes, where 16 left the E-cores' blocks behind). In `torch/fast.bend`
   the optimizer step and the element-wise layers run in blocks of 16384 numbers from 131072 up, and the products pack
   their operands in blocks from 16384 cells up (bend-ml-tensor-fork); smaller work runs in one block, which is what the
