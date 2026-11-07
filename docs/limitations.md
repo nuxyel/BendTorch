@@ -125,9 +125,12 @@ Numbers marked "busy machine" were taken with other jobs running and are a first
   is still tested rather than stated: the general `k = s` round trip of `col2im(im2col(x))` is compared with PyTorch at
   three shapes (`reference/conv2d_check.py`), and the adjoint law is [#15](https://github.com/nuxyel/BendTorch/issues/15)'s
   remaining piece.
+- `GroupNorm` is in all three lanes: `main.bend`, `fast.bend` and `gpu.bend`.
 - No `.pt` loading: weights come from a flat binary file in the twins' layout or from a `model.safetensors`
-  (`torch/load.bend`, through the temporary foreign reader). The exact GELU
-  (`GELUErf`) runs on the CPU and in JavaScript; it is not in `gpu.bend`.
+  (`torch/load.bend`, through the temporary foreign reader).
+- The exact GELU (`GELUErf`) is in `main.bend` and `gpu.bend`, not in `fast.bend` (which has no GELU of either form).
+  On the GPU its forward pass gives `main.bend`'s bits; its gradient takes CUDA's float `exp` and differs by up to 113
+  ulps on the test's inputs (`make gpu`'s `exp_cr` check gives 0 there).
 - int8 is for inference only (weights quantized by rows, activations in F32).
 - Mixed precision is BF16 storage with F32 arithmetic and F32 master weights, measured on the tiny Llama only. It
   costs time: 200 steps take 180 ms against 160 in F32 on one thread and 330 against 220 on 16

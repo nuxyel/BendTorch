@@ -8,9 +8,11 @@
 # LinearF, LinearFirstF and LinearNBF are main.bend's Linear, LinearFirst and LinearNB with their three products
 # (x·Wᵀ, dY·W, dYᵀ·X added into dW) taken from bend-ml-tensor-fork instead of bend-ml-tensor-array, and their optimizer
 # step in blocks. SiLU, ActIn, Mul2, Add2, Residual, Mat.dup and Mat.sum2 are main.bend's with their element-wise loops
-# in blocks (tensor-fork's par1..par4), the optimizer step (mat_step, lin_step) too. Every number is computed by
-# main.bend's own loop or tensor-array's own cells, so the bits are main.bend's at every depth and thread count (tests:
-# demo/fast_test.bend). Small matrices run in one block (ew_depth), as in main.bend.
+# in blocks (tensor-fork's par1..par4), the optimizer step (mat_step, lin_step) too. GroupNorm is main.bend's block
+# code in blocks: the forward pass a range of (image, group) blocks a block, the backward pass a range of groups. Every
+# number is computed by
+# main.bend's own loop or tensor-array's own cells, so the bits are main.bend's at every depth and thread count
+# (tests: demo/fast_test.bend). Small matrices run in one block (ew_depth), as in main.bend.
 #
 # Outside the proofs, on purpose: tensor-fork shares arrays through Base's @unsafe Array.fork, so `bend` names the defs
 # below that reach it, and no file with laws imports this one (`make laws` checks both). All of it is Bend.
@@ -323,6 +325,135 @@ def Mul2(+n: Nat, +c: Nat) -> T.Layer<Unit, T.Two<TA.Mat<n, c>, TA.Mat<n, c>>, T
 # T.Residual with these copies and sums (T.ResidualOf, the composition the law residual is about)
 def Residual(~n: Nat, ~c: Nat, ~P: Type, ~S: Type, ~f: T.Layer<P, TA.Mat<n, c>, TA.Mat<n, c>, S>) -> T.Layer<T.Two<T.Two<Unit, P>, Unit>, TA.Mat<n, c>, TA.Mat<n, c>, T.Two<T.Two<Unit, S>, Unit>>:
   T.ResidualOf(~TA.Mat<n, c>, ~P, ~S, ~(m => Mat.dup(n, c, m)), ~(a => b => Mat.sum2(n, c, a, b)), ~Add2(n, c), ~f)
+
+# ---- GroupNorm: main.bend's block code (gnf_grp, gnb_grp) over ranges of blocks ----
+# Images are channels last (main.bend's GroupNorm): block t is image t / ng's group t % ng, its first cell
+# (t / ng)·hw·c and its first channel (t % ng)·cg. The forward pass splits the n·ng blocks: each writes only its own
+# cells of y. The backward pass splits the ng groups, each running its group's blocks image by image, as main.bend does:
+# a group writes only its columns of dx and its channels' dg and db, and a channel's terms are added in main.bend's
+# order (images, then rows, from +0.0), so its sums are main.bend's. A block of the backward pass needs six arrays and a
+# par4 shares four, so the gain and the two gradients travel in one array w of 3c numbers (g, then dg, then db); each
+# range copies g out of it, works on its own dg and db of c numbers from zero, and copies its channels of them back.
+
+type GNE is Data:
+  GNE{n: Nat, ng: U32, hw: Nat, c: U32, cn: Nat, cg: Nat, nf: F32, eps: F32}
+
+def gn_e(+n: Nat, +hw: Nat, +ng: Nat, +cg: Nat, +eps: F32) -> GNE:
+  GNE{n, U32.from_nat(ng), hw, U32.from_nat(Nat.mul(ng, cg)), Nat.mul(ng, cg), cg, F32.from_nat(Nat.mul(hw, cg)), eps}
+
+def gn_d2(lt: Bool, +a: Nat, +b: Nat) -> Nat:
+  match lt:
+    case True{}: a
+    case False{}: b
+
+# ew_depth's blocks for the cells, at most as many as the ranges to split
+def gn_depth(+cnt: Nat, +k: Nat) -> Nat:
+  gn_d2(Nat.is_lt(ew_depth(cnt), TF.depth(k)), ew_depth(cnt), TF.depth(k))
+
+# blocks t .. t + k - 1 of the forward pass
+def gnf_blks(k: Nat, +t: U32, +ng: U32, +hw: Nat, +c: U32, +cg: Nat, +nf: F32, +eps: F32, s: T.R4) -> T.R4:
+  match k:
+    case 0n: s
+    case 1n+q: gnf_blks(q, (t + 1 : U32), ng, hw, c, cg, nf, eps, T.gnf_grp(hw, (U32.div(t, ng) * (U32.from_nat(hw) * c : U32) : U32), (U32.mod(t, ng) * U32.from_nat(cg) : U32), c, cg, nf, eps, s))
+
+def r4_b4(s: T.R4) -> TF.B4<F32, F32, F32, F32>:
+  match s:
+    case T.R4{x, g, b, y}: TF.B4{x, g, b, y}
+
+def gnf_leaf(+e: GNE, +i0: U32, +cnt: Nat, r: TF.B4<F32, F32, F32, F32>) -> TF.B4<F32, F32, F32, F32>:
+  match e r:
+    case GNE{+n, +ng, +hw, +c, +cn, +cg, +nf, +eps} TF.B4{x, g, b, y}:
+      r4_b4(gnf_blks(cnt, i0, ng, hw, c, cg, nf, eps, T.R4{x, g, b, y}))
+
+def gn_f2(-m: Nat, -d: Nat, q: TF.B4<F32, F32, F32, F32>) -> T.Fwd<T.LN<d>, TA.Mat<m, d>, TA.Mat<m, d>>:
+  match q:
+    case TF.B4{x, g, b, y}: T.ln_f2(m, d, T.R4{x, g, b, y})
+
+def gn_fwd(+n: Nat, +hw: Nat, +ng: Nat, +cg: Nat, +eps: F32, p: T.LN<Nat.mul(ng, cg)>, x: TA.Mat<Nat.mul(n, hw), Nat.mul(ng, cg)>) -> T.Fwd<T.LN<Nat.mul(ng, cg)>, TA.Mat<Nat.mul(n, hw), Nat.mul(ng, cg)>, TA.Mat<Nat.mul(n, hw), Nat.mul(ng, cg)>>:
+  match p x:
+    case T.LN{TA.Mat{g}, TA.Mat{b}} TA.Mat{xa}:
+      gn_f2(Nat.mul(n, hw), Nat.mul(ng, cg), TF.par4(~GNE, ~F32, ~F32, ~F32, ~F32, ~gnf_leaf, gn_e(n, hw, ng, cg, eps), gn_depth(Nat.mul(Nat.mul(n, hw), Nat.mul(ng, cg)), Nat.mul(n, ng)), Nat.mul(n, ng), xa, g, b, T.zeros_a(Nat.mul(Nat.mul(n, hw), Nat.mul(ng, cg)))))
+
+# group j's blocks in the remaining `left` images, from the image whose first cell is off
+def gnb_imgs(left: Nat, +off: U32, +j: U32, +hwc: U32, +hw: Nat, +c: U32, +cg: Nat, +nf: F32, +eps: F32, s: T.R4B) -> T.R4B:
+  match left:
+    case 0n: s
+    case 1n+q: gnb_imgs(q, (off + hwc : U32), j, hwc, hw, c, cg, nf, eps, T.gnb_grp(hw, off, j, c, cg, nf, eps, s))
+
+# k groups from the one whose first channel is j, each over the n images
+def gnb_grps(k: Nat, +j: U32, +n: Nat, +hwc: U32, +hw: Nat, +c: U32, +cg: Nat, +nf: F32, +eps: F32, s: T.R4B) -> T.R4B:
+  match k:
+    case 0n: s
+    case 1n+q: gnb_grps(q, (j + U32.from_nat(cg) : U32), n, hwc, hw, c, cg, nf, eps, gnb_imgs(n, 0, j, hwc, hw, c, cg, nf, eps, s))
+
+def a2_b(q: T.A2) -> Array<F32>:
+  match q:
+    case T.A2{a, b}: b
+
+def gnb_put2(+len1: Nat, +j0: U32, +c: U32, db: Array<F32>, q: T.A2) -> Array<F32>:
+  match q:
+    case T.A2{dg, w}: a2_b(T.copy_n(len1, j0, ((c + c : U32) + j0 : U32), w, Array.get(F32, db, j0)))
+
+# the range's channels j0 .. j0 + len1 of its dg and db into w, at c + j and 2c + j
+def gnb_put(+len1: Nat, +j0: U32, +c: U32, w: Array<F32>, dg: Array<F32>, db: Array<F32>) -> Array<F32>:
+  gnb_put2(len1, j0, c, db, T.copy_n(len1, j0, (c + j0 : U32), w, Array.get(F32, dg, j0)))
+
+def gnb_fin(+len1: Nat, +j0: U32, +c: U32, w: Array<F32>, s: T.R4B) -> TF.B4<F32, F32, F32, F32>:
+  match s:
+    case T.R4B{x, dy, gp, dx, T.A2{dg, db}}: TF.B4{x, dy, dx, gnb_put(len1, j0, c, w, dg, db)}
+
+def gnb_go2(+k: Nat, +j0: U32, +e: GNE, x: Array<F32>, dy: Array<F32>, dx: Array<F32>, q: T.A2) -> TF.B4<F32, F32, F32, F32>:
+  match e q:
+    case GNE{+n, +ng, +hw, +c, +cn, +cg, +nf, +eps} T.A2{w, gp}:
+      gnb_fin(Nat.sub(Nat.mul(k, cg), 1n), j0, c, w, gnb_grps(k, j0, n, (U32.from_nat(hw) * c : U32), hw, c, cg, nf, eps, T.R4B{x, dy, gp, dx, T.A2{T.zeros_a(cn), T.zeros_a(cn)}}))
+
+# groups i0 .. i0 + k - 1 (k >= 1): g copied out of w, then the groups' blocks
+def gnb_go(+k: Nat, +i0: U32, +e: GNE, x: Array<F32>, dy: Array<F32>, dx: Array<F32>, w: Array<F32>) -> TF.B4<F32, F32, F32, F32>:
+  match e:
+    case GNE{+n, +ng, +hw, +c, +cn, +cg, +nf, +eps}:
+      gnb_go2(k, (i0 * U32.from_nat(cg) : U32), e, x, dy, dx, T.copy_n(Nat.sub(cn, 1n), 0, 0, T.zeros_a(cn), Array.get(F32, w, 0)))
+
+def gnb_leaf(+e: GNE, +i0: U32, +cnt: Nat, r: TF.B4<F32, F32, F32, F32>) -> TF.B4<F32, F32, F32, F32>:
+  match cnt r:
+    case 0n r: r
+    case 1n+q TF.B4{x, dy, dx, w}: gnb_go(1n+q, i0, e, x, dy, dx, w)
+
+def gn_b5(+d: Nat, -m: Nat, b: TA.Mat<1n, d>, gg: T.LN<d>, g: Array<F32>, x: Array<F32>, dy: Array<F32>, dx: Array<F32>, dg: Array<F32>, q: T.A2) -> T.Bwd<T.LN<d>, TA.Mat<m, d>>:
+  match q:
+    case T.A2{w, db}: T.ln_b2(d, m, b, gg, T.R4B{x, dy, g, dx, T.A2{dg, db}})
+
+def gn_b4(+d: Nat, -m: Nat, b: TA.Mat<1n, d>, gg: T.LN<d>, g: Array<F32>, x: Array<F32>, dy: Array<F32>, dx: Array<F32>, q: T.A2) -> T.Bwd<T.LN<d>, TA.Mat<m, d>>:
+  match q:
+    case T.A2{w, dg}: gn_b5(d, m, b, gg, g, x, dy, dx, dg, T.copy_n(Nat.sub(d, 1n), (U32.from_nat(d) + U32.from_nat(d) : U32), 0, T.zeros_a(d), Array.get(F32, w, (U32.from_nat(d) + U32.from_nat(d) : U32))))
+
+# dg and db out of w, then main.bend's ln_b2 adds them into the gradients it is given
+def gn_b3(+d: Nat, -m: Nat, b: TA.Mat<1n, d>, gg: T.LN<d>, g: Array<F32>, q: TF.B4<F32, F32, F32, F32>) -> T.Bwd<T.LN<d>, TA.Mat<m, d>>:
+  match q:
+    case TF.B4{x, dy, dx, w}: gn_b4(d, m, b, gg, g, x, dy, dx, T.copy_n(Nat.sub(d, 1n), U32.from_nat(d), 0, T.zeros_a(d), Array.get(F32, w, U32.from_nat(d))))
+
+def gn_b2(+n: Nat, +hw: Nat, +ng: Nat, +cg: Nat, +eps: F32, b: TA.Mat<1n, Nat.mul(ng, cg)>, gg: T.LN<Nat.mul(ng, cg)>, xa: Array<F32>, da: Array<F32>, q: T.A2) -> T.Bwd<T.LN<Nat.mul(ng, cg)>, TA.Mat<Nat.mul(n, hw), Nat.mul(ng, cg)>>:
+  match q:
+    case T.A2{g, w}:
+      gn_b3(Nat.mul(ng, cg), Nat.mul(n, hw), b, gg, g, TF.par4(~GNE, ~F32, ~F32, ~F32, ~F32, ~gnb_leaf, gn_e(n, hw, ng, cg, eps), gn_depth(Nat.mul(Nat.mul(n, hw), Nat.mul(ng, cg)), ng), ng, xa, da, T.zeros_a(Nat.mul(Nat.mul(n, hw), Nat.mul(ng, cg))), w))
+
+# w = g followed by 2c zeros
+def gn_bwd(+n: Nat, +hw: Nat, +ng: Nat, +cg: Nat, +eps: F32, p: T.LN<Nat.mul(ng, cg)>, x: TA.Mat<Nat.mul(n, hw), Nat.mul(ng, cg)>, dy: TA.Mat<Nat.mul(n, hw), Nat.mul(ng, cg)>, gg: T.LN<Nat.mul(ng, cg)>) -> T.Bwd<T.LN<Nat.mul(ng, cg)>, TA.Mat<Nat.mul(n, hw), Nat.mul(ng, cg)>>:
+  match p x dy:
+    case T.LN{TA.Mat{g}, b} TA.Mat{xa} TA.Mat{da}:
+      gn_b2(n, hw, ng, cg, eps, b, gg, xa, da, T.copy_n(Nat.sub(Nat.mul(ng, cg), 1n), 0, 0, T.zeros_a(Nat.mul(3n, Nat.mul(ng, cg))), Array.get(F32, g, 0)))
+
+# the gain and the bias take this file's optimizer step, as Linear's two matrices do
+def ln_step2(+d: Nat, +op: T.Opt, p: T.LN<d>, g: T.LN<d>, st: T.Two<T.OptState<TA.Mat<1n, d>>, T.OptState<TA.Mat<1n, d>>>) -> T.Step<T.LN<d>>:
+  match p g st:
+    case T.LN{w, b} T.LN{gw, gb} T.Two{sw, sb}:
+      T.ln_s2(d, opt_mat(1n, d, op, w, gw, sw), opt_mat(1n, d, op, b, gb, sb))
+
+def ln_step(+d: Nat, +op: T.Opt, p: T.LN<d>, g: T.LN<d>, st: T.OptState<T.LN<d>>) -> T.Step<T.LN<d>>:
+  ln_step2(d, op, p, g, T.OptState.split(TA.Mat<1n, d>, TA.Mat<1n, d>, T.OptState.map(T.LN<d>, T.Two<TA.Mat<1n, d>, TA.Mat<1n, d>>, st, x => T.ln_pair(d, x), x => T.ln_pair(d, x))))
+
+# GroupNorm over n images of hw pixels and ng groups of cg channels, channels last (main.bend's GroupNorm)
+def GroupNorm(+n: Nat, +hw: Nat, +ng: Nat, +cg: Nat, +eps: F32) -> T.Layer<T.LN<Nat.mul(ng, cg)>, TA.Mat<Nat.mul(n, hw), Nat.mul(ng, cg)>, TA.Mat<Nat.mul(n, hw), Nat.mul(ng, cg)>, TA.Mat<Nat.mul(n, hw), Nat.mul(ng, cg)>>:
+  T.Layer{p => x => gn_fwd(n, hw, ng, cg, eps, p, x), p => s => dy => g => gn_bwd(n, hw, ng, cg, eps, p, s, dy, g), op => p => g => st => ln_step(Nat.mul(ng, cg), op, p, g, st), u => T.LN{TA.Mat.zeros(1n, Nat.mul(ng, cg)), TA.Mat.zeros(1n, Nat.mul(ng, cg))}, p => T.ln_dump(Nat.mul(ng, cg), p), p => xs => off => T.ln_load(Nat.mul(ng, cg), p, xs, off), p => xs => off => T.ln_store(Nat.mul(ng, cg), p, xs, off), u => U32.from_nat(Nat.mul(2n, Nat.mul(ng, cg)))}
 
 # main.bend's RMSNorm, RoPE, Attention, MSE and CrossEntropy under their own names (Embedding below, with its step in
 # blocks), so that a program that takes its layers from here can take device versions of the same names from another

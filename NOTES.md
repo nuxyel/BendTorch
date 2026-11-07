@@ -2068,3 +2068,45 @@ Six new laws and one rewritten, all by `--verdict`, about the code the demos exe
   `demo/fast_test.bend` over `bendtorch-fast@2.0.2.0` prints its fifteen zeros on 1 and 16 threads, and
   `demo/gpu_test.bend` over `bendtorch-gpu@2.0.2.0` its eight on 1 and 16 CPU threads.
 - The GitHub release v2.0.2 carries the CHANGELOG's entry and these hashes.
+
+## GELUErf on the GPU lane, GroupNorm on the parallel lane (2026-11-01)
+
+- `torch/gpu.bend`'s `GELUErf`: SiLU's two element-wise bangs with `main.bend`'s `gelu_erf_v` and `gelu_erf_d` as their
+  leaves, so every number is `main.bend`'s expression. Its three defs that reach tensor-gpu are in `GPU_DEFS`.
+- `demo/gpu_layers_test.bend` cases 16 and 17: y and dx apart, at SiLU's 512 x 1536, inputs in [-6, 6) so that
+  `erf(x / sqrt 2)` reaches every piece. 0 ulps on 1 and 16 CPU threads. On the RTX 4050 y is 0, so `erf` in plain F32
+  arithmetic gives the host's bits on CUDA too (the comment in `main.bend` said that was not checked yet); dx is 113
+  ulps off, through CUDA's float `exp` in the pdf: with `exp_cr` in its place it is 0, as all 18 cases are. 113 is far
+  above SiLU's 4, so `make gpu` bounds y at 0 and lets dx through to the `exp_cr` check, as it does for attention.
+- `torch/fast.bend`'s `GroupNorm`, `main.bend`'s types and names, with `main.bend`'s block code (`gnf_grp`, `gnb_grp`)
+  in tensor-fork blocks. Forward: ranges of the n·ng (image, group) blocks, each writing only its own cells of y.
+  Backward: ranges of groups, each running its group's blocks image by image, so a range writes only its columns of dx
+  and its channels of dg and db, and each channel's terms are added in `main.bend`'s order from +0.0. A backward block
+  needs six arrays and `par4` shares four, so g, dg and db travel in one array of 3c; each range copies g out, works on
+  its own zeroed dg and db and copies its channels back. The step is this file's `opt_mat` on the two `1 x c`
+  matrices. At most `ew_depth`'s blocks, and no more than there are blocks or groups; a range with no work returns
+  its arrays unchanged.
+- `demo/fast_test.bend`: 8 images of 256 pixels in 8 groups of 16 (16 forward ranges, 8 backward), 4 of 1024 in 3
+  groups of 16 (ranges with no work in both passes), 3 of 5 in 3 groups of 2 (one range), with gradients that are not
+  zero, and the AdamW step on the gain and the bias. Its inputs leave out the specials: one NaN in a block makes the
+  whole block NaN on both sides and hides the rest. 19 zeros on 1 and 16 threads and in JavaScript; the Makefile,
+  `check_js.sh`, `package.sh` and `mutate.py` expect 19.
+- Seven mutants, each first checked to build and to move the numbers: on the fast lane a forward block taking its
+  group's number as its image, every backward group on the first group's channels, a backward range starting at
+  channel i0, dg copied back over g, and the gain's and bias's optimizer states swapped; on the device lane GELUErf's
+  forward in the tanh form and its backward with SiLU's derivative. `make mutate`: 156 mutants.
+- `fast.bend` still has no GELU of either form, so a program using `GELUErf` cannot move between the parallel and GPU
+  lanes by its import line alone.
+- Gates on this branch (busy machine; no timing taken): laws, check, bits, gpu (SiLU 4, cross-entropy 4, attention
+  176,128, small 7,680, full 172,032, full small 8,192, GELUErf's dx 113; all 18 cases 0 with `exp_cr`), check-js,
+  mutate (156 of 156 as expected, none skipped). Not merged until #22 is rebased and in: it touches `gpu.bend`, the
+  Makefile's `GPU_DEFS` and `gpu_layers_test` too, and its counts move with these.
+- Rebased on devel at 2.0.1 with tensor-array 0.1.20.0 (2026-11-06): devel had added Conv2d as `gpu_layers_test`'s
+  case 16, so GELUErf's y and dx are cases 17 and 18 and the test prints 19 numbers (`make gpu` holds y and Conv2d at 0
+  and lets dx through to the `exp_cr` check); `GPU_DEFS` has Conv2d's defs and GELUErf's; `fast_test` prints 19 zeros
+  as above; `make mutate` has devel's 167 and these seven, 174. The published `bendtorch-gpu@2.0.1.0` has no GELUErf, so
+  the README keeps "all but GELUErf" on its import line until the next release.
+- Gates after the rebase (Bend 2.0.40, busy machine): `make check bits` (every output identical), `make gpu` (SiLU 4
+  ulps, cross-entropy 4, attention 176,128, small 7,680, full 172,032, full small 8,192, GELUErf's dx 113; all 19 cases
+  0 with `exp_cr`), `reader`, `smol`, `smol-gpu`, `bits-smol`, `check-js`, and `make mutate`: 174 of 174 as expected
+  (171 caught, the 3 that survive by design), 44 minutes.

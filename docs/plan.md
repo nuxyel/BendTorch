@@ -263,8 +263,8 @@ After the 16-thread training work above. Asked for in #15 (a UNet denoiser), whi
 - GroupNorm: LayerNorm's kernel over one sample's group (h·w rows, c/g columns), scale and shift per channel. No
   BatchNorm for now. Done 2026-10-29 in `main.bend` (`GroupNorm(n, hw, ng, cg, eps)`, c = ng·cg in the type), against
   `F.group_norm`; in `gpu.bend` on 2026-10-30 (a leaf an (image, group) block, then a leaf a channel for the gain's
-  and bias's gradients), `main.bend`'s bits on 1 and 16 CPU threads and on the RTX 4050. Not in `fast.bend`, like
-  LayerNorm.
+  and bias's gradients), `main.bend`'s bits on 1 and 16 CPU threads and on the RTX 4050; in `fast.bend` on 2026-11-01
+  (ranges of blocks forward, ranges of groups backward), `main.bend`'s bits on 1 and 16 threads and in JavaScript.
 - The UNet's other pieces: a channel concat (skip connections), a nearest-neighbour upsample (a gather), a per-pixel
   time-embedding add.
 - Tests: sections in `demo/ops_test.bend` and `reference/test_ops.py` against `nn.Conv2d`, `F.unfold`/`F.fold`,

@@ -53,7 +53,7 @@ cost at run time.
 
 | | |
 |---|---|
-| Layers with parameters | `Linear` (with bias, PyTorch's `out x in` layout), `LinearFirst` (the same, for a model's first layer: it skips the input gradient nobody reads), `LinearNB` (no bias), `Embedding`, `RMSNorm`, `LayerNorm`, `GroupNorm` (images channels last, `(n·hw) x (ng·cg)`: each image's group of `cg` channels normalized over its `hw·cg` numbers, a gain and a bias per channel; LayerNorm's parameters; in `main.bend` and, since 2026-10-30, `gpu.bend`, not `fast.bend`), `Conv2d` (a 2-D convolution as `im2col` then `Linear`: patch matrix `n·oh·ow` rows of `c·k·k` numbers, parameters `Lin<c·k·k, co>`, so `lin_step`, `lin_zeros` and the checkpoint code serve it unchanged; the size is written as the kernel plus a surplus, `h + 2p = k + hs`, so a window bigger than its image cannot be written, and the stride as `s - 1`) |
+| Layers with parameters | `Linear` (with bias, PyTorch's `out x in` layout), `LinearFirst` (the same, for a model's first layer: it skips the input gradient nobody reads), `LinearNB` (no bias), `Embedding`, `RMSNorm`, `LayerNorm`, `GroupNorm` (images channels last, `(n·hw) x (ng·cg)`: each image's group of `cg` channels normalized over its `hw·cg` numbers, a gain and a bias per channel; LayerNorm's parameters; in `main.bend`, `gpu.bend` (since 2026-10-30) and `fast.bend` (since 2026-11-01)), `Conv2d` (a 2-D convolution as `im2col` then `Linear`: patch matrix `n·oh·ow` rows of `c·k·k` numbers, parameters `Lin<c·k·k, co>`, so `lin_step`, `lin_zeros` and the checkpoint code serve it unchanged; the size is written as the kernel plus a surplus, `h + 2p = k + hs`, so a window bigger than its image cannot be written, and the stride as `s - 1`) |
 | Layers without | `ReLU`, `Sigmoid`, `Tanh`, `SiLU`, `GELU` (tanh form), `GELUErf` (the exact form, PyTorch's default `approximate="none"`), `Softmax`, `LogSoftmax`, `RoPE` (rotate-half), `Attention` (causal, grouped-query heads; the sequences of a batch in parallel), `FullAttention` (the same layer with every position seeing every key), `Dropout` (a reproducible counter-based mask), `Add2`, `Mul2`, `Id` |
 | Combinators | `Seq` (one after the other), `Fork` (one input to two layers, the input gradients summed), `Both` (a pair of inputs to two layers), `Residual` (`x + f(x)`), `Tie` (first, middle, last, where the first and the last share one parameter: tied embeddings) |
 | Losses | `CrossEntropy` (mean, from logits; each row's softmax sum is a balanced tree, for vocabularies of 49,152), `NLL` (mean, from log-probabilities), `MSE` (mean) |
@@ -66,7 +66,8 @@ gives the same bits in C and JavaScript: a polynomial in x² below 0.84375, a co
 centres up to 3.92, and 1 from there on. Over all 2^32 inputs it is at most 0.93 ulp from float64's erf (the correctly
 rounded F32 on 97.1% of them), NaN for NaN, `erf(-0) = -0`. `GELUErf` computes `(x * 0.5) * (1 + erf(x * 0.70710677))`
 and the gradient `0.5 (1 + erf(x / √2)) + x · 0.3989423 · exp(-x²/2)`, both in PyTorch's order; the exponential is
-`F32.exp`, as in SiLU. Not in `gpu.bend` yet.
+`F32.exp`, as in SiLU. `gpu.bend` has it too (since 2026-11-01): its forward pass gives these bits on the device, and its
+gradient differs only through CUDA's float `exp` (below).
 
 ```python
 T.GELUErf(n, c)                         # Layer<Unit, Mat<n, c>, Mat<n, c>, Mat<n, c>>, as T.GELU(n, c)
@@ -81,7 +82,8 @@ pieces in [`demo/`](../demo/) and trained against PyTorch twins; see the reposit
 [`fast.bend`](fast.bend) has `LinearF`, `LinearFirstF` and `LinearNBF`: `Linear`, `LinearFirst` and `LinearNB` with
 their three products taken from `bend-ml-tensor-fork` instead of `bend-ml-tensor-array`, and their optimizer step in
 parallel blocks; and `SiLU`, `ActIn`, `Mul2`, `Add2`, `Residual`, `Mat.dup` and `Mat.sum2` with their element-wise loops
-in parallel blocks (tensor-fork's `par1`..`par4`). The types and the bits are `main.bend`'s: every number is computed by
+in parallel blocks (tensor-fork's `par1`..`par4`); and `GroupNorm`, `main.bend`'s block code over ranges of (image,
+group) blocks forward and of groups backward. The types and the bits are `main.bend`'s: every number is computed by
 `main.bend`'s own loop or tensor-array's own cells, only split into blocks that share their arrays instead of copying
 them. Small matrices (below 131072 numbers, MNIST's and the tiny Llama's) run in one block. The demos use them.
 
@@ -97,14 +99,15 @@ that reach it. No file with laws imports `fast.bend`, and `make laws` checks bot
 connects them to the proved layers is a test, not a proof: [`demo/fast_test.bend`](../demo/fast_test.bend) runs each
 fast piece and its proved twin on the same inputs (with -0, infinities, NaN and a subnormal mixed in), at MNIST's, the
 tiny Llama's and larger sizes: the linear layers forward and backward, the optimizer step under SGD, momentum and AdamW,
-SiLU, Mul2 and a Residual. Every output and gradient has the same bits, on 1 and 16 threads and in JavaScript. Seven
-mutants of the fast code are caught by it (`make mutate`).
+SiLU, Mul2, a Residual and GroupNorm (its inputs without the specials, which would turn whole blocks into NaN). Every
+output and gradient has the same bits, on 1 and 16 threads and in JavaScript. Thirteen mutants of the fast code are
+caught by it (`make mutate`).
 
 ## GPU layers (`gpu.bend`)
 
 [`gpu.bend`](gpu.bend) runs a whole training step as bangs (`!` calls), which run on the GPU in a binary built with CUDA
 (`CUDA_HOME=... bend x.bend -o x`) and on the CPU threads otherwise: `LinearF`, `LinearFirstF` and `LinearNBF` with their
-three products from bend-ml-tensor-gpu, and their optimizer step; SiLU, Mul2, Add2, Residual, `Mat.dup`, `Mat.sum2`,
+three products from bend-ml-tensor-gpu, and their optimizer step; SiLU, GELUErf, Mul2, Add2, Residual, `Mat.dup`, `Mat.sum2`,
 RMSNorm, GroupNorm, RoPE, Attention, FullAttention, Embedding, CrossEntropy and Conv2d (`im2col`, `col2im` and the layer, on the device). The names are `fast.bend`'s (which has `main.bend`'s
 RMSNorm, RoPE, Attention, Embedding and CrossEntropy under the same names), so a program switches by its import line:
 
@@ -125,7 +128,7 @@ The layers other than the products are tensor-gpu's `run1`..`run4` (bangs over a
 in plain Bend, which compute every number with `main.bend`'s own expressions and row code. So the types and bits are
 `main.bend`'s, except where CUDA's float `exp` is taken on the device: SiLU differs by up to 2 ulps in y and 4 in dX,
 the cross-entropy by up to 4, attention by up to 176,128 on cells near zero (about 1e-7 of each output's largest
-value), accepted because the cause is that `exp`: `make gpu` also builds every case with `exp_cr` (the host's
+value), GELUErf's dX by 113 (its y is exact), accepted because the cause is that `exp`: `make gpu` also builds every case with `exp_cr` (the host's
 exponential in plain Bend, test-only) in place of `F32.exp`, and then each gives `main.bend`'s bits on the device. [`demo/gpu_test.bend`](../demo/gpu_test.bend) checks the linear layers and
 [`demo/gpu_layers_test.bend`](../demo/gpu_layers_test.bend) the others, on the GPU and on 1 and 16 CPU threads (with
 `+RTS --gpu off -RTS`, all of them exact), and `make gpu` trains MNIST, the tiny Llama and the SmolLM2-sized block on the GPU

@@ -4,12 +4,13 @@
 # output (forward y, backward dX and the gradient; for the optimizer, the weights, the zeroed gradient and the moments):
 #   SiLU, Mul2, Mat.sum2 and Mat.dup, RMSNorm, RoPE, Attention, SGD, momentum, AdamW, MSE (loss and gradient),
 #   Embedding (rows and gradient), CrossEntropy (loss and gradient), attention at small and odd sizes, GroupNorm,
-#   FullAttention at SmolLM2's sizes and at small sizes, Conv2d at a small odd shape and at a realistic one
-# With `+RTS --gpu off -RTS` or without CUDA every case is 0 (the same bits). On the GPU, SiLU, attention, full attention
-# and cross-entropy take CUDA's float exp, whose last bit can differ from the host's: 1 ulp is accepted for an
-# exponential (my decision, 2026-10-18), and the differences that follow from it downstream are what this test shows;
-# every other case is 0.
-#   gpu_layers_test        every case, one line          gpu_layers_test <k>   case k alone (0..16, in the order above)
+#   FullAttention at SmolLM2's sizes and at small sizes, Conv2d at a small odd shape and at a realistic one, GELUErf's y
+#   and its dx (inputs in [-6, 6), every piece of erf)
+# With `+RTS --gpu off -RTS` or without CUDA every case is 0 (the same bits). On the GPU, SiLU, attention, full attention,
+# cross-entropy and GELUErf's gradient take CUDA's float exp, whose last bit can differ from the host's: 1 ulp is accepted
+# for an exponential (my decision, 2026-10-18), and the differences that follow from it downstream are what this test
+# shows; every other case is 0.
+#   gpu_layers_test        every case, one line          gpu_layers_test <k>   case k alone (0..18, in the order above)
 import Base
 import ../torch/main.bend as T
 import ../torch/gpu.bend as G
@@ -30,6 +31,15 @@ def arr(+cnt: Nat, +seed: U32) -> Array<F32>:
 
 def mat(+r: Nat, +c: Nat, +seed: U32) -> TA.Mat<r, c>:
   TA.Mat{arr(Nat.mul(r, c), seed)}
+
+# the same values times 6, in [-6, 6): GELUErf's erf(x / sqrt 2) then reaches all of its pieces, 1 included
+def fillw(k: Nat, +i: U32, +seed: U32, a: Array<F32>) -> Array<F32>:
+  match k:
+    case 0n: a
+    case 1n+p: fillw(p, (i + 1 : U32), seed, Array.set(F32, a, i, (val(i, seed) * 6.0 : F32)))
+
+def matw(+r: Nat, +c: Nat, +seed: U32) -> TA.Mat<r, c>:
+  TA.Mat{fillw(Nat.mul(r, c), 0, seed, Array.new(F32, TA.cap_depth(Nat.mul(r, c)), 0.0))}
 
 def bits(x: F32) -> U32:
   match x:
@@ -88,6 +98,22 @@ def c_m(+n: Nat, +c: Nat, a: RR<Unit, TA.Mat<n, c>, TA.Mat<n, c>>, b: RR<Unit, T
 
 def silu() -> U32:
   c_m(512n, 1536n, run(~Unit, ~TA.Mat<512n, 1536n>, ~TA.Mat<512n, 1536n>, ~TA.Mat<512n, 1536n>, ~T.SiLU(512n, 1536n), Unit{}, mat(512n, 1536n, 1), mat(512n, 1536n, 2), Unit{}), run(~Unit, ~TA.Mat<512n, 1536n>, ~TA.Mat<512n, 1536n>, ~TA.Mat<512n, 1536n>, ~G.SiLU(512n, 1536n), Unit{}, mat(512n, 1536n, 1), mat(512n, 1536n, 2), Unit{}))
+
+# GELUErf at SiLU's size: y alone (erf is F32 additions, multiplications and comparisons, no exp, so on the device too
+# it must be 0) and dx alone (its pdf takes F32.exp)
+def c_y(+n: Nat, +c: Nat, a: RR<Unit, TA.Mat<n, c>, TA.Mat<n, c>>, b: RR<Unit, TA.Mat<n, c>, TA.Mat<n, c>>) -> U32:
+  match a b:
+    case RR{y1, d1, g1} RR{y2, d2, g2}: dm(n, c, y1, y2)
+
+def c_dx(+n: Nat, +c: Nat, a: RR<Unit, TA.Mat<n, c>, TA.Mat<n, c>>, b: RR<Unit, TA.Mat<n, c>, TA.Mat<n, c>>) -> U32:
+  match a b:
+    case RR{y1, d1, g1} RR{y2, d2, g2}: dm(n, c, d1, d2)
+
+def gelue_y() -> U32:
+  c_y(512n, 1536n, run(~Unit, ~TA.Mat<512n, 1536n>, ~TA.Mat<512n, 1536n>, ~TA.Mat<512n, 1536n>, ~T.GELUErf(512n, 1536n), Unit{}, matw(512n, 1536n, 121), mat(512n, 1536n, 122), Unit{}), run(~Unit, ~TA.Mat<512n, 1536n>, ~TA.Mat<512n, 1536n>, ~TA.Mat<512n, 1536n>, ~G.GELUErf(512n, 1536n), Unit{}, matw(512n, 1536n, 121), mat(512n, 1536n, 122), Unit{}))
+
+def gelue_dx() -> U32:
+  c_dx(512n, 1536n, run(~Unit, ~TA.Mat<512n, 1536n>, ~TA.Mat<512n, 1536n>, ~TA.Mat<512n, 1536n>, ~T.GELUErf(512n, 1536n), Unit{}, matw(512n, 1536n, 121), mat(512n, 1536n, 122), Unit{}), run(~Unit, ~TA.Mat<512n, 1536n>, ~TA.Mat<512n, 1536n>, ~TA.Mat<512n, 1536n>, ~G.GELUErf(512n, 1536n), Unit{}, matw(512n, 1536n, 121), mat(512n, 1536n, 122), Unit{}))
 
 def c_mul(+n: Nat, +c: Nat, a: RR<Unit, T.Two<TA.Mat<n, c>, TA.Mat<n, c>>, TA.Mat<n, c>>, b: RR<Unit, T.Two<TA.Mat<n, c>, TA.Mat<n, c>>, TA.Mat<n, c>>) -> U32:
   match a b:
@@ -315,17 +341,27 @@ def gn() -> U32:
 
 # every case, on one line
 def all_cases() -> IO(Unit):
-  IO.print(U32.show(silu()) ++ " " ++ U32.show(mul2()) ++ " " ++ U32.show(sumdup()) ++ " " ++ U32.show(rms()) ++ " " ++ U32.show(rope()) ++ " " ++ U32.show(attn()) ++ " " ++ U32.show(step(T.SGD{0.01}, 0n)) ++ " " ++ U32.show(step(T.Momentum{0.01, 0.9}, 1n)) ++ " " ++ U32.show(step(T.Opt.at(T.CAdamW{0.001, 0.9, 0.999, 0.00000001, 0.01, 0.1, 0.001}, 0.1, 0.001), 2n)) ++ " " ++ U32.show(mse()) ++ " " ++ U32.show(emb()) ++ " " ++ U32.show(ce()) ++ " " ++ U32.show(attn_small()) ++ " " ++ U32.show(gn()) ++ " " ++ U32.show(attnf()) ++ " " ++ U32.show(attnf_small()) ++ " " ++ U32.show(conv2d()))
+  IO.print(U32.show(silu()) ++ " " ++ U32.show(mul2()) ++ " " ++ U32.show(sumdup()) ++ " " ++ U32.show(rms()) ++ " " ++ U32.show(rope()) ++ " " ++ U32.show(attn()) ++ " " ++ U32.show(step(T.SGD{0.01}, 0n)) ++ " " ++ U32.show(step(T.Momentum{0.01, 0.9}, 1n)) ++ " " ++ U32.show(step(T.Opt.at(T.CAdamW{0.001, 0.9, 0.999, 0.00000001, 0.01, 0.1, 0.001}, 0.1, 0.001), 2n)) ++ " " ++ U32.show(mse()) ++ " " ++ U32.show(emb()) ++ " " ++ U32.show(ce()) ++ " " ++ U32.show(attn_small()) ++ " " ++ U32.show(gn()) ++ " " ++ U32.show(attnf()) ++ " " ++ U32.show(attnf_small()) ++ " " ++ U32.show(conv2d()) ++ " " ++ U32.show(gelue_y()) ++ " " ++ U32.show(gelue_dx()))
 
 # case k alone (0 = SiLU .. 11 = CrossEntropy, 12 = attention at small sizes, 13 = GroupNorm, 14 = full attention at
-# SmolLM2's sizes, 15 = full attention at small sizes, 16 = Conv2d). In the line above, a case's bangs can follow host work in the same
+# SmolLM2's sizes, 15 = full attention at small sizes, 16 = Conv2d, 17 = GELUErf's y, 18 = its dx). In the line above, a case's bangs can follow host work in the same
 # evaluation and then run on the CPU threads: under nsys, the whole line made 15 bangs on the device, and cross-entropy
 # read 0 ulps there against 4 alone. So make gpu runs each case as its own program (nsys: every case's bangs on the
 # device, 2026-10-21).
+def one_18(k: Nat) -> U32:
+  match k:
+    case 0n: gelue_dx()
+    case 1n+q: 4294967295
+
+def one_17(k: Nat) -> U32:
+  match k:
+    case 0n: gelue_y()
+    case 1n+q: one_18(q)
+
 def one_16(k: Nat) -> U32:
   match k:
     case 0n: conv2d()
-    case 1n+q: 4294967295
+    case 1n+q: one_17(q)
 
 def one_15(k: Nat) -> U32:
   match k:

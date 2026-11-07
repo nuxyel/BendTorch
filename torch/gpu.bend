@@ -9,7 +9,7 @@
 # the CPU threads otherwise:
 # - LinearF, LinearFirstF and LinearNBF: their three products (x·Wᵀ, dY·W, dYᵀ·X added into dW) from tensor-gpu, and
 #   their optimizer step.
-# - SiLU, Mul2, Add2, Residual, Mat.dup and Mat.sum2: their element-wise loops.
+# - SiLU, GELUErf, Mul2, Add2, Residual, Mat.dup and Mat.sum2: their element-wise loops.
 # - RMSNorm, RoPE and Attention (main.bend's names; fast.bend's are main.bend's, on the CPU).
 # - im2col, col2im and Conv2d: the gather and its scatter as cell bangs, then the linear layer's three products.
 # - MSE, CrossEntropy and Embedding (its rows, its gradient and its step), so that a training step's work, the loss
@@ -19,8 +19,8 @@
 # Each bang is one of tensor-gpu's run1..run4 (outputs in place) or run1_new..run4_new (outputs made on the device):
 # a tree of leaves, every node sharing the arrays. The code of a leaf is below, in plain Bend, and computes each number
 # with main.bend's own expression or row code (rmsf_row, ssq, rmsb_dot, rope_one, dot0, psmc, g_set2, adam_m..), so the bits
-# are main.bend's, except where an exponential is taken on the device (SiLU, attention's softmax, cross-entropy): CUDA
-# takes the float overload of exp there and its last bit can differ from the host's (the known
+# are main.bend's, except where an exponential is taken on the device (SiLU, GELUErf's gradient, attention's softmax,
+# cross-entropy): CUDA takes the float overload of exp there and its last bit can differ from the host's (the known
 # limit of bendlang/bend#1305); 1 ulp is accepted there, my decision of 2026-10-18 (tests: demo/gpu_test.bend
 # and demo/gpu_layers_test.bend). Sizes, depths and capacities are
 # computed on the host and passed in. The arrays stay on the device from one bang to the next as long as the host only
@@ -111,6 +111,13 @@ def lf_silu(+t: U32, +l: U32, +e: EN, x1: Array<F32>, x2: Array<F32>, x3: Array<
 def lf_silud(+t: U32, +l: U32, +e: EN, x1: Array<F32>, x2: Array<F32>, x3: Array<F32>, x4: Array<F32>, o: Array<F32>) -> Array<F32>:
   ewi(~T.silu_d, t, l, e, o, x1)
 
+# GELUErf: main.bend's gelu_erf_v(x), and gelu_erf_d(dy, x) with o = dy written in place, x1 = x
+def lf_gelue(+t: U32, +l: U32, +e: EN, x1: Array<F32>, x2: Array<F32>, x3: Array<F32>, x4: Array<F32>, o: Array<F32>) -> Array<F32>:
+  ew1(~T.gelu_erf_v, t, l, e, x1, o)
+
+def lf_gelued(+t: U32, +l: U32, +e: EN, x1: Array<F32>, x2: Array<F32>, x3: Array<F32>, x4: Array<F32>, o: Array<F32>) -> Array<F32>:
+  ewi(~T.gelu_erf_d, t, l, e, o, x1)
+
 # o = a, written in place, x1 = b: a + b
 def lf_add(+t: U32, +l: U32, +e: EN, x1: Array<F32>, x2: Array<F32>, x3: Array<F32>, x4: Array<F32>, o: Array<F32>) -> Array<F32>:
   ewi(~T.f32_add, t, l, e, o, x1)
@@ -168,6 +175,19 @@ def silu_b(+n: Nat, +c: Nat, s: TA.Mat<n, c>, dy: TA.Mat<n, c>) -> T.Bwd<Unit, T
 # SiLU: y = silu(x), the input saved; dx = silu'(x) * dy
 def SiLU(+n: Nat, +c: Nat) -> T.Layer<Unit, TA.Mat<n, c>, TA.Mat<n, c>, TA.Mat<n, c>>:
   T.Layer{p => x => silu_f(n, c, x), p => s => dy => g => silu_b(n, c, s, dy), op => p => g => st => T.no_step(Unit, op, p, g, st), u => Unit{}, p => T.PL{p, Nil{}}, p => xs => off => T.PA{p, xs, off}, p => xs => off => T.PA{p, xs, off}, u => 0}
+
+def gelue_f(+n: Nat, +c: Nat, x: TA.Mat<n, c>) -> T.Fwd<Unit, TA.Mat<n, c>, TA.Mat<n, c>>:
+  match x:
+    case TA.Mat{a}: silu_f2(n, c, TG.run1_new(~EN, ~lf_gelue, TG.depth(Nat.mul(n, c)), en(Nat.mul(n, c)), a, nn(Unit{}), nn(Unit{}), nn(Unit{}), TA.cap_depth(Nat.mul(n, c))))
+
+def gelue_b(+n: Nat, +c: Nat, s: TA.Mat<n, c>, dy: TA.Mat<n, c>) -> T.Bwd<Unit, TA.Mat<n, c>>:
+  match s dy:
+    case TA.Mat{x} TA.Mat{d}: T.Bwd{Unit{}, TA.Mat{r1_a(TG.run1(~EN, ~lf_gelued, TG.depth(Nat.mul(n, c)), en(Nat.mul(n, c)), x, nn(Unit{}), nn(Unit{}), nn(Unit{}), d))}, Unit{}}
+
+# GELUErf, the exact GELU: y = gelu(x) with main.bend's erf in plain F32 arithmetic, the input saved; dx = gelu'(x) * dy,
+# whose pdf takes F32.exp (CUDA's float exp on the device, as SiLU)
+def GELUErf(+n: Nat, +c: Nat) -> T.Layer<Unit, TA.Mat<n, c>, TA.Mat<n, c>, TA.Mat<n, c>>:
+  T.Layer{p => x => gelue_f(n, c, x), p => s => dy => g => gelue_b(n, c, s, dy), op => p => g => st => T.no_step(Unit, op, p, g, st), u => Unit{}, p => T.PL{p, Nil{}}, p => xs => off => T.PA{p, xs, off}, p => xs => off => T.PA{p, xs, off}, u => 0}
 
 def mul2_f2(-n: Nat, -c: Nat, q: TG.R1) -> T.Fwd<Unit, TA.Mat<n, c>, T.Two<TA.Mat<n, c>, TA.Mat<n, c>>>:
   match q:
