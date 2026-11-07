@@ -127,6 +127,9 @@ Numbers marked "busy machine" were taken with other jobs running and are a first
 - No `.pt` loading: weights come from a flat binary file in the twins' layout or from a `model.safetensors`
   (`torch/load.bend`, through the temporary foreign reader). The exact GELU
   (`GELUErf`) runs on the CPU and in JavaScript; it is not in `gpu.bend`.
+- `Tile` (a per-image row broadcast) runs on the CPU and in JavaScript; it is not in `gpu.bend` yet. The device twin
+  is written and run by the maintainer after the merge, the way `RoPE2d`'s is, and the CPU lane's numbers are
+  `reference/tile_check.py`'s.
 - int8 is for inference only (weights quantized by rows, activations in F32).
 - Mixed precision is BF16 storage with F32 arithmetic and F32 master weights, measured on the tiny Llama only. It
   costs time: 200 steps take 180 ms against 160 in F32 on one thread and 330 against 220 on 16

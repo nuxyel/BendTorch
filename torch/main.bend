@@ -2327,7 +2327,7 @@ type TSet is Type:
   TSet{s: Array<F32>, o: Array<F32>}
 
 # o[i] = v, with the array read handed back
-def tile_set(+i: U32, +j: U32, rs: Array<F32> & F32, ro: Array<F32>) -> TSet:
+def tile_set(+i: U32, rs: Array<F32> & F32, ro: Array<F32>) -> TSet:
   match rs:
     case Tuple{s, +v}:
       TSet{s, Array.set(F32, ro, i, v)}
@@ -2350,14 +2350,14 @@ def tile_cells(+left: Nat, +fwd: Bool, +d: U32, +s: U32, st: TSet) -> TSet:
     case 0n True{} st2:
       st2
     case 1n+q True{} TSet{a, o}:
-      tile_cells(q, True{}, (d + 1 : U32), (s + 1 : U32), tile_set(d, s, Array.get(F32, a, s), o))
+      tile_cells(q, True{}, (d + 1 : U32), (s + 1 : U32), tile_set(d, Array.get(F32, a, s), o))
     case 0n False{} st2:
       st2
     case 1n+q False{} TSet{a, o}:
       tile_cells(q, False{}, (d + 1 : U32), (s + 1 : U32), tile_add(s, Array.get(F32, a, d), o))
 
-# row j of image i
-def tile_row(+fwd: Bool, +t: Nat, +c: Nat, +i: Nat, +j: Nat, st: TSet) -> TSet:
+# row j of image i; the law's tile_row is about tile_row_of, so this walk ends in _go like the other loops
+def tile_row_go(+fwd: Bool, +t: Nat, +c: Nat, +i: Nat, +j: Nat, st: TSet) -> TSet:
   tile_cells(c, fwd, U32.from_nat(tile_dst(c, t, i, j, 0n)),
     U32.from_nat(tile_src(c, t, Nat.add(Nat.mul(i, t), j), 0n)), st)
 
@@ -2367,7 +2367,7 @@ def tile_rows(+left_j: Nat, +fwd: Bool, +t: Nat, +c: Nat, +i: Nat, st: TSet) -> 
     case 0n st2:
       st2
     case 1n+q st2:
-      tile_rows(q, fwd, t, c, i, tile_row(fwd, t, c, i, Nat.sub(t, left_j), st2))
+      tile_rows(q, fwd, t, c, i, tile_row_go(fwd, t, c, i, Nat.sub(t, left_j), st2))
 
 # every image, then the arrays back
 def tile_imgs(+left_i: Nat, +i: Nat, +fwd: Bool, +b: Nat, +t: Nat, +c: Nat, st: TSet) -> TSet:
