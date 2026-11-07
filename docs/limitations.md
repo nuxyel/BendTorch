@@ -73,9 +73,9 @@ Numbers marked "busy machine" were taken with other jobs running and are a first
   step's products run on one thread each, except the output layer (one thread gives 7.9 s for 60 tokens, 16 give 5.6
   s). The tiny Llama's generation has none: its window slides from the first character, so nothing can be reused.
 - The CPU builds use SSE only (4 numbers an instruction): `bend -o` calls `clang -O3` without a target, and Bend
-  2.0.39 takes no compiler flags. Built for this machine (`-march=native`, with `bend X.bend -o x.c` and clang by hand),
-  a SmolLM2-135M step is 12.5% faster on one thread and 6.8% on 16, with the same bits (idle machine, 3 alternated
-  rounds, 2026-10-20); I keep the default build so that the numbers are what anyone gets from `bend`.
+  2.0.40, like 2.0.39, takes no compiler flags. Built for this machine (`-march=native`, with `bend X.bend -o x.c` and
+  clang by hand), a SmolLM2-135M step is 12.5% faster on one thread and 6.8% on 16, with the same bits (idle machine, 3
+  alternated rounds, 2026-10-20); I keep the default build so that the numbers are what anyone gets from `bend`.
 - On the GPU (RTX 4050 Laptop), BendTorch is slower than on 16 CPU threads at every size I train. A SmolLM2-135M-sized
   block: 703 ms for 3 steps on the GPU against 416 on 16 CPU threads (idle machine). Where the GPU time goes, from one
   step profiled with nsys on a busy machine (about 460 ms in all, so not the idle average above): about 160 ms filling
@@ -137,5 +137,5 @@ Numbers marked "busy machine" were taken with other jobs running and are a first
 ## Machine and versions
 
 - Measured on one laptop: Core Ultra 7 155H, 32 GB, RTX 4050 Laptop 6 GB; PyTorch 2.14.1; Bend 2.0.37 for the numbers
-  dated up to 2026-10-21 and 2.0.39, the pinned version, for those since 2026-10-24. Numbers on other machines will
-  differ; the bits on the CPU should not.
+  dated up to 2026-10-21, 2.0.39 for those from 2026-10-24 to 2026-11-05, and 2.0.40, the pinned version, for those
+  since 2026-11-07. Numbers on other machines will differ; the bits on the CPU should not.
