@@ -124,11 +124,11 @@ Numbers marked "busy machine" were taken with other jobs running and are a first
   trip is a law at any kernel, stride and padding, cell by cell: `conv_roundtrip_window` says slot `(ch, ky, kx)` of
   output position `(oy, ox)` is image cell `(oy·s + ky - p, ox·s + kx - p)`, channel `ch`, and the same numbers are
   still compared with PyTorch at three shapes (`reference/conv2d_check.py`). Still owed is the adjoint law
-  ([#15](https://github.com/nuxyel/BendTorch/issues/15)): `col2im` is the gather's transpose, so `dy·im2col(x) =
+  ([#29](https://github.com/nuxyel/BendTorch/issues/29)): `col2im` is the gather's transpose, so `dy·im2col(x) =
   col2im(dy)·x`. It cannot be proved about the code as it stands — `col2im` accumulates into an array by index, and
-  the checker cannot follow writes into an array by index (the same limit `causal`'s law records) — so it has to be
-  stated over a model in `torch/spec.bend`, and that model needs index-addressed accumulation (`nth`, `set_at`) that
-  the model does not have yet. That is the work #15 waits for.
+  the checker cannot follow writes into an array by index (the same limit `causal`'s law records) — so it waits on
+  `ASet.Apart` over `Array.new`'s tree, and on the four `U32` facts of nuxyel/bend-ml#26, which lets
+  the accumulation be stated about the code rather than about a model of it. That is the work #29 carries.
 - No `.pt` loading: weights come from a flat binary file in the twins' layout or from a `model.safetensors`
   (`torch/load.bend`, through the temporary foreign reader). The exact GELU
   (`GELUErf`) runs on the CPU and in JavaScript; it is not in `gpu.bend`.
