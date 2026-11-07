@@ -119,12 +119,11 @@ Numbers marked "busy machine" were taken with other jobs running and are a first
   `2·half_x` by its `x`, so an image's two axes carry their own frequencies: row `r` of `b·th·tw` gives
   `y = (r mod (th·tw))/tw`, `x = r mod tw`. `RoPE` is untouched. Tested at one shape against a hand-built 2D rotation
   (`reference/rope2d_check.py`: a 2x2 grid, head split 2+2, forward and backward, `1.192e-07` at a tolerance of
-  `1e-6`) which are stated over
-  the addressing defs in `main.bend` (`rope2_yaddr`, `rope2_xaddr`, `rope2_yentry`, `rope2_xentry`, which the layer's
-  `U32` code calls through `U32.from_nat`), so there is no comparison, no pick and no `U32` arithmetic left in the
-  addressing. The float claims (identity at `(0,0)`; `(y,x)`
-  then `(-y,-x)`) remain tests: a law cannot compare `F32`. **No device twin**: `gpu.bend` needs the same walk, which
-  needs a CUDA toolkit; absent here, so it is deferred rather than committed untested.
+  `1e-6`); its three laws are stated over the addressing defs in `main.bend` (`rope2_yaddr`, `rope2_xaddr`,
+  `rope2_yentry`, `rope2_xentry`, which the layer's `U32` code calls through `U32.from_nat`), so there is no
+  comparison, no pick and no `U32` arithmetic left in the addressing. The float claims (identity at `(0,0)`; `(y,x)`
+  then `(-y,-x)`) remain tests: a law cannot compare `F32`. It is not in `gpu.bend` yet: the device twin is written
+  and run by the maintainer after the merge, the way `Tile`'s is.
 
 - The layers work on matrices: a tensor is a `Mat<r, c>`, with batches and heads folded into rows and columns.
 - Convolution is `Conv2d`, `im2col` then `Linear`'s three products, in `main.bend` and, with the gather and scatter as
