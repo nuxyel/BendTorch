@@ -1983,6 +1983,116 @@ Six new laws and one rewritten, all by `--verdict`, about the code the demos exe
   took 31 seconds, checkout and text rules included.
 - The full tier by hand on `devel` (0931e99, a dispatch: everything, as the Sunday run and a release will): green in
   58 minutes, `make check bits` 10, the 167 mutants 44 (163 as expected, the same 4 skipped), the JavaScript lane 4.
+## 2026-11-04: the im2col round trip at stride `k` (#29)
+
+`conv_roundtrip` had the `k = 1` case. What was missing was the general one: with a stride equal to the kernel size
+and no padding, slot `(ch, ky, kx)` of a patch row is image cell `(oy·k + ky, ox·k + kx)`, channel `ch`, so the gather
+and the scatter name the same cell for every `k`. The numbers said so at `k = s = 1, 2, 3, 4` (`test/im2col-ks`,
+all `0.000e+00`); now the law says it.
+
+### The lemma, beside `divmod_one`
+
+The centre is the mixed-radix decode `i = (p_ch·k + p_ky)·k + p_kx`, and Bend's division is repeated subtraction, so
+the first thing to prove is that `Nat.divmod.go` meets its spec. That is `divmod_go_spec`: with `b` the original
+divisor, at every step `a = n + d·b + r` **and** `b = m + r + 1`, hence at `n = 0` `a = d·b + r`. It is an induction
+on `n` with those two as the hypothesis, and `divmod_spec` is the instantiation at `Nat.divmod(a, b)`, one `def` each
+beside `divmod_one`. The statement had been instrumented over 41 `(a, b)` pairs and 860 steps before it was proved
+(0 invariant failures), so the induction was not guessed.
+
+### What the decode needed
+
+Each level of `i = (ch·k + ky)·k + kx` is a block count plus a rest, which is `gqa_head`'s idiom generalised:
+
+- `go_count`: `n` steps of the countdown leave the quotient and add `n` to the remainder.
+- `go_blocks`, `go_blocks_fst`, `go_blocks_snd`: `j` whole blocks of `1 + (n + t)` numbers, then `n` numbers that do
+  not complete one, give quotient `j` and remainder `n`. (`div_blocks` counts the blocks; `div_rest` only had the
+  quotient, and the decode needs both halves.)
+- `split_idx`: `(ch·k + ky)·k + kx = ch·(k·k) + (ky·k + kx)` (`mul_dist`, `mul_assoc`).
+- `radix_bound`: `k·k = 1 + ((ky·k + kx) + (k·a + b))` when `k = 1 + ky + a` and `k = 1 + kx + b`, which is the room
+  the inner cell leaves. It is a ten-step `Nat.add`/`Nat.mul` chain (`add4` earns its keep here).
+- then `p_ch_ks` (the outer quotient), `p_ky_mod` (the outer remainder), `p_ky_ks`/`p_kx_ks` (the inner quotient and
+  remainder), `p_iy_ks`/`p_ix_ks` (`sub0`).
+
+The bounds are hypotheses, as in `replayed_read` in bend-ml: `ky < k` is `k = 1 + ky + a`, `kx < k` is
+`k = 1 + kx + b`. Bend has no order predicate to assume, and the decode genuinely needs the bounds — a part larger
+than the radix does not decode — so they cannot be dropped, only written as decompositions.
+
+### What unblocked the proof
+
+Two things, both of which had stopped earlier attempts:
+
+- **`NL.add_succ`.** The step the kernel would not take definitionally is `1 + (np + X) = np + (1 + X)`; `add_succ`
+  is that, and the `m = 0` case of `divmod_go_spec` is three rewrites around it (`add_succ`, `add_comm`,
+  `add_assoc`). Before, the case failed with `expected 1n+Nat.add(np, …)`, `observed Nat.add(np, 1n+…)`.
+- **`+e` / `+f` on proof parameters.** A proof used twice in one branch is otherwise "consumed more than once"; the
+   `+` modifier makes it reusable. `divmod_go_spec` uses its invariant in both recursive calls and in the statement
+   of its helper lemma, so it needs it.
+
+### Runs
+
+- `bend PROOF.bend --check-only` and `bend PROOF.bend --verdict`: ALL PROOFS CHECK.
+- `make laws` (the whole gate: `torch/main.bend`, both `PROOF.bend` runs, `dtype.bend --verdict`, the `FAST_DEFS` /
+  `LOAD_DEFS` / `GPU_DEFS` pins, the `load.bend`/`gpu.bend`/`fast.bend` import bans and the ten `tests/bad_*.bend`
+  rejections): green, 36 laws in all.
+- The numbers are unchanged from `test/im2col-ks`: the `k = s` round trip exact at `k = 1, 2, 3, 4`.
+
+### Not covered, and said so
+
+The law is `s = k` and `p = 0`. A stride other than the kernel size, or padding, changes which cells a window reads
+and is not stated; the padded case reads `0` outside the window (`p_ok`), which is a statement about `p_rc`, not
+about the index. The adjoint of `im2col` (that `col2im` is the transpose of the gather) is not a law either; it is
+the next piece of #29.
+
+## 2026-11-04: the round trip at any stride and padding, and what the adjoint still needs
+
+`conv_roundtrip_ks` was `s = k, p = 0`. The real layers are `k = 3, s = 2, p = 1`, and the decode turned out not to
+care: `p_ky` and `p_kx` are the slot's offsets inside the `k x k` window, so they never mention the stride or the
+padding. Only the source coordinate does, and it is `(oy*s + ky) - p`.
+
+### The law
+
+`conv_roundtrip_window`: for every kernel, stride and padding, slot `(ch, ky, kx)` of output position `(oy, ox)` is
+image cell `(oy*s + ky - p, ox*s + kx - p)`, channel `ch`. Four bounds are hypotheses, all written as
+decompositions: `k = 1 + ky + a`, `k = 1 + kx + b` (the window offsets), and `oy*s + ky = p + ty`,
+`ox*s + kx = p + tx` (the window row and column are inside the image). The last two are not decoration: without them
+`p_iy`/`p_ix` truncate at 0 and `p_ok` is false, so the gather reads 0 and there is no cell to name.
+
+### What the proof cost
+
+One lemma, `sub_self_add(p, t)`: `(p + t) - p = t`, an induction on `p` (`sub0` at 0, one definitional step after).
+`p_iy_win`/`p_ix_win` are then `p_ky_ks`/`p_kx_ks` with `sub(x, 0)` replaced by "subtract `p` from the window's
+coordinate": the congr chain rewrites `p_ky` to `ky`, the window hypothesis rewrites `oy*s + ky` to `p + ty`, and
+`sub_self_add` cancels the padding. The law's proof is the same assembly as `conv_roundtrip_ks`'s with those two.
+
+`conv_roundtrip_ks` is now *proved as an instance* of the general law (`s = k`, `p = 0`, where the two window
+hypotheses are `{==}` because `0 + x = x`), so the subsumption is checked by the kernel rather than asserted in a
+comment. `conv_roundtrip` (`k = 1`) is a different statement — it takes the image coordinate directly instead of
+deriving it from `(oy, ox)` — so it keeps its own proof, and the README says so.
+
+### Runs
+
+- `bend PROOF.bend --check-only` and `--verdict`: ALL PROOFS CHECK.
+- `make laws`: green, 37 laws in all, the ten `tests/bad_*.bend` still rejected as expected.
+- `reference/conv2d_check.py` rebuilt from source (`.scratch/conv2d_probe` removed first): y, dx, dW and db all
+  `0.000e+00` on the three shapes, including `c1` and `c2` at `k = 3, p = 1, s = 2` — the geometry the new law states
+  per cell. `reference/im2col_check.py` still `0.000e+00` at `k = 1, k = s = 2, 3, 4`.
+
+### The adjoint (#15), and why it is not next in the same sitting
+
+`col2im` is the gather's transpose, so `dy·im2col(x) = col2im(dy)·x`. It cannot be proved about the code as it
+stands: `col2im` accumulates into an array (`add_at`, `Array.set`) by index, and the checker cannot follow writes into
+an array by index — the same limit the `causal` law records for its probabilities. So the adjoint has to be stated
+over a model in `torch/spec.bend`, and that model needs index-addressed accumulation: `nth`/`set_at` over
+`List<Nat>`, with the arithmetic that goes with them. `spec.bend` has dots, matrix-vector products and Frobenius
+inner products over whole lists, but no indexed access at all.
+
+The shape the proof would take: with the image a `List<Nat>` and the slot-to-cell map `p_src` (whose per-cell
+behaviour is now a law), the adjoint is a reindexing of one sum,
+`Σ_slots dy[j]·x[p_src j] = Σ_cells x[c]·(Σ_{j: p_src j = c} dy[j])`, so it needs (i) an exchange of two sums,
+(ii) that each slot's cell is a real cell (boundedness: `p_src j < n·h·w·c`), and (iii) that summing over the cells
+of the image picks each slot's term exactly once. For `s = k` that last one is a bijection and the decode gives it;
+for overlapping windows it is the fiber sum, which needs `Nat` equality reasoning the codebase does not have yet.
+That is the work, and it is a piece of its own rather than an afternoon's extension of tonight's lemma.
 
 ## Bend 2.0.40 (2026-11-06)
 
