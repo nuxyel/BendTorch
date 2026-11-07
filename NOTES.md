@@ -2019,3 +2019,14 @@ Six new laws and one rewritten, all by `--verdict`, about the code the demos exe
   every one is mutated, and the AdamW mutant says 3: "no weight decay" drops it from all three loops.
 - `make mutate-smol` on devel (Bend 2.0.40): the control passes and 6 mutants, 6 as expected (three caught, the three
   that survive at this scale with their reason).
+
+## tensor-array 0.1.20.0, tensor-fork 0.1.7.1, tensor-gpu 0.1.5.2 (2026-11-06)
+
+- Every import moves from tensor-array 0.1.18.0 (0.1.14.0 in torch/README's example), tensor-fork 0.1.5.0 and
+  tensor-gpu 0.1.5.0 to the versions bend-ml published the same day, which take the same `Mat` again. What changed
+  under BendTorch: tensor-array 0.1.19.0's Array laws and its two faster defs (the dot product unrolled by four,
+  `Mat.to_list` without a reverse), 0.1.20.0's law `matvec_l_len` (only lines added); tensor-fork 0.1.6.0's
+  `softmax_ce` and 0.1.7.x's cells read with `Array.get_unchecked`, which needs Bend 2.0.40 (the pin since this
+  morning); tensor-gpu 0.1.5.x's code is 0.1.5.0's. The products keep their bits.
+- Gates on a busy machine (bits and pass/fail only): `make check bits` (the laws, every test, `bench/bits.txt`'s
+  outputs identical), `make gpu`, `smol`, `smol-gpu`, `bits-smol`, `reader`, and `make mutate-smol` (6 of 6 as expected).
