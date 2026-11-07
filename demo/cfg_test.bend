@@ -15,7 +15,7 @@
 
 import Base
 import ../torch/main.bend as T
-import bend-ml-tensor-array@0.1.18.0/main.bend as TA
+import bend-ml-tensor-array@0.1.20.0/main.bend as TA
 
 def X() -> Type:
   TA.Mat<1n, 4n>

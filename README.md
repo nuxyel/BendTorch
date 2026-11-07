@@ -123,22 +123,30 @@ one or two F32 operations in PyTorch's order (relu, an embedding lookup, the MSE
 ## 04 · Speed
 
 On an Intel Core Ultra 7 155H and an RTX 4050 Laptop GPU, idle machine, medians of 5 alternated rounds (SmolLM2: 3),
-2026-10-24, Bend 2.0.39. One thread is pinned to a performance core:
+2026-11-07, Bend 2.0.40. One thread is pinned to a performance core:
 
 | | BendTorch, 1 thread | PyTorch, 1 thread | BendTorch, 16 threads | PyTorch, 16 threads | BendTorch, GPU |
 |---|---|---|---|---|---|
-| MNIST, one epoch of SGD | 1.7 s | 0.33 s | 1.3 s | 0.39-1.12 s | 8.6 s |
-| two-layer Llama, one AdamW step | ≤ 0.8 ms | 1.9-2.7 ms | ≤ 1.0 ms | 3.1-7.6 ms | ≤ 84 ms |
-| one decoder block at SmolLM2-135M's sizes (512 rows), one AdamW step | 659 ms | 108 ms | 140 ms | 50 ms | 205 ms |
-| SmolLM2-135M, one AdamW step on 2 x 128 tokens | 14.2 s | 2.48 s | 4.3 s | 0.98 s | - |
+| MNIST, one epoch of SGD | 1.6 s | 0.33 s | 1.1 s | 0.24-1.05 s | 8.4 s |
+| two-layer Llama, one AdamW step | ≤ 0.75 ms | 1.9-2.8 ms | ≤ 0.85 ms | 3.1-7.6 ms | ≤ 82 ms |
+| one decoder block at SmolLM2-135M's sizes (512 rows), one AdamW step | 660 ms | 107 ms | 123 ms | 42 ms | 189 ms |
+| SmolLM2-135M, one AdamW step on 2 x 128 tokens | 14.3 s | 2.46 s | 3.3 s | 1.05 s | - |
 
 BendTorch is 5x to 6x slower than PyTorch on MNIST and on one thread of the SmolLM2-sized block and of SmolLM2-135M
-itself (on 16 threads 2.8x on the block and 4.4x on SmolLM2), where the products dominate: bend-ml's products read cells of 8 numbers per array
-access, but each sum is a chain of scalar F32 additions in a fixed order, far from a BLAS kernel. It is 2.4x to 3.5x
+itself (on 16 threads 2.9x on the block and 3.1x on SmolLM2), where the products dominate: bend-ml's products read cells of 8 numbers per array
+access, but each sum is a chain of scalar F32 additions in a fixed order, far from a BLAS kernel. It is 2.5x to 3.7x
 faster on the small Llama on one thread, where PyTorch's per-operation overhead dominates a model 32 wide (its
 BendTorch cells are the whole program's wall time, start-up included, so they are upper bounds; PyTorch's range is
 two harnesses, steps 2-200 on its clock and 200 steps minus start-up). Every loss in these runs is checked against
 PyTorch's ([`BENCHMARK.md`](BENCHMARK.md) says how), and BendTorch gives the same bits on 1 and 16 threads.
+
+Against the 2026-10-24 round on Bend 2.0.39, a SmolLM2-135M step on 16 threads went from 4.3 s to 3.3 s (-25%), the
+block from 140 to 123 ms on 16 threads (-12%) and from 205 to 189 ms on the GPU (-8%), and MNIST's epoch from 1.3 to
+1.1 s on 16 threads. One thread did not move on the block (659 to 660 ms) or on SmolLM2 (14.2 to 14.3 s, +0.7%), and
+PyTorch's own one-thread cells are within 1% of that round's. Bend and the code both changed between the two rounds:
+attention's key/value groups and the parallel zeros (2026-10-25, below) and the bend-ml packages under the layers
+(tensor-array 0.1.14.0 to 0.1.20.0, tensor-fork 0.1.2.0 to 0.1.7.1, tensor-gpu 0.1.2.1 to 0.1.5.2), so these numbers do
+not say which change gave what.
 
 On 2026-10-21 I found why a SmolLM2-135M step stopped scaling at about 6 threads: attention ran its 2 sequences one
 after the other. With them in parallel (the same bits, by the laws already proved), idle machine, 3 alternated rounds,
@@ -169,7 +177,7 @@ The demos' linear layers, their optimizer step and the element-wise layers are t
 [`torch/fast.bend`](torch/fast.bend), whose parallel blocks share their arrays instead of copying them (outside the
 proofs; tested bit for bit against the proved layers). The row-wise layers (attention, the norms, softmax, RoPE, the
 embedding and the losses) run over arrays a row at a time, with the bits of the list versions they replaced. 16
-threads do not help a step as small as the tiny Llama's; on the block they give 4.7x over one thread. On the GPU every
+threads do not help a step as small as the tiny Llama's; on the block they give 5.4x over one thread. On the GPU every
 size here is slower than 16 CPU threads: most of a GPU step is Bend's runtime, not the arithmetic
 ([`docs/limitations.md`](docs/limitations.md#speed)). PyTorch's 16-thread times swing from round to round on this
 machine, so those cells give the range of the rounds.
@@ -180,14 +188,14 @@ against PyTorch's.
 
 ## 05 · Use it
 
-Four packages on BendHub, all at version 2.0.1.0. Import the files you need in your own Bend program:
+Four packages on BendHub, all at version 2.0.2.0. Import the files you need in your own Bend program:
 
 ```python
-import bendtorch@2.0.1.0/main.bend as T          # layers, combinators, losses, optimizers, Train
-import bendtorch@2.0.1.0/tensor.bend as TT       # general tensors: any rank, broadcasting, their gradients
-import bendtorch-fast@2.0.1.0/main.bend as F     # the same layers and bits, in parallel on the CPU
-import bendtorch-gpu@2.0.1.0/main.bend as G      # the layers on one CUDA GPU (all but GELUErf)
-import bendtorch-load@2.0.1.0/main.bend as L     # weights from flat binary and safetensors files, checkpoints
+import bendtorch@2.0.2.0/main.bend as T          # layers, combinators, losses, optimizers, Train
+import bendtorch@2.0.2.0/tensor.bend as TT       # general tensors: any rank, broadcasting, their gradients
+import bendtorch-fast@2.0.2.0/main.bend as F     # the same layers and bits, in parallel on the CPU
+import bendtorch-gpu@2.0.2.0/main.bend as G      # the layers on one CUDA GPU (all but GELUErf)
+import bendtorch-load@2.0.2.0/main.bend as L     # weights from flat binary and safetensors files, checkpoints
 ```
 
 `bendtorch` holds the laws and their proofs. The other three are outside the proofs on purpose: `-fast` and `-gpu` share

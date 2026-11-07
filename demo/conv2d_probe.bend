@@ -10,7 +10,7 @@
 # The image is written as the kernel plus a surplus (main.bend's `cimg`): h + 2p = k + hs, so c0 is hs = ws = 3,
 # c1 is hs = 6, ws = 4, and c2 is hs = 6, ws = 5.
 import Base
-import bend-ml-tensor-array@0.1.18.0/main.bend as TA
+import bend-ml-tensor-array@0.1.20.0/main.bend as TA
 import ../torch/main.bend as T
 
 def vals(+left: Nat, +i: Nat) -> List<&2, F32>:

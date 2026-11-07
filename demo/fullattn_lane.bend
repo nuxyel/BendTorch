@@ -4,8 +4,8 @@
 # into [-1, 1)), so a wrong index or a skipped cell cannot pass by symmetry. make check runs it with +RTS --gpu off -RTS
 # on 1 and 16 threads and requires each gpu line to be its cpu line: it compares bits (the CPU threads), not the card.
 import Base
-import bend-ml-tensor-array@0.1.18.0/main.bend as TA
-import bend-ml-tensor-gpu@0.1.5.0/main.bend as TG
+import bend-ml-tensor-array@0.1.20.0/main.bend as TA
+import bend-ml-tensor-gpu@0.1.5.2/main.bend as TG
 import ../torch/main.bend as T
 import ../torch/gpu.bend as G
 
