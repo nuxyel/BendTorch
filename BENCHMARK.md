@@ -185,7 +185,8 @@ Several GPU paths (dfdx, TensorFlow, torch.compile, JAX, Flux) and TensorFlow on
 from run to run, by up to 2% at the end of W2 and 1e-7 to 6e-7 in W3 and W4; every verdict above was the same in every
 round but one: torch.compile on the GPU in W2 sits near the line, at 7.13-7.92x in seven rounds over three nights and
 8.51x and 8.58x in two. BendTorch gives the same bits run after run and on 1 and 16 threads; on the GPU too, except
-where CUDA's float `exp` rounds differently (the block's first loss is 1 ulp off the CPU's).
+where CUDA's float `exp` rounds differently. In this round the block's four losses on the GPU are the CPU's bits; on
+2026-10-24 its first loss was 1 ulp off the CPU's.
 
 ## What it says about BendTorch
 
