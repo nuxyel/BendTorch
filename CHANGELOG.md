@@ -5,6 +5,24 @@ the packages are or in how they are used, MINOR for a new capability, PATCH for 
 four BendHub packages (`bendtorch`, `bendtorch-fast`, `bendtorch-gpu`, `bendtorch-load`) carry the release's number
 with a fourth digit (`2.0.0.0`). The engineering log behind each entry, measurement by measurement, is `NOTES.md`.
 
+## 2.0.2 (2026-11-07)
+
+A patch release: the tensor packages bend-ml published on 2026-11-06, and the speed numbers on Bend 2.0.40. No layer,
+law or API changes, and every output is `bench/bits.txt`'s.
+
+- **bend-ml-tensor-array 0.1.20.0, -tensor-fork 0.1.7.1 and -tensor-gpu 0.1.5.2** in every import (from 0.1.18.0,
+  0.1.5.0 and 0.1.5.0), which take the same `Mat` again. What changed under BendTorch: tensor-array's dot product
+  unrolled by four and `Mat.to_list` without a reverse (0.1.19.0), tensor-fork's `softmax_ce` (0.1.6.0) and its
+  products' cells read with `Array.get_unchecked` (0.1.7.x, which needs Bend 2.0.40); tensor-gpu's code is 0.1.5.0's.
+  The products keep their bits.
+- **The speed table and `BENCHMARK.md` on Bend 2.0.40**, from a round on an idle machine on 2026-11-07: SmolLM2-135M's
+  step on 16 threads 4.3 s to 3.3 s, the decoder block 12% faster on 16 threads and 8% on the GPU; one thread did not
+  move. Bend and the code both changed since the last round (2026-10-24), so the numbers do not say which gave what.
+  The block's first loss on the GPU is now the CPU's bits; it was 1 ulp off before.
+- **Checks on Bend 2.0.40**: laws, check, bits, corpus, gpu, smol, smol-gpu, bits-smol, reader, check-js and
+  mutate-smol, and every mutant in CI.
+- **Moving from 2.0.1**: the import lines only, `2.0.1.0` to `2.0.2.0` in all four packages; checkpoints read as before.
+
 ## 2.0.1 (2026-11-06)
 
 A patch release: Bend 2.0.40, and the weights reader on bend-ml-binary-read 0.2.0.1. No layer, law or API changes,
