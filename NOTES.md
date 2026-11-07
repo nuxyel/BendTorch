@@ -2101,3 +2101,12 @@ Six new laws and one rewritten, all by `--verdict`, about the code the demos exe
   176,128, small 7,680, full 172,032, full small 8,192, GELUErf's dx 113; all 18 cases 0 with `exp_cr`), check-js,
   mutate (156 of 156 as expected, none skipped). Not merged until #22 is rebased and in: it touches `gpu.bend`, the
   Makefile's `GPU_DEFS` and `gpu_layers_test` too, and its counts move with these.
+- Rebased on devel at 2.0.1 with tensor-array 0.1.20.0 (2026-11-06): devel had added Conv2d as `gpu_layers_test`'s
+  case 16, so GELUErf's y and dx are cases 17 and 18 and the test prints 19 numbers (`make gpu` holds y and Conv2d at 0
+  and lets dx through to the `exp_cr` check); `GPU_DEFS` has Conv2d's defs and GELUErf's; `fast_test` prints 19 zeros
+  as above; `make mutate` has devel's 167 and these seven, 174. The published `bendtorch-gpu@2.0.1.0` has no GELUErf, so
+  the README keeps "all but GELUErf" on its import line until the next release.
+- Gates after the rebase (Bend 2.0.40, busy machine): `make check bits` (every output identical), `make gpu` (SiLU 4
+  ulps, cross-entropy 4, attention 176,128, small 7,680, full 172,032, full small 8,192, GELUErf's dx 113; all 19 cases
+  0 with `exp_cr`), `reader`, `smol`, `smol-gpu`, `bits-smol`, `check-js`, and `make mutate`: 174 of 174 as expected
+  (171 caught, the 3 that survive by design), 44 minutes.
