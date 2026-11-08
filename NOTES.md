@@ -2220,3 +2220,42 @@ That is the work, and it is a piece of its own rather than an afternoon's extens
   ulps, cross-entropy 4, attention 176,128, small 7,680, full 172,032, full small 8,192, GELUErf's dx 113; all 19 cases
   0 with `exp_cr`), `reader`, `smol`, `smol-gpu`, `bits-smol`, `check-js`, and `make mutate`: 174 of 174 as expected
   (171 caught, the 3 that survive by design), 44 minutes.
+
+## Gradient accumulation (2026-11-07, #36)
+
+- **What.** `Train.accumulate` runs the forward pass, the loss and the backward pass into the record's gradient and
+  stops; `Train.flush` runs one optimizer step on the summed gradient, under the record's configuration, and hands it
+  back zeroed. `Train.accumulate_at` and `Train.flush_at` are the owned forms, as `Train.step_at`. `LossOut.div(n, c, k,
+  r)` divides a matrix output's loss and every number of its gradient by k. @adeerkhan asked for it in #36: a 64x64 image
+  example types a batch of two images and no more (bendlang/bend#1071), and accumulation trades steps for batch size
+  without the types changing.
+- **Why this shape.** A backward pass already adds into the gradient it receives and the optimizer step zeroes it, so
+  `Train.step` already had the seam, after the backward pass. The 1/k goes into each micro-batch's loss, PyTorch's
+  `loss / k`, not into the gradient: dividing a `P` by k would need a scaling closure in every layer and combinator.
+  Adam's t advances once a flush, as `optimizer.step()` runs once per effective batch. The record's `loss` after an
+  accumulate is that micro-batch's (divided by k) and a flush keeps it, so with k = 1 the record is `Train.step`'s field
+  for field.
+- **Tests** (`demo/accum_test.bend`, `reference/test_accum.py`, `make check-accum`), the MLP of `mlp_test` on 20 rows,
+  3 steps of SGD, momentum, Adam, AdamW and AdamW with BF16 moments, 8 seeds:
+  - k = 1, accumulate then flush, in the template and the owned forms: `Train.step`'s bits (losses, parameters, moments,
+    1 - b^t, the zeroed gradient).
+  - k = 4 micro-batches of 5 rows against PyTorch's accumulated step (`(loss / 4).backward()` four times, one
+    `optimizer.step()`): every micro-batch's loss, the gradient summed over one step's four, the parameters, the moments
+    and 1 - b1^t, 1 - b2^t (t = 3, not 12): 6,578 numbers, 3,494 bit-identical, the worst 0.039 of the tolerance (6
+    weights of the BF16 run left out, their moment within 64 ulps of a rounding midpoint, as in `test_mlp.py`). The
+    gradient is zero after every flush.
+  - k = 4 against one `Train.step` on the 20 rows at once: equal up to the order of the sums, the worst 0.018 of the
+    tolerance, 1.2e-7 at most on a parameter.
+  - The owned forms and `fast.bend`'s linear layers give the template forms' bits at k = 4.
+- **Mutants**, eight, each first checked to build and to fail the check: `LossOut.div` leaving the gradient or the loss
+  undivided, a micro-batch starting from a zero gradient (both forms), `accumulate` running the step, t advancing at
+  every micro-batch, and a flush leaving 1 - b^t where it was (both forms).
+- **No law.** The k = 1 identity (accumulate then flush is the step) holds by construction for every model, but stated
+  over the owned forms it names the model and the record twice, and neither is `Data`; it would need the affine
+  workaround the other proofs use, so it stays a bit-for-bit test. Not tested over `gpu.bend`'s layers
+  (`docs/limitations.md`).
+- **Gates** (Bend 2.0.40, busy machine, pass/fail and bits only): `make laws check bits` green, every output in
+  `bench/bits.txt` identical (6 min); `make check-js` green, `accum_test` added to the JavaScript lane with the native
+  build's numbers (6,578, 3,494 bit-identical, 0.039); `make mutate`: 182 mutants, 179 as expected and the three
+  SmolLM2 safetensors mutants skipped for a path (this worktree is not beside llama.bend), then run with `LLAMA_BEND`
+  set: 3 as expected (43 min and 4 min).
