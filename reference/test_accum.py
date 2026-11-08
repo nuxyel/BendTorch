@@ -7,7 +7,8 @@ micro-batches of 5, three optimizer steps under SGD, momentum, Adam, AdamW and A
 2. k = 4 against PyTorch's accumulated step: (loss / 4).backward() on each micro-batch, then one optimizer.step():
    every micro-batch's loss, the gradient summed over one step's four, the parameters, the moments and Adam's
    1 - b1^t and 1 - b2^t after three steps (t counts flushes: 3, not 12), all within oracle.py's tolerance; the
-   gradient after the last flush is zero, and the _at forms give the template forms' bits.
+   gradient after the last flush is zero, and the _at forms and torch/fast.bend's linear layers give the template
+   forms' bits.
 3. k = 4 against one step on the 20 rows at once (Bend's Train.step): the same up to the order of the sums, within the
    same tolerance; the worst distance is printed.
 
@@ -99,9 +100,10 @@ def case(binary: str, seed: int, failures: list[str], worst: dict) -> None:
             same(f"{other}.{tag}.state", got[f"{other}.{tag}.state"], got[f"step.{tag}.state"])
             for name in NAMES:
                 same(f"{other}.{tag}.g.{name}", got[f"{other}.{tag}.g.{name}"], got[f"step.{tag}.g.{name}"])
-        # the _at forms give the template forms' bits at k = 4 too
-        same(f"at.{tag}.loss", got[f"at.{tag}.loss"], got[f"acc.{tag}.loss"])
-        same(f"at.{tag}.state", got[f"at.{tag}.state"], got[f"acc.{tag}.state"])
+        # the _at forms, and torch/fast.bend's linear layers, give the template forms' bits at k = 4 too
+        for other in ("at", "fast"):
+            same(f"{other}.{tag}.loss", got[f"{other}.{tag}.loss"], got[f"acc.{tag}.loss"])
+            same(f"{other}.{tag}.state", got[f"{other}.{tag}.state"], got[f"acc.{tag}.state"])
 
         # 2. k = 4 against PyTorch's accumulated step
         m = model(init)
@@ -145,7 +147,7 @@ def main():
     seeds = 8
     for seed in range(seeds):
         case(binary, seed, failures, worst)
-    print(f"accum: {seeds} seeds, k = {K} micro-batches of {B} rows, {len(OPTS)} optimizers; k = 1 and the _at forms "
+    print(f"accum: {seeds} seeds, k = {K} micro-batches of {B} rows, {len(OPTS)} optimizers; k = 1, the _at forms and fast.bend "
           f"bit-identical; against PyTorch's accumulated step {worst['total']} numbers, {worst['same']} bit-identical, "
           f"worst {worst['torch']:.3f} of the tolerance; against one "
           f"step on all {K * B} rows worst {worst['big']:.3f} of the tolerance (largest parameter difference "

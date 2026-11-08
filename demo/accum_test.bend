@@ -5,6 +5,7 @@
 #   acc.<opt>: k = 4 micro-batches of 5 rows a step, each loss divided by 4 (LossOut.div): every micro-batch's loss,
 #     the state after the three steps and the gradient after the last flush (zeros);
 #   at.<opt>: acc's run through Train.accumulate_at and Train.flush_at (the same bits as acc);
+#   fast.<opt>: acc's run with torch/fast.bend's linear layers (the same bits as acc);
 #   big.<opt>: Train.step on all 20 rows at once, the batch acc splits in four;
 #   gsum: the gradient after the four micro-batches of one step, before any flush.
 # Each number as the decimal of its 32 bits; reference/test_accum.py compares them with PyTorch's accumulated step.
@@ -13,6 +14,7 @@
 
 import Base
 import ../torch/main.bend as T
+import ../torch/fast.bend as F
 import bend-ml-tensor-array@0.1.20.0/main.bend as TA
 
 def P() -> Type:
@@ -32,6 +34,13 @@ def Hidden(~n: Nat) -> T.Layer<T.Two<T.Lin<7n, 6n>, Unit>, X(n), TA.Mat<n, 6n>, 
 
 def Model(~n: Nat) -> T.Layer<P, X(n), Y(n), S(n)>:
   T.Seq(~T.Two<T.Lin<7n, 6n>, Unit>, ~T.Lin<6n, 3n>, ~X(n), ~TA.Mat<n, 6n>, ~Y(n), ~T.Two<X(n), TA.Mat<n, 6n>>, ~TA.Mat<n, 6n>, ~Hidden(~n), ~T.Linear(n, 6n, 3n, 1n))
+
+# the same model with torch/fast.bend's linear layers (main.bend's bits)
+def HiddenF(~n: Nat) -> T.Layer<T.Two<T.Lin<7n, 6n>, Unit>, X(n), TA.Mat<n, 6n>, T.Two<X(n), TA.Mat<n, 6n>>>:
+  T.Seq(~T.Lin<7n, 6n>, ~Unit, ~X(n), ~TA.Mat<n, 6n>, ~TA.Mat<n, 6n>, ~X(n), ~TA.Mat<n, 6n>, ~F.LinearF(n, 7n, 6n, 1n), ~T.ReLU(n, 6n))
+
+def ModelF(~n: Nat) -> T.Layer<P, X(n), Y(n), S(n)>:
+  T.Seq(~T.Two<T.Lin<7n, 6n>, Unit>, ~T.Lin<6n, 3n>, ~X(n), ~TA.Mat<n, 6n>, ~Y(n), ~T.Two<X(n), TA.Mat<n, 6n>>, ~TA.Mat<n, 6n>, ~HiddenF(~n), ~F.LinearF(n, 6n, 3n, 1n))
 
 # the same model as one owned record, for the _at forms
 def HiddenAt(+n: Nat) -> T.Layer<T.Two<T.Lin<7n, 6n>, Unit>, X(n), TA.Mat<n, 6n>, T.Two<X(n), TA.Mat<n, 6n>>>:
@@ -66,6 +75,12 @@ def acc_t(tr: T.Train<P>, x: X(5n), y: List<&2, Nat>) -> T.Train<P>:
 
 def fl_t(tr: T.Train<P>) -> T.Train<P>:
   T.Train.flush(~P, ~X(5n), ~Y(5n), ~S(5n), ~Model(~5n), tr)
+
+def acc_f(tr: T.Train<P>, x: X(5n), y: List<&2, Nat>) -> T.Train<P>:
+  T.Train.accumulate(~P, ~X(5n), ~Y(5n), ~S(5n), ~List<&2, Nat>, ~ModelF(~5n), ~ce5q, tr, x, y)
+
+def fl_f(tr: T.Train<P>) -> T.Train<P>:
+  T.Train.flush(~P, ~X(5n), ~Y(5n), ~S(5n), ~ModelF(~5n), tr)
 
 def acc_a(tr: T.Train<P>, x: X(5n), y: List<&2, Nat>) -> T.Train<P>:
   T.Train.accumulate_at(P, X(5n), Y(5n), S(5n), List<&2, Nat>, ModelAt(5n), z => t => ce5q(z, t), tr, x, y)
@@ -198,6 +213,8 @@ def run_opt(+dir: String, +cfg: T.OptCfg, +tag: String) -> IO(Unit):
     micro(~acc_t, ~fl_t, 12n, 0, dir, "acc." ++ tag, new(cfg, d))
     e : P <- load_params(dir)
     micro(~acc_a, ~fl_a, 12n, 0, dir, "at." ++ tag, new(cfg, e))
+    h : P <- load_params(dir)
+    micro(~acc_f, ~fl_f, 12n, 0, dir, "fast." ++ tag, new(cfg, h))
     f : P <- load_params(dir)
     big(3n, dir, "big." ++ tag, new(cfg, f))
 
