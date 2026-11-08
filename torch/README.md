@@ -83,7 +83,10 @@ pieces in [`demo/`](../demo/) and trained against PyTorch twins; see the reposit
 their three products taken from `bend-ml-tensor-fork` instead of `bend-ml-tensor-array`, and their optimizer step in
 parallel blocks; and `SiLU`, `ActIn`, `Mul2`, `Add2`, `Residual`, `Mat.dup` and `Mat.sum2` with their element-wise loops
 in parallel blocks (tensor-fork's `par1`..`par4`); and `GroupNorm`, `main.bend`'s block code over ranges of (image,
-group) blocks forward and of groups backward. The types and the bits are `main.bend`'s: every number is computed by
+group) blocks forward and of groups backward; and `Attention`, whose forward pass runs `main.bend`'s units (one
+sequence's key/value group each) in parallel blocks that read Q, K and V and write the output where they are, instead
+of copying each unit's rows out and its output back in on one thread (its backward pass is `main.bend`'s: it needs
+seven arrays, and `par4` shares four). The types and the bits are `main.bend`'s: every number is computed by
 `main.bend`'s own loop or tensor-array's own cells, only split into blocks that share their arrays instead of copying
 them. Small matrices (below 131072 numbers, MNIST's and the tiny Llama's) run in one block. The demos use them.
 
