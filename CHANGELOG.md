@@ -15,6 +15,13 @@ with a fourth digit (`2.0.0.0`). The engineering log behind each entry, measurem
   the ViT block's one-head attention (t = 16) 24% and 26%. `FullAttention` is unchanged. One difference: an infinity
   or a NaN in V or K at a position a row cannot see no longer makes that row's output or dQ NaN, as PyTorch's does
   (`docs/limitations.md`).
+- **`fast.bend`'s `Attention` runs its forward pass in parallel blocks over shared arrays** (#28): `main.bend`'s units
+  (one sequence's key/value group each) read Q, K and V and write the output where they are, instead of being copied
+  out and back in on one thread. The same bits (`demo/fast_test.bend` compares y, dQ, dK and dV with `main.bend`'s).
+  The core alone at the ViT block's shape (64 sequences of 16, one head of 64), on an idle machine: 0.27 ms a pass on
+  16 threads against 0.73 with `main.bend`'s forward (0.77 before the triangle sums), and 0.54 against 0.89 on one;
+  at SmolLM2-135M's, 3.4 against 4.1 ms on 16 threads and about the same on one. The backward pass is still
+  `main.bend`'s.
 
 ### Laws
 
