@@ -522,9 +522,9 @@ def attn_fwd(+n: Nat, +w: Nat, +kvw: Nat, +b: Nat, +t: Nat, +kv: Nat, +g: Nat, +
     case T.Two{TA.Mat{q}, T.Two{TA.Mat{k}, TA.Mat{v}}}:
       atf_out(n, w, TF.par4(~AE, ~F32, ~F32, ~F32, ~F32, ~atf_leaf, AE{t, g, hd, w, kvw, kv, sc}, TF.depth(Nat.mul(b, kv)), Nat.mul(b, kv), q, k, v, T.zeros_a(Nat.mul(n, w))))
 
-# main.bend's RMSNorm, RoPE, MSE and CrossEntropy under their own names, and Attention with the forward pass above (Embedding below, with its step in
-# blocks), so that a program that takes its layers from here can take device versions of the same names from another
-# file by its import line alone (they run as in main.bend)
+# main.bend's RMSNorm, RoPE, MSE and CrossEntropy under their own names, and Attention with the forward pass above
+# (Embedding below, with its step in blocks), so that a program that takes its layers from here can take device versions
+# of the same names from another file by its import line alone (they run as in main.bend)
 def RMSNorm(+n: Nat, +d: Nat, +eps: F32) -> T.Layer<TA.Mat<1n, d>, TA.Mat<n, d>, TA.Mat<n, d>, TA.Mat<n, d>>:
   T.RMSNorm(n, d, eps)
 
