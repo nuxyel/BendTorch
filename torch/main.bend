@@ -1028,6 +1028,84 @@ def Train.with_cfg(-P: Type, +cfg: OptCfg, tr: Train<P>) -> Train<P>:
   match tr:
     case Train{p, g, st, c, p1, p2, l}: Train{p, g, st, cfg, p1, p2, l}
 
+# ---- Gradient accumulation: k micro-batches, then one optimizer step (BendTorch #36) ----
+#
+# Train.accumulate runs the forward pass, the loss and the backward pass and stops there. A backward pass adds into the
+# gradient it receives (docs/design.md), so the record's gradient keeps what the earlier calls added; the optimizer
+# state and Adam's 1 - b1^t and 1 - b2^t do not move, and the loss recorded is this micro-batch's. Train.flush then runs
+# the optimizer step on the summed gradient, under the record's configuration, and hands the gradient back zeroed, as
+# Train.step does. t advances once a flush, as in PyTorch, where k backward() calls and one optimizer.step() are one
+# step. For the gradient of the mean over all k·B rows, each micro-batch's loss is divided by k before its backward pass
+# (LossOut.div, PyTorch's loss / k). With k = 1, accumulate then flush is Train.step.
+
+def ta4(-P: Type, -X: Type, st: OptState<P>, +cfg: OptCfg, +p1: F32, +p2: F32, +l: F32, r: Bwd<P, X>) -> Train<P>:
+  match r:
+    case Bwd{p, dx, g}: Train{p, g, st, cfg, p1, p2, l}
+
+def ta3(~P: Type, ~X: Type, ~Y: Type, ~S: Type, ~m: Layer<P, X, Y, S>, +cfg: OptCfg, p: P, s: S, g: P, st: OptState<P>, +p1: F32, +p2: F32, r: LossOut<Y>) -> Train<P>:
+  match r:
+    case LossOut{l, dy}: ta4(P, X, st, cfg, p1, p2, l, Layer.bwd(P, X, Y, S, m, p, s, dy, g))
+
+def ta2(~P: Type, ~X: Type, ~Y: Type, ~S: Type, ~T: Type, ~m: Layer<P, X, Y, S>, ~loss: Y -> T -> LossOut<Y>, +cfg: OptCfg, g: P, st: OptState<P>, +p1: F32, +p2: F32, t: T, r: Fwd<P, Y, S>) -> Train<P>:
+  match r:
+    case Fwd{p, y, s}: ta3(~P, ~X, ~Y, ~S, ~m, cfg, p, s, g, st, p1, p2, loss(y, t))
+
+# forward, loss and backward, the parameters' gradient added into the record's: no optimizer step
+def Train.accumulate(~P: Type, ~X: Type, ~Y: Type, ~S: Type, ~T: Type, ~m: Layer<P, X, Y, S>, ~loss: Y -> T -> LossOut<Y>, tr: Train<P>, x: X, t: T) -> Train<P>:
+  match tr:
+    case Train{p, g, st, cfg, p1, p2, l}:
+      ta2(~P, ~X, ~Y, ~S, ~T, ~m, ~loss, cfg, g, st, p1, p2, t, Layer.fwd(P, X, Y, S, m, p, x))
+
+def tf2(~P: Type, ~X: Type, ~Y: Type, ~S: Type, ~m: Layer<P, X, Y, S>, +cfg: OptCfg, st: OptState<P>, +p1: F32, +p2: F32, +l: F32, p: P, g: P) -> Train<P>:
+  +q1 = (p1 + (OptCfg.c1(cfg) * (1.0 - p1 : F32) : F32) : F32)
+  +q2 = (p2 + (OptCfg.c2(cfg) * (1.0 - p2 : F32) : F32) : F32)
+  ts4g(~P, ~X, ~Y, ~S, ~m, cfg, l, q1, q2, p, g, Opt.guard(P, cfg, q1, q2, st))
+
+# one optimizer step on the gradient the record holds, under its configuration; the gradient comes back zeroed
+def Train.flush(~P: Type, ~X: Type, ~Y: Type, ~S: Type, ~m: Layer<P, X, Y, S>, tr: Train<P>) -> Train<P>:
+  match tr:
+    case Train{p, g, st, cfg, p1, p2, l}: tf2(~P, ~X, ~Y, ~S, ~m, cfg, st, p1, p2, l, p, g)
+
+def ta_at_loss(-P: Type, -X: Type, -Y: Type, -S: Type, bf: P -> S -> Y -> P -> Bwd<P, X>, +cfg: OptCfg, p: P, s: S, g: P, st: OptState<P>, +p1: F32, +p2: F32, r: LossOut<Y>) -> Train<P>:
+  match r:
+    case LossOut{l, dy}: ta4(P, X, st, cfg, p1, p2, l, bf(p, s, dy, g))
+
+def ta_at_f(-P: Type, -X: Type, -Y: Type, -S: Type, -Target: Type, bf: P -> S -> Y -> P -> Bwd<P, X>, loss: Y -> Target -> LossOut<Y>, +cfg: OptCfg, g: P, st: OptState<P>, +p1: F32, +p2: F32, t: Target, r: Fwd<P, Y, S>) -> Train<P>:
+  match r:
+    case Fwd{p, y, s}: ta_at_loss(P, X, Y, S, bf, cfg, p, s, g, st, p1, p2, loss(y, t))
+
+# Train.accumulate for one owned model (Train.step_at's form): its fwd and bwd closures run once, its step is not used
+def Train.accumulate_at(-P: Type, -X: Type, -Y: Type, -S: Type, -Target: Type, m: Layer<P, X, Y, S>, loss: Y -> Target -> LossOut<Y>, tr: Train<P>, x: X, t: Target) -> Train<P>:
+  match m tr:
+    case Layer{ff, bf, sf, zeros, dump, load, store, count} Train{p, g, st, cfg, p1, p2, l}:
+      ta_at_f(P, X, Y, S, Target, bf, loss, cfg, g, st, p1, p2, t, ff(p, x))
+
+def tf_at(-P: Type, sf: Opt -> P -> P -> OptState<P> -> Step<P>, +cfg: OptCfg, st: OptState<P>, +p1: F32, +p2: F32, +l: F32, p: P, g: P) -> Train<P>:
+  +q1 = (p1 + (OptCfg.c1(cfg) * (1.0 - p1 : F32) : F32) : F32)
+  +q2 = (p2 + (OptCfg.c2(cfg) * (1.0 - p2 : F32) : F32) : F32)
+  train_at_g(P, sf, cfg, l, q1, q2, p, g, Opt.guard(P, cfg, q1, q2, st))
+
+# Train.flush for one owned model: its step closure runs once
+def Train.flush_at(-P: Type, -X: Type, -Y: Type, -S: Type, m: Layer<P, X, Y, S>, tr: Train<P>) -> Train<P>:
+  match m tr:
+    case Layer{ff, bf, sf, zeros, dump, load, store, count} Train{p, g, st, cfg, p1, p2, l}:
+      tf_at(P, sf, cfg, st, p1, p2, l, p, g)
+
+# a[i] = a[i] / k for the n numbers from i; ra holds the array and a[i], already read
+def div_l(nleft: Nat, +i: U32, +k: F32, ra: Array<F32> & F32) -> Array<F32>:
+  match nleft ra:
+    case 0n Tuple{a, v}:
+      a
+    case 1n+q Tuple{a, +v}:
+      div_l(q, (i + 1 : U32), k, Array.get(F32, Array.set(F32, a, i, (v / k : F32)), (i + 1 : U32)))
+
+# PyTorch's loss / k, for one of k micro-batches (Train.accumulate): the loss and every number of its gradient divided
+# by k, so that the k gradients add up to the gradient of the mean over all k·B rows
+def LossOut.div(+n: Nat, +c: Nat, +k: U32, r: LossOut<TA.Mat<n, c>>) -> LossOut<TA.Mat<n, c>>:
+  match r:
+    case LossOut{l, TA.Mat{d}}:
+      LossOut{(l / U32.to_f32(k) : F32), TA.Mat{div_l(Nat.mul(n, c), 0, U32.to_f32(k), Array.get(F32, d, 0))}}
+
 # =====================================================================================================
 # Reading and printing numbers (bend-ml's and llama.bend's loaders, MIT)
 # =====================================================================================================
