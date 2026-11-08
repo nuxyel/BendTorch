@@ -2265,3 +2265,41 @@ That is the work, and it is a piece of its own rather than an afternoon's extens
 - **Gates** (Bend 2.0.40): `make laws check bits gpu smol bits-smol` (the device bounds unchanged: SiLU 4 ulps,
   cross-entropy 4, attention 176,128, small 7,680, full 172,032, full small 8,192; every case 0 with `exp_cr`), the four
   new mutants caught.
+
+## fast.bend's Attention: the forward pass's units in blocks over shared arrays (2026-11-08, #28)
+
+- **Why.** On 16 threads the attention core barely used them: at the ViT block's shape it ran 0.77 ms a pass on 16
+  threads against 1.20 on one (#28's plan, step 0, idle machine). `main.bend`'s forward pass copies each unit's rows
+  and columns of Q, K and V out (`fslices`), runs the units in a tree of parallel lets, and copies their outputs back
+  into O (`blocks_in`), the copies on one thread before and after the tree.
+- **What.** `fast.bend`'s `Attention` now has its own forward pass, `attn_fwd`: tensor-fork's `par4` shares Q, K, V
+  and a zeroed O between 2^d blocks of units (d enough for one unit a block), and each query head of a unit runs
+  `main.bend`'s own `probs`, `trow0` and `tmul` at the unit's offsets in the shared arrays, writing its columns of its
+  sequence's rows of O in place. Units write disjoint cells and every sum is `main.bend`'s in its order. The stash is
+  the same `AttnS{q, k, v}`, and the backward pass is `main.bend`'s: it needs Q, K, V, dO, dQ, dK and dV, seven arrays,
+  and `par4` shares four. `FAST_DEFS` gains `attn_fwd` and `Attention`.
+- **Bits.** `demo/fast_test.bend` runs `T.Attention` and `F.Attention` forward and backward (y, dQ, dK, dV; the
+  backward reads each forward pass's stash) on 3 sequences of 5 with 3 query heads over each of 2 key/value heads (6
+  units in 8 blocks, two empty) and on 16 sequences of 16 with one head of 64: 0 words differ, on 1 and 16 threads and
+  in JavaScript; it prints 21 zeros now. `smol.bend` and `smol_block.bend` take `F.Attention`: `bench/bits.txt` and
+  `make bits-smol` unchanged.
+- **Timed** (idle machine, the core alone as in the entry above: 200 passes at the ViT shape, 20 at SmolLM2-135M's,
+  minus the fill-only program, 11 alternated rounds, one thread pinned to CPU 3 and 16), ms a pass:
+
+  | | devel | `main.bend` with the triangle | `fast.bend` |
+  |---|---:|---:|---:|
+  | ViT block, one thread | 1.216 | 0.886 | 0.543 |
+  | ViT block, 16 threads | 0.772 (0.753-0.820) | 0.732 (0.676-0.795) | 0.266 (0.212-0.305) |
+  | SmolLM2-135M, one thread | 13.68 | 9.32 | 9.12 |
+  | SmolLM2-135M, 16 threads | 5.49 (5.03-5.89) | 4.15 (3.92-4.30) | 3.37 (3.28-3.54) |
+
+  At the ViT shape the copies were a third of the one-thread time and most of what kept 16 threads from helping; at
+  SmolLM2's, with 6 units of t = 128, the arithmetic dominates and the gain is the copies' share, 19% on 16 threads.
+  Every run gave one output. Not timed: a whole training step (the backward pass is `main.bend`'s, so a step gains
+  less than the forward does).
+- **Mutants**, each checked to build and to move `fast_test`'s numbers: a unit's query heads starting at its key/value
+  head's columns, every unit on the first sequence's rows, sequence and key/value head swapped in the unit's number,
+  and a block running one unit fewer. 182 in all; `fast_test`'s gate expects 21 zeros.
+- **Gates** (Bend 2.0.40): `make laws check bits check-js smol bits-smol`, the four new mutants caught.
+- **Left**: the backward pass over shared arrays (seven arrays: packing the reads would copy them, which is what this
+  removes from the forward pass).
