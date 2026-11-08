@@ -2336,4 +2336,30 @@ runs it after the merge, and `docs/limitations.md` says so.
 - Gates (Bend 2.0.40, busy machine, bits only): `make laws` (`GPU_DEFS` with `tile_fwd`, `tile_bwd`, `Tile`), `make
   check`, and `make gpu`: SiLU 4 ulps, cross-entropy 4, attention 176,128, small 7,680, full 172,032, full small 8,192,
   GELUErf's dx 113, every other case 0, Tile's two included; all 21 cases 0 with `exp_cr`; MNIST, the tiny Llama and
+
+## RoPE2d on the GPU lane (2026-11-07)
+
+- `torch/gpu.bend`'s `RoPE2d`, `main.bend`'s types and name. The two angle tables are built on the host by
+  `main.bend`'s `rope2_tabN`, as `RoPE`'s twin builds its one, then one bang rotates every pair of both runs: pair
+  `e < n·h·half_y` is the y run's pair `e` with the y table, the rest the x run's pair `e - n·h·half_y` with the x
+  table. Each pair is rotated by `main.bend`'s `rope_p2` at the addresses and table entries `rope2_yone` and
+  `rope2_xone` compute, written here in `U32`. The two runs touch disjoint numbers, so one bang does both. `rope2_go2`,
+  `rope2_go` and `RoPE2d` reach tensor-gpu and are in `GPU_DEFS`.
+- Why the tables stay on the host: I ran `main.bend`'s own expressions for RoPE's tables (`rope_ang`'s `F32.pow`, then
+  `F32.cos` and `F32.sin`) in a bang on the RTX 4050 and compared every entry with the host's (a probe, not kept). The
+  cos and sin of the host's angles differ by 1 ulp on 6 to 20% of the entries: 8 and 6 of 128 (8 positions, half 16),
+  202 and 171 of 2,048 (64 positions, half 32), 82 and 74 of 1,024 (64 and 16, base 100,000), 12,770 and 11,623 of
+  65,536 (4,096 and 16). The angle itself differs by up to 2 ulps on 118 of 2,048 and 113 of 1,024 entries, and the
+  cos of a device angle by up to 128 ulps. With `+RTS --gpu off -RTS` every entry is the host's. So the tables would
+  cost `main.bend`'s bits on the device, and on the host they are `th·half_y + tw·half_x` angles a call.
+- `demo/gpu_layers_test.bend` cases 21 and 22 (after Tile's 19 and 20), y and dx apart: 8 images of 8 x 8 tokens at SmolLM2's width (9 heads of
+  16 y and 16 x pairs) and 3 images of 3 x 5 tokens, 2 heads of 3 y and 2 x pairs (90 pairs, so the leaves' last
+  shares are short). 0 ulps on 1 and 16 CPU threads with `+RTS --gpu off -RTS`, and 0 on the RTX 4050, so `make gpu`
+  bounds both at 0. The Makefile, `scripts/gpu_expcr.sh` and `scripts/mutate.py` expect 23 cases.
+- Three mutants, each first checked to build and to move the numbers: the backward pass rotates forward (case 22 off),
+  the x run's table entry takes the row's y and the y run's angle takes the row instead of its place in the image
+  (both cases off). `make mutate ONLY=<the three>`: 3 of 3 caught; 180 mutants in all, with Tile's three.
+- Gates (Bend 2.0.40, busy machine, bits only): `make laws` (`GPU_DEFS` with `rope2_go2`, `rope2_go`, `RoPE2d`), `make
+  check`, and `make gpu`: SiLU 4 ulps, cross-entropy 4, attention 176,128, small 7,680, full 172,032, full small 8,192,
+  GELUErf's dx 113, every other case 0, RoPE2d's two included; all 23 cases 0 with `exp_cr`; MNIST, the tiny Llama and
   the SmolLM2-sized block on the GPU against PyTorch, and the GPU builds' outputs are `bench/bits.txt`'s.
