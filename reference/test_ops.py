@@ -276,11 +276,11 @@ def case(binary: str, seed: int, failures: list[str], edge: str = "") -> tuple[f
         # A special at a position a row cannot see does not reach that row in BendTorch, where PyTorch multiplies the
         # masked probability (or G) 0 by it and gets NaN. Accepted for v[5, 3] = -inf in row 4's dq (Renan, 2026-10-18:
         # row 4 has one visible position, so dS = P (dP - P dP) = 0 there). Since the causal products sum only the
-        # triangle (BendTorch #28, 2026-11-08: row i of O and of dQ reads keys 0..i, as the plan Renan approved
-        # says), it holds for O and dQ too: v[5, 3] (sequence 1, position 1) does not reach row 4's y, and the masked
-        # keys k[2, 1] = inf (sequence 0, position 2) and k[7, 4] = NaN (sequence 1, position 3) do not reach dq in rows
-        # 0-1 and 4-6. Expected there: PyTorch's own numbers with those three made finite, which those rows do not
-        # read; every other cell stays PyTorch's own (rows that see a special keep its NaN or infinity).
+        # triangle (BendTorch #28, 2026-11-08: row i of O and of dQ reads keys 0..i), it holds for O and dQ too: v[5, 3]
+        # (sequence 1, position 1) does not reach row 4's y, and the masked keys k[2, 1] = inf (sequence 0, position 2)
+        # and k[7, 4] = NaN (sequence 1, position 3) do not reach dq in rows 0-1 and 4-6. Expected there: PyTorch's own
+        # numbers with those three made finite, which those rows do not read; every other cell stays PyTorch's own (rows
+        # that see a special keep its NaN or infinity).
         v2, k2 = v0.clone(), k0.clone()
         v2[5, 3], k2[2, 1], k2[7, 4] = 0.0, 0.0, 0.0
         q2, k2, v2 = q0.clone().requires_grad_(True), k2.requires_grad_(True), v2.requires_grad_(True)
