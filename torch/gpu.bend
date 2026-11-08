@@ -10,7 +10,7 @@
 # - LinearF, LinearFirstF and LinearNBF: their three products (x·Wᵀ, dY·W, dYᵀ·X added into dW) from tensor-gpu, and
 #   their optimizer step.
 # - SiLU, GELUErf, Mul2, Add2, Residual, Mat.dup and Mat.sum2: their element-wise loops.
-# - RMSNorm, RoPE and Attention (main.bend's names; fast.bend's are main.bend's, on the CPU).
+# - RMSNorm, RoPE, RoPE2d and Attention (main.bend's names; fast.bend's are main.bend's, on the CPU).
 # - im2col, col2im and Conv2d: the gather and its scatter as cell bangs, then the linear layer's three products.
 # - Tile: its broadcast and the sum of its rows as cell bangs.
 # - MSE, CrossEntropy and Embedding (its rows, its gradient and its step), so that a training step's work, the loss
@@ -619,6 +619,91 @@ def rope_go(+n: Nat, +w: Nat, +fwd: Bool, +t: Nat, +h: Nat, +half: Nat, +base: F
 # RoPE on n = b·t rows of h heads of 2·half (main.bend's RoPE)
 def RoPE(+n: Nat, +w: Nat, +t: Nat, +h: Nat, +half: Nat, +base: F32, -e: {w == Nat.mul(h, Nat.add(half, half)) : Nat}) -> T.Layer<Unit, TA.Mat<n, w>, TA.Mat<n, w>, Unit>:
   T.Layer{p => x => T.Fwd{p, rope_go(n, w, True{}, t, h, half, base, x), Unit{}}, p => s => dy => g => T.Bwd{p, rope_go(n, w, False{}, t, h, half, base, dy), g}, op => p => g => st => T.no_step(Unit, op, p, g, st), u => Unit{}, p => T.PL{p, Nil{}}, p => xs => off => T.PA{p, xs, off}, p => xs => off => T.PA{p, xs, off}, u => 0}
+
+# ---- RoPE2d (main.bend's RoPE2d): the two tables on the host (main.bend's rope2_tabN, so the host's cos and sin, as
+# RoPE's), then one bang over the pairs of both runs: pair e < n·h·half_y is the y run's pair e, rotated with the y
+# table, and pair e >= n·h·half_y is the x run's pair e - n·h·half_y, with the x table, each by main.bend's rope_p2 at
+# the addresses and table entries main.bend's rope2_yone and rope2_xone compute. The runs touch disjoint numbers, so one
+# bang does both, and every number is main.bend's.
+
+type ER2 is Data:
+  ER2{n: U32, ny: U32, fwd: Bool, h: U32, hy: U32, hx: U32, w: U32, nt: U32, tw: U32}
+
+def er2(+n: Nat, +fwd: Bool, +th: Nat, +tw: Nat, +h: Nat, +hy: Nat, +hx: Nat, +w: Nat) -> ER2:
+  ER2{U32.from_nat(Nat.mul(n, Nat.mul(h, Nat.add(hy, hx)))), U32.from_nat(Nat.mul(n, Nat.mul(h, hy))), fwd, U32.from_nat(h), U32.from_nat(hy), U32.from_nat(hx), U32.from_nat(w), U32.from_nat(Nat.mul(th, tw)), U32.from_nat(tw)}
+
+# the matrix rotated in place, and the y and x tables
+type RS5 is Type:
+  RS5{x: Array<F32>, yc: Array<F32>, ys: Array<F32>, xc: Array<F32>, xs: Array<F32>}
+
+def r2_by(r: T.RS3, xc: Array<F32>, xs: Array<F32>) -> RS5:
+  match r:
+    case T.RS3{x, c, s}: RS5{x, c, s, xc, xs}
+
+def r2_bx(r: T.RS3, yc: Array<F32>, ys: Array<F32>) -> RS5:
+  match r:
+    case T.RS3{x, c, s}: RS5{x, yc, ys, c, s}
+
+# the y run's pair e: row e / (h·hy), head (e mod h·hy) / hy, j = e mod hy; the pair (base + j, base + j + hy), the
+# table entry the row's y = (r mod nt) / tw times hy, plus j
+def r2_y(+e: U32, +fwd: Bool, +h: U32, +hy: U32, +hx: U32, +w: U32, +nt: U32, +tw: U32, s: RS5) -> RS5:
+  match s:
+    case RS5{x, yc, ys, xc, xs}:
+      +hh = (h * hy : U32)
+      +r = U32.div(e, hh)
+      +j = U32.mod(e, hy)
+      +i1 = (((r * w : U32) + (U32.div(U32.mod(e, hh), hy) * ((hy + hy : U32) + (hx + hx : U32) : U32) : U32) : U32) + j : U32)
+      +k = ((U32.div(U32.mod(r, nt), tw) * hy : U32) + j : U32)
+      r2_by(T.rope_p2(fwd, i1, (i1 + hy : U32), k, yc, ys, Array.get(F32, x, i1)), xc, xs)
+
+# the x run's pair e: row e / (h·hx), head (e mod h·hx) / hx, j = e mod hx; the head's last 2·hx numbers, so the pair
+# is (base + 2·hy + j, base + 2·hy + j + hx), and the table entry the row's x = (r mod nt) mod tw times hx, plus j
+def r2_x(+e: U32, +fwd: Bool, +h: U32, +hy: U32, +hx: U32, +w: U32, +nt: U32, +tw: U32, s: RS5) -> RS5:
+  match s:
+    case RS5{x, yc, ys, xc, xs}:
+      +hh = (h * hx : U32)
+      +r = U32.div(e, hh)
+      +j = U32.mod(e, hx)
+      +i1 = ((((r * w : U32) + (U32.div(U32.mod(e, hh), hx) * ((hy + hy : U32) + (hx + hx : U32) : U32) : U32) : U32) + (hy + hy : U32) : U32) + j : U32)
+      +k = ((U32.mod(U32.mod(r, nt), tw) * hx : U32) + j : U32)
+      r2_bx(T.rope_p2(fwd, i1, (i1 + hx : U32), k, xc, xs, Array.get(F32, x, i1)), yc, ys)
+
+def r2_pick(isy: Bool, +e: U32, +ny: U32, +fwd: Bool, +h: U32, +hy: U32, +hx: U32, +w: U32, +nt: U32, +tw: U32, s: RS5) -> RS5:
+  match isy:
+    case True{}: r2_y(e, fwd, h, hy, hx, w, nt, tw, s)
+    case False{}: r2_x((e - ny : U32), fwd, h, hy, hx, w, nt, tw, s)
+
+def r2_loop(k: Nat, +e: U32, +l: U32, +g: ER2, s: RS5) -> RS5:
+  match k g:
+    case 0n _: s
+    case 1n+q ER2{+n, +ny, +fwd, +h, +hy, +hx, +w, +nt, +tw}:
+      r2_loop(q, (e + l : U32), l, g, r2_pick(U32.is_lt(e, ny), e, ny, fwd, h, hy, hx, w, nt, tw, s))
+
+def rs5_x(s: RS5) -> Array<F32>:
+  match s:
+    case RS5{x, yc, ys, xc, xs}: x
+
+def er2_n(+g: ER2) -> U32:
+  match g:
+    case ER2{+n, +ny, +fwd, +h, +hy, +hx, +w, +nt, +tw}: n
+
+# x1, x2 = the y table's cos and sin, x3, x4 = the x table's; x rotated in place
+def lf_r2(+t: U32, +l: U32, +g: ER2, x1: Array<F32>, x2: Array<F32>, x3: Array<F32>, x4: Array<F32>, x: Array<F32>) -> Array<F32>:
+  rs5_x(r2_loop(TG.share(t, er2_n(g), l), t, l, g, RS5{x, x1, x2, x3, x4}))
+
+def rope2_go2(+n: Nat, +w: Nat, +fwd: Bool, +th: Nat, +tw: Nat, +h: Nat, +hy: Nat, +hx: Nat, x: Array<F32>, yt: T.CS, xt: T.CS) -> TA.Mat<n, w>:
+  match yt xt:
+    case T.CS{yc, ys} T.CS{xc, xs}:
+      TA.Mat{r1_a(TG.run1(~ER2, ~lf_r2, TG.depth(Nat.mul(n, Nat.mul(h, Nat.add(hy, hx)))), er2(n, fwd, th, tw, h, hy, hx, w), yc, ys, xc, xs, x))}
+
+def rope2_go(+n: Nat, +w: Nat, +fwd: Bool, +th: Nat, +tw: Nat, +h: Nat, +hy: Nat, +hx: Nat, +base: F32, m: TA.Mat<n, w>) -> TA.Mat<n, w>:
+  match m:
+    case TA.Mat{x}: rope2_go2(n, w, fwd, th, tw, h, hy, hx, x, T.rope2_tabN(Nat.mul(th, hy), hy, base), T.rope2_tabN(Nat.mul(tw, hx), hx, base))
+
+# RoPE2d on n = b·th·tw rows of h heads of 2·half_y + 2·half_x (main.bend's RoPE2d)
+def RoPE2d(+n: Nat, +w: Nat, +th: Nat, +tw: Nat, +h: Nat, +half_y: Nat, +half_x: Nat, +base: F32,
+  -e: {w == Nat.mul(h, Nat.add(Nat.mul(half_y, 2n), Nat.mul(half_x, 2n))) : Nat}) -> T.Layer<Unit, TA.Mat<n, w>, TA.Mat<n, w>, Unit>:
+  T.Layer{p => x => T.Fwd{p, rope2_go(n, w, True{}, th, tw, h, half_y, half_x, base, x), Unit{}}, p => s => dy => g => T.Bwd{p, rope2_go(n, w, False{}, th, tw, h, half_y, half_x, base, dy), g}, op => p => g => st => T.no_step(Unit, op, p, g, st), u => Unit{}, p => T.PL{p, Nil{}}, p => xs => off => T.PA{p, xs, off}, p => xs => off => T.PA{p, xs, off}, u => 0}
 
 type S4 is Type:
   S4{a: Array<F32>, b: Array<F32>, c: Array<F32>, d: Array<F32>}
