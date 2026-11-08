@@ -9,8 +9,8 @@ with a fourth digit (`2.0.0.0`). The engineering log behind each entry, measurem
 
 ### Laws
 
-Two new laws in `LAWS.bend`, proved in `PROOF.bend` and checked again by `bend PROOF.bend --verdict`, 37 laws in all
-(with `dtype.bend`'s `unpair_pair`). Both by @adeerkhan (#32).
+Two new laws in `LAWS.bend`, proved in `PROOF.bend` and checked again by `bend PROOF.bend --verdict`. Both by
+@adeerkhan (#32).
 
 - `conv_roundtrip_window`: the round trip at **any** stride and padding, per cell. Slot `(ch, ky, kx)` of output
   position `(oy, ox)` is image cell `(oy·s + ky - p, ox·s + kx - p)`, channel `ch`, so the gather and the scatter name
@@ -26,6 +26,23 @@ Two new laws in `LAWS.bend`, proved in `PROOF.bend` and checked again by `bend P
   `kx < k` are `k = 1 + ky + a` and `k = 1 + kx + b`, as `gqa_head` writes one bound; the bound that `k·k` leaves
   for the inner cell is `radix_bound`. #29's numbers at `k = s = 2, 3, 4` were already exact; the law is what makes
   them so for every `k`.
+
+Two more in the same file, proved the same way, **39 laws in all** (with `dtype.bend`'s `unpair_pair`), both by
+@adeerkhan (#34):
+
+- `tile_row`: the `t` output rows of image row `i` are all image row `i`, in order — `i·t + j` divided by `t` is `i`
+  for `j ≤ s`, the division fact under the broadcast and under the backward's sum (`div_blocks` then `div_rest`).
+- `tile_sum`: every one of the `t` rows of image `i` reads (forward) and adds into (backward) the same cell of image
+  row `i`, column `k`, which is what makes the backward a **sum** of the `t` rows rather than the last of them.
+
+- **`Tile`**: a per-image row broadcast, for adaLN-conditioned blocks (BendTorch#19). Row `i` of a `b x c` input
+  becomes rows `i·t .. i·t+t-1` of a `(b·t) x c` output, and the backward sums each image's `t` rows back into its
+  row, so `x * (1 + scale)` with a per-image scale is `Tile` then `Mul2` with the tiling on the device. The addressing
+  is two `Nat` defs the loop calls through `U32.from_nat` (no division in the hot path: the walk is images → rows →
+  row → cells). Two laws: `tile_row` (the `t` rows of image `i` are image row `i` — a division fact, `div_blocks`
+  then `div_rest`) and `tile_sum` (all `t` rows read and add into the same cell, so the backward is a sum). Tested
+  against PyTorch `repeat_interleave` and its autograd: `0.000e+00` on both, with a last-row backward off by
+  `2.000e+00`. Not in this change: the device lane (no CUDA toolkit here).
 
 ## 2.0.2 (2026-11-07)
 
@@ -94,15 +111,6 @@ only. Both by or with @adeerkhan.
   that `OptCfg.ok` rejects is refused at every step instead (below), so every loss after the first is still NaN.
 
 ### New
-
-- **`Tile`**: a per-image row broadcast, for adaLN-conditioned blocks (BendTorch#19). Row `i` of a `b x c` input
-  becomes rows `i·t .. i·t+t-1` of a `(b·t) x c` output, and the backward sums each image's `t` rows back into its
-  row, so `x * (1 + scale)` with a per-image scale is `Tile` then `Mul2` with the tiling on the device. The addressing
-  is two `Nat` defs the loop calls through `U32.from_nat` (no division in the hot path: the walk is images → rows →
-  row → cells). Two laws: `tile_row` (the `t` rows of image `i` are image row `i` — a division fact, `div_blocks`
-  then `div_rest`) and `tile_sum` (all `t` rows read and add into the same cell, so the backward is a sum). Tested
-  against PyTorch `repeat_interleave` and its autograd: `0.000e+00` on both, with a last-row backward off by
-  `2.000e+00`. Not in this change: the device lane (no CUDA toolkit here).
 
 - `Train.with_cfg(P, cfg, state)`: the same training state under another configuration from the next step on, for a
   schedule (warmup, decay) or a deliberate change mid-run. It keeps the parameters, the gradient, the moments and Adam's
