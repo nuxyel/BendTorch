@@ -129,6 +129,7 @@ general here is Bend's **templates**: a `Layer` record passed as `~l` is substit
 | Attention gives probability 0 to later positions: the softmax of row i runs over exactly i + 1 positions, the count its own division loop reports (that the rest of the row keeps its zeros is read from the code, not proved) | **law** about the package's own `prow` and `psmc` | `causal` |
 | Attention reads only keys 0..i for the query at position i (the loop that reads them builds i + 1 scores) | **law** about the package's own `qrow` | `causal_keys` |
 | The backward pass sends no gradient to a key or value after the query's position: row i of G is computed over i + 1 positions | **law** about the package's own `grow` | `causal_grad` |
+| Attention's products read only what a position can see: every number of row i of O and dQ sums i + 1 products, every number of key j's row of dK and dV sums t - j (on finite numbers the same bits as summing every key and row) | **law** about the package's own `trow0` and `tcol0` (the counts); **tested** cell by cell against the full sums (`pmul`, `pacc`) | `causal_pv`, `causal_kv`; `demo/triangle_probe.bend`, `make check-triangle` |
 | Query head `j·g + i` belongs to key/value head `j`, through the function both passes of attention call and the columns both read | **law** about the package's `kv_of`, `head_cols` (and `Nat.div`) | `kv_of_group`, `gqa_head`, `kv_cols` |
 | Attention's tree of sequences gives the sequential result at every depth and split | **law** about the package's `fpar`/`bpar` against `fleaf`/`bleaf` | `attn_par_fwd`, `attn_par_bwd` |
 | FullAttention reads all t keys for every query, its softmax and its row of G run over all t positions, and its trees give the sequential result | **law** about the package's own `frow`, `fprow`, `fgrow` and `fpar_full`/`bpar_full` | `full_keys`, `full`, `full_grad`, `attn_par_fwd_full`, `attn_par_bwd_full` |
@@ -158,7 +159,7 @@ algebra of the formulas (`dy·(W·x) == (Wᵀ·dy)·x`), with no rounding to rea
 (`F32.mul(3.0, 3.0)` does not reduce), so a law about F32 values can only treat the operations as uninterpreted; no
 IEEE 754 property is claimed anywhere.
 
-`scripts/mutate.py` changes the code and the specification on purpose (174 mutants) and checks that a gate fails. A
+`scripts/mutate.py` changes the code and the specification on purpose (178 mutants) and checks that a gate fails. A
 mutant that survives a gate is listed with the reason (today three: the whole-tensor sum's index map, which the
 numbers miss by accident and a bounds check catches, and two equivalent mutants, the GPU cross-entropy's block size and
 the packed AdamW's last block; since M8 the laws catch the two that used to slip past them, `kv_of` bypassed and a softmax over one
