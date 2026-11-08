@@ -89,11 +89,11 @@ GPU = gpu
 
 def gpu_layers():
     # torch/gpu.bend's other layers, optimizer step, losses and embedding must keep main.bend's bits with +RTS --gpu off -RTS:
-    # demo/gpu_layers_test.bend prints 21 zeros (Conv2d's case, GELUErf's y and dx, then Tile's y and dx)
+    # demo/gpu_layers_test.bend prints 23 zeros (Conv2d's case, GELUErf's y and dx, Tile's y and dx, then RoPE2d's y and dx)
     b = subprocess.run(["bend", "demo/gpu_layers_test.bend", "-o", ".scratch/mut_gpu_layers"], capture_output=True, env=ENV)
     if b.returncode != 0:
         return False
-    return subprocess.run([".scratch/mut_gpu_layers", "+RTS", "--gpu", "off", "--threads", "16", "-RTS"], capture_output=True, text=True).stdout.split() == ["0"] * 21
+    return subprocess.run([".scratch/mut_gpu_layers", "+RTS", "--gpu", "off", "--threads", "16", "-RTS"], capture_output=True, text=True).stdout.split() == ["0"] * 23
 
 
 GPUL = gpu_layers
@@ -101,9 +101,9 @@ GPUL = gpu_layers
 
 def gpu_expcr():
     # make gpu's exactness check: with exp_cr in place of F32.exp, every GPU layer case gives main.bend's bits on the
-    # device (scripts/gpu_expcr.sh prints 21 zeros); needs CUDA, and make mutate runs under the heavy-run lock
+    # device (scripts/gpu_expcr.sh prints 23 zeros); needs CUDA, and make mutate runs under the heavy-run lock
     r = subprocess.run(["scripts/gpu_expcr.sh"], capture_output=True, text=True, env=ENV)
-    return r.returncode == 0 and r.stdout.strip().splitlines()[-1].split() == ["0"] * 21
+    return r.returncode == 0 and r.stdout.strip().splitlines()[-1].split() == ["0"] * 23
 
 
 EXPCR = gpu_expcr
@@ -243,6 +243,12 @@ MUTANTS = [
      "gdw_imgs(Nat.sub(n, 1n), t, U32.div(t, cg), hw", "gdw_imgs(Nat.sub(n, 1n), t, U32.div(t, ng), hw", GPUL, "caught"),
     ("gpu RoPE: the backward pass rotates forward", "torch/gpu.bend",
      "T.Bwd{p, rope_go(n, w, False{}, t, h, half, base, dy), g}", "T.Bwd{p, rope_go(n, w, True{}, t, h, half, base, dy), g}", GPUL, "caught"),
+    ("gpu RoPE2d: the backward pass rotates forward", "torch/gpu.bend",
+     "T.Bwd{p, rope2_go(n, w, False{}, th, tw, h, half_y, half_x, base, dy), g}", "T.Bwd{p, rope2_go(n, w, True{}, th, tw, h, half_y, half_x, base, dy), g}", GPUL, "caught"),
+    ("gpu RoPE2d: the x run's table entry takes the row's y", "torch/gpu.bend",
+     "+k = ((U32.mod(U32.mod(r, nt), tw) * hx : U32) + j : U32)", "+k = ((U32.div(U32.mod(r, nt), tw) * hx : U32) + j : U32)", GPUL, "caught"),
+    ("gpu RoPE2d: the y run's angle takes the row, not its place in the image", "torch/gpu.bend",
+     "+k = ((U32.div(U32.mod(r, nt), tw) * hy : U32) + j : U32)", "+k = ((U32.div(r, tw) * hy : U32) + j : U32)", GPUL, "caught"),
     ("gpu attention: dK and dV leave out the group's last head", "torch/gpu.bend",
      "tsum_h(Nat.sub(gn, 1n), ia, ib, j,", "tsum_h(Nat.sub(gn, 2n), ia, ib, j,", GPUL, "caught"),
     ("gpu attention: the second row of a pair of P's rows reads its keys one place late", "torch/gpu.bend",
