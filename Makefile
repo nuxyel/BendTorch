@@ -2,7 +2,7 @@
 export BEND_NO_TELEMETRY := 1
 export PATH := $(HOME)/.bend/bin:$(HOME)/.elan/bin:$(PATH)
 PY := reference/.venv/bin/python
-DEMOS := mlp_test ops_test mnist tiny_llama tiny_rt tensor_test imap_check fast_test gpu_test gpu_layers_test depth_check smol_block infra_test dtype_test tiny_mixed reader_test safetensors_test tiny_bf16opt loop_test fullattn_test fullattn_lane cfg_test conv2d_probe im2col_probe accum_test
+DEMOS := mlp_test ops_test mnist tiny_llama tiny_rt tensor_test imap_check fast_test gpu_test gpu_layers_test depth_check smol_block infra_test dtype_test tiny_mixed reader_test safetensors_test tiny_bf16opt loop_test fullattn_test fullattn_lane cfg_test conv2d_probe im2col_probe accum_test accum_lanes
 # torch/load.bend's defs that reach the foreign binary reader (bend-ml-binary-read@0.2.0.1): the list may change only on purpose
 LOAD_DEFS := read_go read_sized read read_f32_at read_bf16_at size weights train_read train St.read St.then St.fill tensors_from tensors piece safetensors
 # torch/gpu.bend's defs that rely on bend-ml-tensor-gpu's @unsafe Array.fork (its leaves do not: they are plain Bend)
@@ -61,7 +61,7 @@ build-%:
 
 # make check's tests, one target each, so that scripts/affected.py can run those a change reads; make check runs
 # them all, in this order, after building every demo
-CHECKS := check-infra check-cfg check-reader check-safetensors check-ops check-conv2d check-im2col check-tensor check-imap check-mlp check-accum check-mnist check-tiny check-tiny-rt check-dtype check-tiny-mixed check-tiny-bf16opt check-block check-fast check-gpu-test check-gpu-layers check-fullattn check-fullattn-lane check-depth check-loop
+CHECKS := check-infra check-cfg check-reader check-safetensors check-ops check-conv2d check-im2col check-tensor check-imap check-mlp check-accum check-accum-lanes check-mnist check-tiny check-tiny-rt check-dtype check-tiny-mixed check-tiny-bf16opt check-block check-fast check-gpu-test check-gpu-layers check-fullattn check-fullattn-lane check-depth check-loop
 .PHONY: $(CHECKS)
 
 check: laws build $(CHECKS)  ## the laws, then every layer, the tensor operations, the MLP, MNIST, the tiny Llama and a SmolLM2-sized block against PyTorch
@@ -98,6 +98,17 @@ check-mlp: build-mlp_test
 
 check-accum: build-accum_test
 	$(PY) reference/test_accum.py .scratch/accum_test
+
+# gradient accumulation over the parallel and device lanes: demo/accum_lanes.bend takes its layers from torch/fast.bend;
+# its copies with torch/main.bend's (the reference) and torch/gpu.bend's (on the CPU threads here, --gpu off) are made
+# by changing the import line, as make gpu does for mnist
+check-accum-lanes: build-accum_lanes
+	sed 's|^import ../torch/fast.bend as F$$|import ../torch/main.bend as F|' demo/accum_lanes.bend > .scratch/accum_lanes_main.bend && grep -q '^import ../torch/main.bend as F$$' .scratch/accum_lanes_main.bend
+	sed 's|^import ../torch/fast.bend as F$$|import ../torch/gpu.bend as F|' demo/accum_lanes.bend > .scratch/accum_lanes_gpu.bend && grep -q '^import ../torch/gpu.bend as F$$' .scratch/accum_lanes_gpu.bend
+	bend .scratch/accum_lanes_main.bend -o .scratch/accum_lanes_main && .scratch/accum_lanes_main > .scratch/accum_lanes_main.txt
+	bend .scratch/accum_lanes_gpu.bend -o .scratch/accum_lanes_gpu
+	for t in 1 16; do .scratch/accum_lanes +RTS --threads $$t -RTS > .scratch/accum_lanes_fast.txt && $(PY) reference/accum_lanes.py --zero .scratch/accum_lanes_main.txt .scratch/accum_lanes_fast.txt && echo "accum: fast.bend's layers accumulate to main.bend's bits ($$t threads)" || { echo "accum: fast.bend's accumulation differs ($$t threads)"; exit 1; }; done
+	for t in 1 16; do .scratch/accum_lanes_gpu +RTS --gpu off --threads $$t -RTS > .scratch/accum_lanes_gpu.txt && $(PY) reference/accum_lanes.py --zero .scratch/accum_lanes_main.txt .scratch/accum_lanes_gpu.txt && echo "accum: gpu.bend's layers accumulate to main.bend's bits ($$t CPU threads)" || { echo "accum: gpu.bend's accumulation differs ($$t CPU threads)"; exit 1; }; done
 
 check-mnist: build-mnist
 	$(PY) reference/test_mnist.py .scratch/mnist
@@ -169,7 +180,7 @@ memory:           ## SmolLM2's training state under each storage choice (arithme
 cuda-toolkit:     ## refuse the GPU lane when no CUDA toolkit is found
 	@test -f "$(CUDA_HOME)/include/nvrtc.h" && test -d "$(CUDA_LIB)" || { echo "cuda-toolkit: no CUDA toolkit: $(CUDA_HOME)/include/nvrtc.h or $(CUDA_LIB) is missing"; echo "cuda-toolkit: set CUDA_HOME (candidates: $(CUDA_CANDIDATES)); without a toolkit the build is CPU-only and the gate would pass on it"; exit 1; }
 
-gpu: cuda-toolkit  ## torch/gpu.bend on the GPU (needs a CUDA toolkit in CUDA_HOME): its bits, then MNIST, the tiny Llama and the SmolLM2-sized block on the GPU against PyTorch
+gpu: cuda-toolkit  ## torch/gpu.bend on the GPU (needs a CUDA toolkit in CUDA_HOME): its bits, gradient accumulation over its layers, then MNIST, the tiny Llama and the SmolLM2-sized block on the GPU against PyTorch
 	mkdir -p .scratch
 	CUDA_HOME=$(CUDA_HOME) LD_LIBRARY_PATH=$(CUDA_LIB) bend demo/gpu_test.bend -o .scratch/gpu_test_cuda
 	ldd .scratch/gpu_test_cuda | grep -q libnvrtc && echo "gpu: the test binary links libnvrtc" || { echo "gpu: gpu_test_cuda does not link libnvrtc; the build is CPU-only"; exit 1; }
@@ -179,6 +190,15 @@ gpu: cuda-toolkit  ## torch/gpu.bend on the GPU (needs a CUDA toolkit in CUDA_HO
 	set -- $$(cat .scratch/gpu_layers.txt); test "$$1" -le 4 && test "$${12}" -le 4 && test "$$2 $$3 $$4 $$5 $$7 $$8 $$9 $${10} $${11} $${14} $${17} $${18}" = "0 0 0 0 0 0 0 0 0 0 0 0" && echo "gpu: the same bits on the GPU (GELUErf's y and its erf included), but SiLU ($$1 ulps), cross-entropy ($${12}), attention ($$6 ulps, at small sizes $${13}, full $${15} and full at small sizes $${16}) and GELUErf's dx ($${19}), with no bound (see the next check), through CUDA's float exp" || { echo "gpu: the layers differ on the GPU beyond CUDA's exp"; exit 1; }
 	CUDA_HOME=$(CUDA_HOME) scripts/gpu_expcr.sh | tee .scratch/gpu_expcr.txt
 	test "$$(tail -1 .scratch/gpu_expcr.txt)" = "0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 " && echo "gpu: with exp_cr (the host's exp bits) in place of F32.exp, every case gives main.bend's bits on the device: the device code is exact but for CUDA's exp" || { echo "gpu: with exp_cr the device still differs from main.bend"; exit 1; }
+	sed 's|^import ../torch/fast.bend as F$$|import ../torch/main.bend as F|' demo/accum_lanes.bend > .scratch/accum_lanes_main.bend && grep -q '^import ../torch/main.bend as F$$' .scratch/accum_lanes_main.bend
+	sed 's|^import ../torch/fast.bend as F$$|import ../torch/gpu.bend as F|' demo/accum_lanes.bend > .scratch/accum_lanes_gpu.bend && grep -q '^import ../torch/gpu.bend as F$$' .scratch/accum_lanes_gpu.bend
+	bend .scratch/accum_lanes_main.bend -o .scratch/accum_lanes_main && .scratch/accum_lanes_main > .scratch/accum_lanes_main.txt
+	CUDA_HOME=$(CUDA_HOME) LD_LIBRARY_PATH=$(CUDA_LIB) bend .scratch/accum_lanes_gpu.bend -o .scratch/accum_lanes_gpu_cuda
+	for m in 0 1 2 3 4; do for r in 0 1 2 3; do LD_LIBRARY_PATH=$(CUDA_LIB) .scratch/accum_lanes_gpu_cuda $$m $$r || exit 1; done; done > .scratch/accum_lanes_cuda.txt
+	$(PY) reference/accum_lanes.py --gpu .scratch/accum_lanes_main.txt .scratch/accum_lanes_cuda.txt > .scratch/accum_lanes_dev.txt
+	set -- $$(cat .scratch/accum_lanes_dev.txt); echo "gpu: gradient accumulation over gpu.bend's layers on the GPU: k = 1 is Train.step ($$6 ulps), lin $$1 ulps (no exp), and through CUDA's float exp, with no bound (see the next check): mlp $$2, attn $$3, gn $$4, emb $$5"
+	CUDA_HOME=$(CUDA_HOME) scripts/gpu_expcr.sh accum | tee .scratch/gpu_expcr_accum.txt
+	test "$$(tail -1 .scratch/gpu_expcr_accum.txt)" = "0 0 0 0 0 0" && echo "gpu: with exp_cr, gradient accumulation over gpu.bend's layers gives main.bend's bits on the device" || { echo "gpu: with exp_cr the accumulation still differs from main.bend"; exit 1; }
 	for d in mnist tiny_llama smol_block; do sed 's|^import ../torch/fast.bend as F$$|import ../torch/gpu.bend as F|' demo/$$d.bend > .scratch/$${d}_gpu.bend && grep -q 'torch/gpu.bend' .scratch/$${d}_gpu.bend && CUDA_HOME=$(CUDA_HOME) LD_LIBRARY_PATH=$(CUDA_LIB) bend .scratch/$${d}_gpu.bend -o .scratch/$${d}_gpu || exit 1; done
 	LD_LIBRARY_PATH=$(CUDA_LIB) $(PY) reference/test_mnist.py .scratch/mnist_gpu
 	LD_LIBRARY_PATH=$(CUDA_LIB) $(PY) reference/test_tiny.py .scratch/tiny_llama_gpu 20
