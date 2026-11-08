@@ -2259,3 +2259,44 @@ That is the work, and it is a piece of its own rather than an afternoon's extens
   build's numbers (6,578, 3,494 bit-identical, 0.039); `make mutate`: 182 mutants, 179 as expected and the three
   SmolLM2 safetensors mutants skipped for a path (this worktree is not beside llama.bend), then run with `LLAMA_BEND`
   set: 3 as expected (43 min and 4 min).
+
+## Gradient accumulation over the parallel and device lanes (2026-11-08, #36)
+
+- **What.** `demo/accum_lanes.bend` trains five small models four ways each and prints every state: `lin`
+  (LinearFirst 12 -> 16, RMSNorm, LinearNB 16 -> 8, MSE), `mlp` (Residual of RMSNorm and SwiGLU, 16 -> 24 -> 16),
+  `attn` (Residual of RMSNorm and attention: 2 query heads and 1 key/value head of 8, RoPE, sequences of 8), `gn`
+  (GroupNorm over images of 4 pixels in 2 groups of 4 channels, SiLU, Linear 8 -> 6) and `emb` (Embedding of 13 ids
+  into 8, LinearNB 8 -> 13, cross-entropy); the runs are two AdamW steps of four micro-batches (`acc`), of one step on
+  the four micro-batches' rows at once (`big`), of k = 1 (`one`) and of `Train.step` (`step`). The layers come from the
+  file imported as `F`, `fast.bend` in the source; `make check-accum-lanes` and `make gpu` build copies whose `F` is
+  `main.bend` (the reference) or `gpu.bend` by changing that line, as `make gpu` does for mnist. The micro-batches'
+  rows are the big batch's in order (each number a hash of its index in one stream), so `acc` and `big` see the same
+  data. `reference/accum_lanes.py` checks, in each output, that `one` is `step` bit for bit and `acc` is `big` within
+  `oracle.py`'s tolerance, and prints the distance in ulps of each model to `main.bend`'s copy, then `one` to `step`.
+- **On the CPU threads** (`make check-accum-lanes`): `fast.bend`'s copy on 1 and 16 threads and `gpu.bend`'s with
+  `+RTS --gpu off -RTS` on 1 and 16 give `main.bend`'s bits, every number of every run (`0 0 0 0 0 0`). `acc` against
+  `big`: the worst 0.021 of the tolerance (`mlp`), at most 2.4e-7 on a number; 7,224 of 10,338 numbers identical.
+- **On the RTX 4050** (`make gpu`, each run its own program): `lin` exact, k = 1 `Train.step` to the bit, and through
+  CUDA's float `exp` (SiLU, softmax, cross-entropy) `mlp` up to 320 ulps, `attn` 320, `gn` 80, `emb` 468 after two steps,
+  all in the moments: the parameters are at most 64 ulps off (`mlp`), and most are exact; the losses within 1 ulp. With `exp_cr` in place of `F32.exp`
+  (`scripts/gpu_expcr.sh accum`, its new mode) every number is `main.bend`'s, so the device code differs only by the
+  exponential. `acc` against `big` on the device: the worst 0.033 of the tolerance. The device runs repeat bit for bit.
+- **The device was not used at first.** Built as one pure loop per run, the CUDA build launched no kernel at all (nsys:
+  no CUDA kernel data) and every number came out as `main.bend`'s: `Train.new`'s zeros are made by parallel lets
+  (`pair_zeros`), and a bang that follows a parallel let in the same evaluation runs on the CPU threads, as
+  `demo/gpu_layers_test.bend` records for attention. Each call (`Train.new`, every accumulate, flush and step) now
+  hands its record on through an effect (`IO.now`), so the next one starts a new evaluation: 1,490 kernel launches in
+  `attn`'s accumulated run.
+- **Mutants**, four, each first checked to build and to move the numbers: a `Fork` whose second layer's backward pass
+  starts from a zero gradient (`main.bend`: the other tests hand a `Fork` a zero gradient, a backward pass from new
+  or a training step, so it changes nothing there; here `mlp`'s and `attn`'s `acc` miss `big` by 70,000 times the tolerance in all three lanes alike, which only
+  the `acc`-`big` check sees); `gpu.bend`'s GroupNorm step giving the gain the bias's gradient and the bias the gain's
+  (`gpu_test` and `gpu_layers_test` still print zeros under it; `gn` moves on `gpu.bend` alone); the same in `fast.bend` (`demo/fast_test.bend`
+  catches it too); `gpu.bend`'s Residual whose `Add2` hands on the layer's output without the skip connection (neither
+  `gpu_test` nor `gpu_layers_test` runs `gpu.bend`'s Residual; `mlp` and `attn` move). 186 in all.
+- **Not covered**: `gpu.bend`'s `Conv2d`, `GELUErf` and `FullAttention`, AdamW with packed BF16 moments, SGD and
+  momentum on these two lanes, the JavaScript lane (`docs/limitations.md`).
+- **Gates** (Bend 2.0.40, busy machine, bits and pass/fail only): `make laws check bits` green (6 min 42 s; the new
+  check about 2 min of it, mostly building the three copies); `make gpu` green (6 min 15 s), its new lines: k = 1 0
+  ulps, `lin` 0, `mlp` 320, `attn` 320, `gn` 80, `emb` 468, and `0 0 0 0 0 0` with `exp_cr`; `make mutate` on the four
+  new mutants: 4 of 4 caught (8 min); `scripts/affected.py self-check` passes.
