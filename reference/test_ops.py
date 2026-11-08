@@ -273,19 +273,31 @@ def case(binary: str, seed: int, failures: list[str], edge: str = "") -> tuple[f
         yf.backward(dy)
         ref.update({"attnf.y": yf.detach(), "attnf.dq": qf.grad, "attnf.dk": kf.grad, "attnf.dv": vf.grad})
     if edge == "A":
-        # Accepted for now (Renan, 2026-10-18; to be tested and compared later): v[5, 3] = -inf sits at position 1 of
-        # sequence 1, which row 4 (position 0) cannot see. Row 4 has one visible position, so dS = P (dP - P dP) = 0 and
-        # BendTorch's dq there is 0 for the two query heads of key/value head 0 (columns 0-7); PyTorch also multiplies the
-        # masked probability 0 by dP = dy·v5 = inf and gets NaN. Expected: PyTorch's own dq for row 4 with v[5, 3] made
-        # finite (row 4 does not depend on it). (Masked keys are not ignored the same way: k[7, 4] = NaN makes BendTorch's
-        # dq[4, 8] and dq[4, 12] NaN, as PyTorch's, and that stays compared.)
-        v2 = v0.clone()
-        v2[5, 3] = 0.0
-        q2, k2, v2 = q0.clone().requires_grad_(True), k0.clone().requires_grad_(True), v2.requires_grad_(True)
-        attention(q2, k2, v2).backward(dy)
-        assert torch.isnan(ref["attn.dq"][4, :8]).all()
-        ref["attn.dq"] = ref["attn.dq"].clone()
-        ref["attn.dq"][4, :8] = q2.grad[4, :8]
+        # A special at a position a row cannot see does not reach that row in BendTorch, where PyTorch multiplies the
+        # masked probability (or G) 0 by it and gets NaN. Accepted for v[5, 3] = -inf in row 4's dq (Renan, 2026-10-18:
+        # row 4 has one visible position, so dS = P (dP - P dP) = 0 there). Since the causal products sum only the
+        # triangle (BendTorch #28, 2026-11-08: row i of O and of dQ reads keys 0..i, as the plan Renan approved
+        # says), it holds for O and dQ too: v[5, 3] (sequence 1, position 1) does not reach row 4's y, and the masked
+        # keys k[2, 1] = inf (sequence 0, position 2) and k[7, 4] = NaN (sequence 1, position 3) do not reach dq in rows
+        # 0-1 and 4-6. Expected there: PyTorch's own numbers with those three made finite, which those rows do not
+        # read; every other cell stays PyTorch's own (rows that see a special keep its NaN or infinity).
+        v2, k2 = v0.clone(), k0.clone()
+        v2[5, 3], k2[2, 1], k2[7, 4] = 0.0, 0.0, 0.0
+        q2, k2, v2 = q0.clone().requires_grad_(True), k2.requires_grad_(True), v2.requires_grad_(True)
+        y2 = attention(q2, k2, v2)
+        y2.backward(dy)
+        unseen = [("attn.y", 4, [3, 7], y2.detach()),         # v[5, 3]: kv head 0's column 3, query heads 0 and 1
+                  ("attn.dq", 4, range(0, 8), q2.grad),        # v[5, 3], through dP: kv head 0's query heads
+                  ("attn.dq", 0, range(0, 8), q2.grad),        # k[2, 1]: kv head 0's query heads, positions 0-1
+                  ("attn.dq", 1, range(0, 8), q2.grad),
+                  ("attn.dq", 4, range(8, 16), q2.grad),       # k[7, 4]: kv head 1's query heads, positions 0-2
+                  ("attn.dq", 5, range(8, 16), q2.grad),
+                  ("attn.dq", 6, range(8, 16), q2.grad)]
+        for name, row, cols, alt in unseen:
+            cols = list(cols)
+            assert torch.isnan(ref[name][row, cols]).any(), (name, row)
+            ref[name] = ref[name].clone()
+            ref[name][row, cols] = alt[row, cols]
 
     e = leaf("embedding.e", torch.randn(7, 4, generator=g))
     ids = torch.tensor([3, 0, 3, 6, 3])  # repeated ids: their gradients add up
