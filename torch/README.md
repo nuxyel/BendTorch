@@ -108,7 +108,7 @@ caught by it (`make mutate`).
 [`gpu.bend`](gpu.bend) runs a whole training step as bangs (`!` calls), which run on the GPU in a binary built with CUDA
 (`CUDA_HOME=... bend x.bend -o x`) and on the CPU threads otherwise: `LinearF`, `LinearFirstF` and `LinearNBF` with their
 three products from bend-ml-tensor-gpu, and their optimizer step; SiLU, GELUErf, Mul2, Add2, Residual, Tile, `Mat.dup`, `Mat.sum2`,
-RMSNorm, GroupNorm, RoPE, Attention, FullAttention, Embedding, CrossEntropy and Conv2d (`im2col`, `col2im` and the layer, on the device). The names are `fast.bend`'s (which has `main.bend`'s
+RMSNorm, GroupNorm, RoPE, RoPE2d, Attention, FullAttention, Embedding, CrossEntropy and Conv2d (`im2col`, `col2im` and the layer, on the device). The names are `fast.bend`'s (which has `main.bend`'s
 RMSNorm, RoPE, Attention, Embedding and CrossEntropy under the same names), so a program switches by its import line:
 
 ```python
