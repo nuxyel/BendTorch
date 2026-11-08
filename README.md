@@ -7,7 +7,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-8b83b5?style=flat-square&labelColor=4d4a44" alt="MIT license"></a>
   <a href="https://bend-lang.com"><img src="https://img.shields.io/badge/Bend-2.0.40-8b83b5?style=flat-square&labelColor=4d4a44" alt="Bend 2.0.40"></a>
   <img src="https://img.shields.io/badge/laws%20proved-37-7e9a5e?style=flat-square&labelColor=4d4a44" alt="37 laws proved">
-  <img src="https://img.shields.io/badge/planted%20bugs-174%2F174%20as%20expected-7e9a5e?style=flat-square&labelColor=4d4a44" alt="174 planted bugs, 174 as expected">
+  <img src="https://img.shields.io/badge/planted%20bugs-182%2F182%20as%20expected-7e9a5e?style=flat-square&labelColor=4d4a44" alt="182 planted bugs, 182 as expected">
 </p>
 
 **BendTorch** trains neural networks in [Bend 2](https://bend-lang.com) with general pieces: layers with typed forward
@@ -42,6 +42,9 @@ def Model() -> T.Layer<P, X, Y, S>:
 # one training step, the same for every model and loss, under the configuration the state was made with
 # (Train.new(..., cfg, parameters); Train.with_cfg changes it, for a schedule)
 T.Train.step(~P, ~X, ~Y, ~S, ~List<&2, Nat>, ~Model(), ~ce, state, x, labels)
+
+# or one step over k micro-batches (gradient accumulation): Train.accumulate on each, its loss divided by k
+# (LossOut.div), then Train.flush
 ```
 
 A layer is a record of four functions over its parameters `P`, its input `X`, its output `Y` and what its forward pass
@@ -84,7 +87,7 @@ them again with Bend's kernel proved in Lean, with no `@unsafe`, no `?TODO` and 
 explains each proof. The linear laws are about an exact model where numbers are `Nat`; the F32 code computes the same
 formulas and is tested, not proved, to do so.
 
-174 deliberate faults planted in the code and the specification (`scripts/mutate.py`) each behave as expected: 171
+182 deliberate faults planted in the code and the specification (`scripts/mutate.py`) each behave as expected: 179
 are caught by a law or a test, and three survive by design, because they still compute the right result. One is right
 by accident (a one-cell array wraps every index to 0), and a bounds check catches the same fault; one only changes a
 GPU block size, and any block size that divides a row gives the same sum, bit for bit: the law `block_sum` proves it;
@@ -102,6 +105,7 @@ one or two F32 operations in PyTorch's order (relu, an embedding lookup, the MSE
 |---|---|---|---|
 | every layer, forward and backward, 10 seeds ([`test_ops.py`](reference/test_ops.py)) | 18,140 | 13,435 | 0.43 |
 | a 7-6-3 MLP: gradients, accumulation, 3 steps of SGD, momentum, Adam, Adam + L2, AdamW, 12 seeds ([`test_mlp.py`](reference/test_mlp.py)) | 6,588 | 4,219 | 0.06 |
+| the same MLP, a step over 4 micro-batches of 5 rows (`Train.accumulate`, `Train.flush`) against PyTorch's accumulated step: 3 steps of SGD, momentum, Adam, AdamW and AdamW with BF16 moments, 8 seeds ([`test_accum.py`](reference/test_accum.py)) | 6,578 | 3,494 | 0.04 |
 | the two-layer Llama: the loss and all 21 parameter gradients ([`test_tiny.py`](reference/test_tiny.py)) | 22,753 | 3,916 | 0.02 |
 | the same Llama after 20 AdamW steps: every loss and every final weight | 22,772 | 4,826 | 0.86 (0.79 against float64, the test's rule) |
 
@@ -211,7 +215,7 @@ Linux x86_64, clang, Python 3.14, `curl`. The Python venv with PyTorch takes abo
 make setup   # Bend 2.0.40 (SHA256-checked), Lean 4.34.0, the Python venv of reference/; no sudo
 make data    # MNIST and Tiny Shakespeare into data/, the twins' initial weights and batches (seed 0)
 make check   # the laws (--verdict), the rejected programs, every layer, the MLP, MNIST, the Llama and a SmolLM2-sized block against PyTorch (~2 min)
-make mutate  # the 174 deliberate faults
+make mutate  # the 182 deliberate faults
 make bench   # BendTorch against PyTorch on MNIST, the tiny Llama and the block (~6 min)
 make check-js  # the same tests on the JavaScript build, run with Bun; the outputs must be the native build's bits
 ```

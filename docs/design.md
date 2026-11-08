@@ -100,6 +100,11 @@ general here is Bend's **templates**: a `Layer` record passed as `~l` is substit
   `Train.with_cfg` replaces it (a schedule). The configuration has one owner because two owners were a bug (#24): the
   step's argument used to win, so the learning rate given to `Train.new` did nothing. Each step checks the configuration
   against the buffers (`Opt.guard`, and its laws): one of another family, or that `OptCfg.ok` rejects, runs with NaN.
+- **Gradient accumulation** (#36) splits `Train.step` in two: `Train.accumulate` stops after the backward pass, so the
+  gradient keeps adding up, and `Train.flush` runs the optimizer step, zeroes the gradient and advances `t` once, as
+  PyTorch's k `backward()` calls and one `optimizer.step()`. The 1/k of the mean over all rows goes into each
+  micro-batch's loss before its backward pass (`LossOut.div`, PyTorch's `loss / k`) rather than into the layers, which
+  would need a closure that scales a `P` in every layer and combinator.
 - **A generic walk over the parameters.** `dump` gives every number of a layer's parameters in a fixed order and `load`
   overwrites them from one `Array<F32>` at an element offset; the combinators thread the array and next offset.
   `Layer.count` gives the serialized size, so `load.bend` checks the file length before loading. `Train.save` writes
@@ -135,6 +140,7 @@ general here is Bend's **templates**: a `Layer` record passed as `~l` is substit
 | `Seq`, `Fork`, `Both` and `Residual` compose backward passes correctly (chain rule, sum of input gradients, sides kept apart, skip connection plus layer) | **law** about the combinators' own code, on the `Nat` model's linear layers | `seq_chain`, `fork_sum`, `both_sum`, `residual` |
 | Each layer's output and gradients equal PyTorch's within the tolerance | **tested**, 10 seeds, with IEEE edge cases for the activations | `reference/test_ops.py` |
 | The optimizers equal `torch.optim` step by step | **tested** | `reference/test_mlp.py` |
+| k micro-batches through `Train.accumulate` and one `Train.flush` equal PyTorch's accumulated step (`loss / k`, k backward passes, one optimizer step), and one step on the k·B rows up to the order of the sums; with k = 1 they give `Train.step`'s bits | **tested**: SGD, momentum, Adam, AdamW, AdamW with BF16 moments, 8 seeds, 8 mutants | `reference/test_accum.py` |
 | A step runs under its configuration only when it is of the state's family and passes `OptCfg.ok`, and with NaN otherwise | **law** about the package's own `Opt.guard`, for every configuration and each kind of state | `guard_nomom`, `guard_onemom`, `guard_twomom`, `guard_packed` |
 | The configuration given to `Train.new` is the one every step uses; `Train.with_cfg` changes it and keeps the moments; a checkpoint resumes under the configuration of the state it is read into | **tested** against `torch.optim.AdamW` (a sweep, a warmup, a mid-run change) and bit for bit (resume) | `reference/test_cfg.py` |
 | An Adam configuration's `c1`, `c2` agree with its `b1`, `b2` (`OptCfg.ok`); a program stops on one that does not (`OptCfg.check`), and without the check every step refuses it, so every loss after the first is NaN | **tested** at run time (F32 is opaque to the checker, so it cannot be a law): 5,486 configurations, 5 mutants | `reference/test_infra.py` |
@@ -158,7 +164,7 @@ algebra of the formulas (`dy·(W·x) == (Wᵀ·dy)·x`), with no rounding to rea
 (`F32.mul(3.0, 3.0)` does not reduce), so a law about F32 values can only treat the operations as uninterpreted; no
 IEEE 754 property is claimed anywhere.
 
-`scripts/mutate.py` changes the code and the specification on purpose (174 mutants) and checks that a gate fails. A
+`scripts/mutate.py` changes the code and the specification on purpose (182 mutants) and checks that a gate fails. A
 mutant that survives a gate is listed with the reason (today three: the whole-tensor sum's index map, which the
 numbers miss by accident and a bounds check catches, and two equivalent mutants, the GPU cross-entropy's block size and
 the packed AdamW's last block; since M8 the laws catch the two that used to slip past them, `kv_of` bypassed and a softmax over one
