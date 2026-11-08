@@ -7,11 +7,24 @@ with a fourth digit (`2.0.0.0`). The engineering log behind each entry, measurem
 
 ## Unreleased
 
+- **Attention sums only what a position can see** (#28). Its forward pass's `O = P·V` and its backward pass's
+  `dQ = G·K`, `dK += Gᵀ·Q` and `dV += Pᵀ·dO` used to sum every key and every row, the masked half included, where `P`
+  and `G` are 0; now row `i` sums keys `0 .. i` and key `j`'s row sums rows `j .. t-1`. On finite numbers the bits are
+  the same (`bench/bits.txt` unchanged, and `make check-triangle` compares the two forms on every cell); counted with
+  Cachegrind on one thread, SmolLM2-135M's attention runs 30% fewer instructions forward and 34% forward and backward,
+  the ViT block's one-head attention (t = 16) 24% and 26%. `FullAttention` is unchanged. One difference: an infinity
+  or a NaN in V or K at a position a row cannot see no longer makes that row's output or dQ NaN, as PyTorch's does
+  (`docs/limitations.md`).
+
 ### Laws
 
-Two new laws in `LAWS.bend`, proved in `PROOF.bend` and checked again by `bend PROOF.bend --verdict`, 37 laws in all
-(with `dtype.bend`'s `unpair_pair`). Both by @adeerkhan (#32).
+Four new laws in `LAWS.bend`, proved in `PROOF.bend` and checked again by `bend PROOF.bend --verdict`, 39 laws in all
+(with `dtype.bend`'s `unpair_pair`). Two by @adeerkhan (#32), and two for attention's sums:
 
+- `causal_pv`: every number of row `i` of attention's `O = P·V` (and `dQ = G·K`) is a sum of exactly `i + 1` products,
+  the count `trow0` gives each of the row's dots.
+- `causal_kv`: every number of key `j`'s row of `dK` and `dV` is a sum of exactly `1 + r` products when `r` keys come
+  after `j`, so `t - j`, the count `tcol0` gives each dot.
 - `conv_roundtrip_window`: the round trip at **any** stride and padding, per cell. Slot `(ch, ky, kx)` of output
   position `(oy, ox)` is image cell `(oy·s + ky - p, ox·s + kx - p)`, channel `ch`, so the gather and the scatter name
   the same cell for every kernel, stride and padding — the UNet's `k = 3, s = 2, p = 1` among them. The decode does
