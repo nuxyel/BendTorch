@@ -2220,3 +2220,48 @@ That is the work, and it is a piece of its own rather than an afternoon's extens
   ulps, cross-entropy 4, attention 176,128, small 7,680, full 172,032, full small 8,192, GELUErf's dx 113; all 19 cases
   0 with `exp_cr`), `reader`, `smol`, `smol-gpu`, `bits-smol`, `check-js`, and `make mutate`: 174 of 174 as expected
   (171 caught, the 3 that survive by design), 44 minutes.
+
+## Attention sums only the triangle (2026-11-08, #28)
+
+- **What.** The causal path's `O = P·V` and `dQ = G·K` (`pmul`) and `dK += Gᵀ·Q`, `dV += Pᵀ·dO` (`pacc`) summed every
+  key and every row, the masked half included, where `P` and `G` are 0 (laws `causal`, `causal_grad`). Now row `i`
+  sums keys `0..i` (`trow0`, `tmul`) and key `j`'s row sums rows `j..t-1` (`tcol0`, `tacc`), the loops carrying the
+  row as a Nat. `head_f2c` and `hb2c`..`hb4c` are the causal path's callers; `FullAttention` keeps `head_f2` and
+  `hb2`..`hb4`, with `pmul` and `pacc`. `gpu.bend`'s attention already summed only the triangle (`pv_val`, `kv_val`).
+- **Bits.** Each sum starts at +0.0 and the terms left out were 0·x, ±0.0 for a finite x, so on finite numbers nothing
+  changes. `make check-triangle` (`demo/triangle_probe.bend`, `reference/triangle_check.py`) runs the four products
+  both ways on the P and G the causal path builds, at four shapes (3 query heads over 2 key/value heads at t = 7, the
+  ViT block's head at t = 16, t = 1, SmolLM2-135M's at t = 128, dK and dV added into sums that are not zero): 0 cells
+  differ of 84, 21, 1,024, 4, 73,728 and 8,192 per product; a control with numbers past the diagonal differs in 105 of
+  112. `bench/bits.txt` unchanged.
+- **The one change, on specials.** `test_ops`' IEEE edge cases found 11 cells where PyTorch gives NaN and BendTorch now
+  a number: y's row 4 (v[5, 3] = -inf, a position row 4 cannot see), dQ's rows 0-1 (k[2, 1] = inf) and rows 4-6
+  (k[7, 4] = NaN), PyTorch's 0 · inf of a masked position. The accepted case of 2026-10-18 (dQ's row 4 through dS)
+  now covers them: the reference there is PyTorch's own with those three made finite, every other cell PyTorch's.
+  `docs/limitations.md` says so.
+- **Laws.** `causal_pv`: the count `trow0` hands on, the length of each of row `i`'s dots, is `i + 1`. `causal_kv`: key
+  `j`'s, with `r` keys after it, is `1 + r`. Each proof follows the row's loop, which passes the length on
+  (`cnt_trow`, `cnt_tcol`). That a dot of length `k` sums `k` products is read from `sdot`. 39 laws in all.
+- **Counted** (Cachegrind, one thread, Bend 2.0.40, the core alone minus a program that only fills and hashes its
+  inputs, as in #28's plan):
+
+  | core | devel | triangle | |
+  |---|---:|---:|---:|
+  | ViT block (t = 16, one head of 64), forward | 25.05 M | 19.04 M | -24.0% |
+  | ViT block, forward and backward | 87.28 M | 64.77 M | -25.8% |
+  | SmolLM2-135M (t = 128, 9 heads over 3), forward | 315.43 M | 219.43 M | -30.4% |
+  | SmolLM2-135M, forward and backward | 1,144.70 M | 755.64 M | -34.0% |
+  | FullAttention, ViT / SmolLM2-135M forward | 30.80 / 425.97 M | the same | |
+
+  The prototypes had projected -29% and -34% at SmolLM2's shape and -7% and -8% at the ViT block's; the ViT block gains
+  more because the new loops walk a row and its columns instead of dividing every cell's index (`pmul`'s
+  `U32.div`/`U32.mod`).
+- **Timed** (idle machine, the core alone 200 passes at the ViT shape and 20 at SmolLM2's on fresh inputs, minus the
+  fill-only program, 11 alternated rounds, one thread pinned to CPU 3 and 16 threads): ViT 1.201 to 0.872 ms a pass on
+  one thread and 0.768 to 0.737 on 16 (ranges 0.727-0.794 and 0.701-0.762, within noise); SmolLM2-135M 13.58 to 9.31 ms
+  on one thread and 5.45 to 4.09 on 16. The README's speed table (whole programs, 2026-11-07) predates this.
+- **Mutants**, each checked to build and to move a number or break a law: row `i` stopping one key early (the law and
+  the numbers), dK's and dV's rows summed from one row late, and from row 0 again. 178 in all.
+- **Gates** (Bend 2.0.40): `make laws check bits gpu smol bits-smol` (the device bounds unchanged: SiLU 4 ulps,
+  cross-entropy 4, attention 176,128, small 7,680, full 172,032, full small 8,192; every case 0 with `exp_cr`), the four
+  new mutants caught.
