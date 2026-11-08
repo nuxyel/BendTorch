@@ -22,7 +22,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from oracle import close, run, write_f32, write_u8
+from oracle import bits_equal, close, run, write_f32, write_u8
 from test_mlp import AdamW16, NEAR_TIE, model
 
 K, B = 4, 5
@@ -75,6 +75,9 @@ def case(binary: str, seed: int, failures: list[str], worst: dict) -> None:
 
     def check(kind, name, bend, ref):
         worst[kind] = max(worst[kind], close(f"seed {seed} {name}", bend, ref, failures))
+        if kind == "torch":
+            s, t = bits_equal(bend, ref)
+            worst["same"], worst["total"] = worst["same"] + s, worst["total"] + t
 
     def same(name, a, b):
         if not np.array_equal(bits(a), bits(b)):
@@ -138,12 +141,13 @@ def case(binary: str, seed: int, failures: list[str], worst: dict) -> None:
 def main():
     binary = sys.argv[1]
     failures: list[str] = []
-    worst = {"torch": 0.0, "big": 0.0, "big_abs": 0.0, "ties": 0}
+    worst = {"torch": 0.0, "big": 0.0, "big_abs": 0.0, "ties": 0, "same": 0, "total": 0}
     seeds = 8
     for seed in range(seeds):
         case(binary, seed, failures, worst)
     print(f"accum: {seeds} seeds, k = {K} micro-batches of {B} rows, {len(OPTS)} optimizers; k = 1 and the _at forms "
-          f"bit-identical; against PyTorch's accumulated step worst {worst['torch']:.3f} of the tolerance; against one "
+          f"bit-identical; against PyTorch's accumulated step {worst['total']} numbers, {worst['same']} bit-identical, "
+          f"worst {worst['torch']:.3f} of the tolerance; against one "
           f"step on all {K * B} rows worst {worst['big']:.3f} of the tolerance (largest parameter difference "
           f"{worst['big_abs']:.3e}); {worst['ties']} BF16-state weights left out, their moment within {NEAR_TIE} F32 "
           f"ulps of a rounding midpoint")
