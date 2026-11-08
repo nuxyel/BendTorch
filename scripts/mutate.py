@@ -41,6 +41,7 @@ IMAP = numeric("imap_check", "check_imap.py")
 ST = numeric("safetensors_test", "test_safetensors.py")
 CFG = numeric("cfg_test", "test_cfg.py")
 CONV = numeric("conv2d_probe", "conv2d_check.py")
+ACC = numeric("accum_test", "test_accum.py")
 I2C = numeric("im2col_probe", "im2col_check.py")
 
 
@@ -470,6 +471,27 @@ MUTANTS = [
     ("train config: Train.with_cfg restarts 1 - b^t", "torch/main.bend",
      "    case Train{p, g, st, c, p1, p2, l}: Train{p, g, st, cfg, p1, p2, l}",
      "    case Train{p, g, st, c, p1, p2, l}: Train{p, g, st, cfg, 0.0, 0.0, l}", CFG, "caught"),
+    ("accumulation: LossOut.div leaves the gradient undivided", "torch/main.bend",
+     "Array.set(F32, a, i, (v / k : F32))", "Array.set(F32, a, i, v)", ACC, "caught"),
+    ("accumulation: LossOut.div leaves the loss undivided", "torch/main.bend",
+     "LossOut{(l / U32.to_f32(k) : F32), TA.Mat{div_l(", "LossOut{l, TA.Mat{div_l(", ACC, "caught"),
+    ("accumulation: each micro-batch starts from a zero gradient", "torch/main.bend",
+     "ta2(~P, ~X, ~Y, ~S, ~T, ~m, ~loss, cfg, g, st,", "ta2(~P, ~X, ~Y, ~S, ~T, ~m, ~loss, cfg, Layer.zeros(P, X, Y, S, m), st,",
+     ACC, "caught"),
+    ("accumulation: accumulate runs the optimizer step", "torch/main.bend",
+     "      ta2(~P, ~X, ~Y, ~S, ~T, ~m, ~loss, cfg,", "      ts2(~P, ~X, ~Y, ~S, ~T, ~m, ~loss, cfg,", ACC, "caught"),
+    ("accumulation: t advances at every micro-batch", "torch/main.bend",
+     "    case Bwd{p, dx, g}: Train{p, g, st, cfg, p1, p2, l}",
+     "    case Bwd{p, dx, g}: Train{p, g, st, cfg, (p1 + (OptCfg.c1(cfg) * (1.0 - p1 : F32) : F32) : F32), (p2 + (OptCfg.c2(cfg) * (1.0 - p2 : F32) : F32) : F32), l}",
+     ACC, "caught"),
+    ("accumulation: flush keeps 1 - b^t where it was", "torch/main.bend",
+     "F32) : F32) : F32)\n  ts4g(~P, ~X, ~Y, ~S, ~m, cfg, l, q1, q2, p, g,", "F32) : F32) : F32)\n  ts4g(~P, ~X, ~Y, ~S, ~m, cfg, l, p1, p2, p, g,",
+     ACC, "caught"),
+    ("accumulation: accumulate_at starts from a zero gradient", "torch/main.bend",
+     "ta_at_f(P, X, Y, S, Target, bf, loss, cfg, g, st,", "ta_at_f(P, X, Y, S, Target, bf, loss, cfg, zeros(Unit{}), st,", ACC, "caught"),
+    ("accumulation: flush_at keeps 1 - b^t where it was", "torch/main.bend",
+     "train_at_g(P, sf, cfg, l, q1, q2, p, g, Opt.guard(P, cfg, q1, q2, st))\n\n# Train.flush for one owned model",
+     "train_at_g(P, sf, cfg, l, p1, p2, p, g, Opt.guard(P, cfg, q1, q2, st))\n\n# Train.flush for one owned model", ACC, "caught"),
     ("train config: Train.new keeps a fixed configuration", "torch/main.bend",
      "OptState.new(~P, ~X, ~Y, ~S, ~m, cfg), cfg, 0.0, 0.0, 0.0}",
      "OptState.new(~P, ~X, ~Y, ~S, ~m, cfg), CAdamW{0.01, 0.9, 0.999, 0.00000001, 0.01, 0.1, 0.001}, 0.0, 0.0, 0.0}", CFG,
