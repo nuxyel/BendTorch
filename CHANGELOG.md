@@ -7,6 +7,25 @@ with a fourth digit (`2.0.0.0`). The engineering log behind each entry, measurem
 
 ## Unreleased
 
+### Gradient accumulation (#36)
+
+- **`Train.accumulate` and `Train.flush`**: one optimizer step over k micro-batches, for an effective batch larger than
+  the batch a program's types allow (a 64x64 image example cannot type more than two images, bendlang/bend#1071).
+  `Train.accumulate` runs the forward pass, the loss and the backward pass into the state's gradient and stops there;
+  `Train.flush` runs one optimizer step on the summed gradient, under the state's configuration, and zeroes it. Adam's t
+  advances once a flush, as in PyTorch. `LossOut.div(n, c, k, r)` divides a micro-batch's loss and its gradient by k,
+  PyTorch's `loss / k`, so the k gradients add up to the gradient of the mean over all k·B rows. `Train.accumulate_at`
+  and `Train.flush_at` are the owned forms, as `Train.step_at`. Asked for by @adeerkhan.
+- **Tests**: `demo/accum_test.bend` with `reference/test_accum.py` (`make check-accum`). With k = 1 the two calls give
+  `Train.step`'s bits, in both forms. Four micro-batches of 5 rows a step against PyTorch's accumulated step, 3 steps of
+  SGD, momentum, Adam, AdamW and AdamW with BF16 moments, 8 seeds: 6,578 numbers, 3,494 of them bit-identical, the worst
+  0.04 of the tolerance. Against one step on the 20 rows at once, the same up to the order of the sums: the worst 0.02 of
+  the tolerance, 1.2e-7 at most on a parameter. The owned forms and `fast.bend`'s linear layers give the same bits.
+- **Mutants**: eight more (the 1/k left out of the gradient or the loss, a micro-batch starting from a zero gradient in
+  either form, a step or an advance of t at every micro-batch, a flush that leaves t where it was, in either form), 182
+  in all.
+- **Moving from 2.0.2**: nothing changes for a program that does not call the new functions.
+
 ### Laws
 
 Two new laws in `LAWS.bend`, proved in `PROOF.bend` and checked again by `bend PROOF.bend --verdict`, 37 laws in all
