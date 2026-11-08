@@ -348,7 +348,7 @@ def gate_sig(gate):
 def mutate_rest(text):
     """scripts/mutate.py without its list of mutants and its gates: the machinery every mutant runs through."""
     text = re.sub(r"^MUTANTS = \[.*?^\]\n", "", text, flags=re.M | re.S)
-    text = re.sub(r"^def (laws|smol_st|fast|gpu|gpu_layers|gpu_expcr|tiny16)\(\):\n(?:(?:[ \t]+.*|)\n)*", "", text, flags=re.M)
+    text = re.sub(r"^def (laws|smol_st|fast|gpu|gpu_layers|gpu_expcr|accum_lanes|tiny16)\(\):\n(?:(?:[ \t]+.*|)\n)*", "", text, flags=re.M)
     text = re.sub(r"^[A-Z0-9_, ]+ = (?:numeric\(.*\)|[a-z0-9_]+)\n", "", text, flags=re.M)
     return text
 

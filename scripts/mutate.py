@@ -110,6 +110,30 @@ def gpu_expcr():
 EXPCR = gpu_expcr
 
 
+def accum_lanes():
+    # gradient accumulation over the parallel and device lanes (demo/accum_lanes.bend, reference/accum_lanes.py): the
+    # copies whose layers are torch/main.bend's and torch/gpu.bend's (on the CPU threads, --gpu off) and the source,
+    # whose layers are torch/fast.bend's, must give the same bits, k = 1 must be Train.step, and k = 4 one step on the
+    # four micro-batches
+    src = Path("demo/accum_lanes.bend").read_text()
+    line = "import ../torch/fast.bend as F\n"
+    if src.count(line) != 1:
+        return False
+    for name, lane in (("main", "torch/main.bend"), ("fast", "torch/fast.bend"), ("gpu", "torch/gpu.bend")):
+        Path(f".scratch/mut_accum_lanes_{name}.bend").write_text(src.replace(line, f"import ../{lane} as F\n"))
+        b = subprocess.run(["bend", f".scratch/mut_accum_lanes_{name}.bend", "-o", f".scratch/mut_accum_lanes_{name}"], capture_output=True, env=ENV)
+        if b.returncode != 0:
+            return False
+        r = subprocess.run([f".scratch/mut_accum_lanes_{name}", "+RTS", "--gpu", "off", "--threads", "16", "-RTS"], capture_output=True, text=True)
+        if r.returncode != 0:
+            return False
+        Path(f".scratch/mut_accum_lanes_{name}.txt").write_text(r.stdout)
+    return all(subprocess.run([PY, "reference/accum_lanes.py", "--zero", ".scratch/mut_accum_lanes_main.txt", f".scratch/mut_accum_lanes_{n}.txt"], capture_output=True).returncode == 0 for n in ("fast", "gpu"))
+
+
+ACCL = accum_lanes
+
+
 def has_cuda():
     # gpu_expcr needs a CUDA toolkit and a device; on a machine without them (CI's runners) its mutant is skipped and
     # said so, since there the check would build for the CPU, where the host's exp is the device's.
@@ -492,6 +516,18 @@ MUTANTS = [
     ("accumulation: flush_at keeps 1 - b^t where it was", "torch/main.bend",
      "train_at_g(P, sf, cfg, l, q1, q2, p, g, Opt.guard(P, cfg, q1, q2, st))\n\n# Train.flush for one owned model",
      "train_at_g(P, sf, cfg, l, p1, p2, p, g, Opt.guard(P, cfg, q1, q2, st))\n\n# Train.flush for one owned model", ACC, "caught"),
+    ("accumulation over a Fork: its second layer's backward pass starts from a zero gradient", "torch/main.bend",
+     "fork_b2(~P1, ~X, ~Y1, ~S1, ~add, ~la, P2, p1, s1, d1, g1, Layer.bwd(P2, X, Y2, S2, lb, p2, s2, d2, g2))",
+     "fork_b2(~P1, ~X, ~Y1, ~S1, ~add, ~la, P2, p1, s1, d1, g1, Layer.bwd(P2, X, Y2, S2, lb, p2, s2, d2, Layer.zeros(P2, X, Y2, S2, lb)))",
+     ACCL, "caught"),
+    ("gpu GroupNorm step: the gain takes the bias's gradient and the bias the gain's", "torch/gpu.bend",
+     "T.ln_s2(d, opt_mat(1n, d, op, w, gw, sw), opt_mat(1n, d, op, b, gb, sb))",
+     "T.ln_s2(d, opt_mat(1n, d, op, w, gb, sw), opt_mat(1n, d, op, b, gw, sb))", ACCL, "caught"),
+    ("gpu Residual: the forward pass drops the skip connection (Add2 hands on the layer's output alone)", "torch/gpu.bend",
+     "case T.Two{a, b}: T.Fwd{Unit{}, Mat.sum2(n, c, a, b), Unit{}}", "case T.Two{a, b}: T.Fwd{Unit{}, b, Unit{}}", ACCL, "caught"),
+    ("fast GroupNorm step: the gain takes the bias's gradient and the bias the gain's", "torch/fast.bend",
+     "T.ln_s2(d, opt_mat(1n, d, op, w, gw, sw), opt_mat(1n, d, op, b, gb, sb))",
+     "T.ln_s2(d, opt_mat(1n, d, op, w, gb, sw), opt_mat(1n, d, op, b, gw, sb))", ACCL, "caught"),
     ("train config: Train.new keeps a fixed configuration", "torch/main.bend",
      "OptState.new(~P, ~X, ~Y, ~S, ~m, cfg), cfg, 0.0, 0.0, 0.0}",
      "OptState.new(~P, ~X, ~Y, ~S, ~m, cfg), CAdamW{0.01, 0.9, 0.999, 0.00000001, 0.01, 0.1, 0.001}, 0.0, 0.0, 0.0}", CFG,
