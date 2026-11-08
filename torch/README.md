@@ -19,6 +19,27 @@ one that `OptCfg.ok` rejects, is refused: that step runs with NaN, so the parame
 fresh state when switching families. Call `T.OptCfg.check(cfg)` before training, as the demos do: it stops with a
 message when an Adam configuration's `c1`, `c2` disagree with its `b1`, `b2`.
 
+Gradient accumulation (BendTorch #36), for an effective batch larger than the batch a program's types allow:
+`Train.accumulate(~P, ~X, ~Y, ~S, ~T, ~m, ~loss, state, x, targets)` runs the forward pass, the loss and the backward
+pass and stops there, so the gradient keeps adding up over the calls (a backward pass adds into the gradient it
+receives); `Train.flush(~P, ~X, ~Y, ~S, ~m, state)` then runs one optimizer step on it under the state's configuration
+and zeroes it, as `Train.step` does. Adam's `t` counts flushes, not micro-batches, as in PyTorch. For the gradient of
+the mean over all `k·B` rows, divide each micro-batch's loss by `k` with `LossOut.div(n, c, k, loss_out)`, PyTorch's
+`loss / k` (the loss and every number of its gradient divided by `k`); the state's `loss` is the last micro-batch's,
+divided. With `k = 1`, accumulate then flush gives `Train.step`'s bits. `Train.accumulate_at` and `Train.flush_at` are
+the owned forms, as `Train.step_at`. `demo/accum_test.bend` checks it against PyTorch's accumulated step:
+
+```python
+# one step over k = 2 micro-batches of 5 rows: PyTorch's step on the 10 rows, up to the order of the sums
+def ce2(z: TA.Mat<5n, 3n>, labels: List<&2, Nat>) -> T.LossOut<TA.Mat<5n, 3n>>:
+  T.LossOut.div(5n, 3n, 2, T.CrossEntropy(5n, 3n, z, labels))
+
+def step2(tr: T.Train<P>, x0: X, y0: List<&2, Nat>, x1: X, y1: List<&2, Nat>) -> T.Train<P>:
+  T.Train.flush(~P, ~X, ~Y, ~S, ~Model(),
+    T.Train.accumulate(~P, ~X, ~Y, ~S, ~List<&2, Nat>, ~Model(), ~ce2,
+      T.Train.accumulate(~P, ~X, ~Y, ~S, ~List<&2, Nat>, ~Model(), ~ce2, tr, x0, y0), x1, y1))
+```
+
 From 1.x (BendTorch #24): `Train.step` and `Train.step_at` no longer take a configuration, and the record has one more
 field, after `st` (`T.Train{p, g, st, cfg, p1, p2, loss}`), so a pattern on it gains one. Until 1.3.0 the step's own
 argument decided everything but which buffers to make: the learning rate given to `Train.new` was not used, and a
@@ -58,7 +79,7 @@ cost at run time.
 | Combinators | `Seq` (one after the other), `Fork` (one input to two layers, the input gradients summed), `Both` (a pair of inputs to two layers), `Residual` (`x + f(x)`), `Tie` (first, middle, last, where the first and the last share one parameter: tied embeddings) |
 | Losses | `CrossEntropy` (mean, from logits; each row's softmax sum is a balanced tree, for vocabularies of 49,152), `NLL` (mean, from log-probabilities), `MSE` (mean) |
 | Optimizers | `SGD`, SGD with momentum, `Adam` (with or without weight decay), `AdamW`; one pass per parameter matrix, in PyTorch's order of operations, the gradient zeroed on the way. `CAdam{lr, b1, b2, eps, wd, c1, c2}` and `CAdamW{...}` take `c1 = 1 - b1` and `c2 = 1 - b2` as their own constants (`0.1, 0.001` for the usual betas), as PyTorch computes them in float64, and the training state carries `1 - b^t`. `OptCfg.ok(cfg)` checks each pair: `0 < c <= 1` and `c` within 2^-23 of `1 - b` taken in F32 (always true for a `c` written as `1 - b`, false for a typo); `OptCfg.check(cfg)` stops an IO program with a message when it fails, and `Train.new` starts a failing configuration's state at NaN, so every loss after the first is NaN. `CAdamWBF16{lr, b1, b2, eps, wd, c1, c2, v16}` is AdamW with its first moment stored as packed BF16 (two values a `U32`, rounded to nearest even after each update, read back rounded by the weight update) and, when `v16`, its second moment too; the weights, the gradient and the arithmetic stay F32. Its state is `Packed{tree}`: the buffers of each matrix at a leaf, allocated on the matrix's first step, half the words of F32 moments; checkpoints write the tree with its sizes. A BF16 `v` loses most small updates of long runs (`b2 = 0.999` moves it by 0.1%, under half a BF16 step), so it drifts above the exact average: over 2,000 steps of the tiny Llama, 90.6% of v's updates were lost to rounding and the stored v sat 1.54x above the exact one at the median, while the losses stayed within M11's bound (0.0452 with m packed, 0.0234 with m and v, against 0.05). So it is an opt-in, not a default: m alone is safe, and m with v is for when memory decides, as for one step or a short fine-tune of SmolLM2-1.7B (AdamW's state 26.0 GiB in F32, 19.5 GiB with both packed) |
-| Training | `Train.step`: forward, loss, backward and one optimizer step for any layer under any loss, under the configuration the state carries (`Train.new`'s, or `Train.with_cfg`'s; one of another family, or that `OptCfg.ok` rejects, is refused); `Train.save` and `load.bend`'s `train`: checkpoints of the parameters and the optimizer state (a resumed run gives the same bits) |
+| Training | `Train.step`: forward, loss, backward and one optimizer step for any layer under any loss, under the configuration the state carries (`Train.new`'s, or `Train.with_cfg`'s; one of another family, or that `OptCfg.ok` rejects, is refused); `Train.accumulate` and `Train.flush`: k micro-batches into one gradient, then one step (`LossOut.div` divides each loss by k); `Train.save` and `load.bend`'s `train`: checkpoints of the parameters and the optimizer state (a resumed run gives the same bits) |
 | General tensors (`tensor.bend`) | `Tensor<s>`, the shape `s` a list of sizes in the type, any rank (tested 0 to 4); `add`, `sub`, `mul`, `div` with PyTorch's broadcasting and their gradients (`grad2`, `sum_to`); `sum_axis`, `sum_axis_keep`, `mean_axis`, `sum_all`, `mean_all`; `reshape` (with a proof that the count does not change), `flatten`; `permute` (with `transpose_p`, the permutation that swaps two axes); `narrow` (with a proof that the window fits); `cat`; `bmm` (`[b, n, k] · [b, k, m]`), each with its backward function. `of_mat` and `to_mat` turn a `Mat<r, c>` into a `Tensor<[r, c]>` and back without a copy |
 
 `erf(x)` is written in the package with F32 additions, multiplications and comparisons only (Base has no `erf`), so it
