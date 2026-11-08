@@ -21,9 +21,19 @@ with a fourth digit (`2.0.0.0`). The engineering log behind each entry, measurem
   SGD, momentum, Adam, AdamW and AdamW with BF16 moments, 8 seeds: 6,578 numbers, 3,494 of them bit-identical, the worst
   0.04 of the tolerance. Against one step on the 20 rows at once, the same up to the order of the sums: the worst 0.02 of
   the tolerance, 1.2e-7 at most on a parameter. The owned forms and `fast.bend`'s linear layers give the same bits.
+- **Over the parallel and device lanes**: `demo/accum_lanes.bend` with `reference/accum_lanes.py` (`make
+  check-accum-lanes`, and in `make gpu`). Five small models (LinearFirst, RMSNorm and LinearNB; a SwiGLU block; an
+  attention block with RoPE; GroupNorm, SiLU and Linear; Embedding and LinearNB under cross-entropy), each trained two
+  AdamW steps four ways from one source whose layers come from `main.bend`, `fast.bend` or `gpu.bend`: four
+  micro-batches a step, one step on their rows at once, k = 1, and `Train.step`. On the CPU threads both lanes give
+  `main.bend`'s bits on 1 and 16 threads; k = 4 is the one big step within 0.03 of the tolerance. On the RTX 4050 the
+  linear stack is exact, k = 1 is `Train.step` to the bit, and the other four differ by 80 to 468 ulps after two steps,
+  all of it CUDA's float `exp` (with `exp_cr` every number is `main.bend`'s).
 - **Mutants**: eight more (the 1/k left out of the gradient or the loss, a micro-batch starting from a zero gradient in
-  either form, a step or an advance of t at every micro-batch, a flush that leaves t where it was, in either form), 182
-  in all.
+  either form, a step or an advance of t at every micro-batch, a flush that leaves t where it was, in either form), and
+  four over the lanes (a `Fork` whose second layer starts its backward pass from a zero gradient, which only an
+  accumulated step can see; the GroupNorm step trading the gain's and the bias's gradients in `gpu.bend` and in
+  `fast.bend`; `gpu.bend`'s Residual dropping its skip connection), 186 in all.
 - **Moving from 2.0.2**: nothing changes for a program that does not call the new functions.
 
 ### Laws
