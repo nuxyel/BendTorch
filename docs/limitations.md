@@ -136,6 +136,15 @@ Numbers marked "busy machine" were taken with other jobs running and are a first
 - The exact GELU (`GELUErf`) is in `main.bend` and `gpu.bend`, not in `fast.bend` (which has no GELU of either form).
   On the GPU its forward pass gives `main.bend`'s bits; its gradient takes CUDA's float `exp` and differs by up to 113
   ulps on the test's inputs (`make gpu`'s `exp_cr` check gives 0 there).
+- Gradient accumulation (`Train.accumulate`, `Train.flush`, #36) relies on every backward pass adding into the
+  gradient it receives, the layer protocol. It is tested on a 7-6-3 MLP with `main.bend`'s layers and with `fast.bend`'s
+  linear layers (`reference/test_accum.py`), not over `gpu.bend`'s layers or the rest of `fast.bend`'s.
+- `LossOut.div`, the 1/k of each micro-batch's loss, takes a matrix output (`LossOut<Mat<n, c>>`); a loss over another
+  output type divides its own gradient. After a flush, the state's `loss` is the last micro-batch's (divided by k), not
+  the step's: a loop that reports the step's loss adds up the k it saw.
+- A checkpoint holds the parameters and the optimizer's moments, not the gradient: one written between two
+  `Train.accumulate` calls loses the micro-batches summed so far, so a resumed run starts that step's micro-batches
+  again.
 - int8 is for inference only (weights quantized by rows, activations in F32).
 - Mixed precision is BF16 storage with F32 arithmetic and F32 master weights, measured on the tiny Llama only. It
   costs time: 200 steps take 180 ms against 160 in F32 on one thread and 330 against 220 on 16
