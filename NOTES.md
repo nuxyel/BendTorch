@@ -2253,9 +2253,9 @@ That is the work, and it is a piece of its own rather than an afternoon's extens
   | SmolLM2-135M, forward and backward | 1,144.70 M | 755.64 M | -34.0% |
   | FullAttention, ViT / SmolLM2-135M forward | 30.80 / 425.97 M | the same | |
 
-  The prototypes had projected -29% and -34% at SmolLM2's shape and -7% and -8% at the ViT block's; the ViT block gains
-  more because the new loops walk a row and its columns instead of dividing every cell's index (`pmul`'s
-  `U32.div`/`U32.mod`).
+  The prototypes had projected -29% and -34% at SmolLM2's shape and -7% and -8% at the ViT block's, counting only the
+  products left out. The ViT block gains more than that. The new loops also skip `pmul`'s `U32.div`/`U32.mod` of each
+  cell's index, but I did not count how much of the difference that is.
 - **Timed** (idle machine, the core alone 200 passes at the ViT shape and 20 at SmolLM2's on fresh inputs, minus the
   fill-only program, 11 alternated rounds, one thread pinned to CPU 3 and 16 threads): ViT 1.201 to 0.872 ms a pass on
   one thread and 0.768 to 0.737 on 16 (ranges 0.727-0.794 and 0.701-0.762, within noise); SmolLM2-135M 13.58 to 9.31 ms
