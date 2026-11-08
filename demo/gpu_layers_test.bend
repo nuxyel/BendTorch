@@ -5,12 +5,12 @@
 #   SiLU, Mul2, Mat.sum2 and Mat.dup, RMSNorm, RoPE, Attention, SGD, momentum, AdamW, MSE (loss and gradient),
 #   Embedding (rows and gradient), CrossEntropy (loss and gradient), attention at small and odd sizes, GroupNorm,
 #   FullAttention at SmolLM2's sizes and at small sizes, Conv2d at a small odd shape and at a realistic one, GELUErf's y
-#   and its dx (inputs in [-6, 6), every piece of erf)
+#   and its dx (inputs in [-6, 6), every piece of erf), Tile's y and its dx
 # With `+RTS --gpu off -RTS` or without CUDA every case is 0 (the same bits). On the GPU, SiLU, attention, full attention,
 # cross-entropy and GELUErf's gradient take CUDA's float exp, whose last bit can differ from the host's: 1 ulp is accepted
 # for an exponential (my decision, 2026-10-18), and the differences that follow from it downstream are what this test
 # shows; every other case is 0.
-#   gpu_layers_test        every case, one line          gpu_layers_test <k>   case k alone (0..18, in the order above)
+#   gpu_layers_test        every case, one line          gpu_layers_test <k>   case k alone (0..20, in the order above)
 import Base
 import ../torch/main.bend as T
 import ../torch/gpu.bend as G
@@ -114,6 +114,26 @@ def gelue_y() -> U32:
 
 def gelue_dx() -> U32:
   c_dx(512n, 1536n, run(~Unit, ~TA.Mat<512n, 1536n>, ~TA.Mat<512n, 1536n>, ~TA.Mat<512n, 1536n>, ~T.GELUErf(512n, 1536n), Unit{}, matw(512n, 1536n, 121), mat(512n, 1536n, 122), Unit{}), run(~Unit, ~TA.Mat<512n, 1536n>, ~TA.Mat<512n, 1536n>, ~TA.Mat<512n, 1536n>, ~G.GELUErf(512n, 1536n), Unit{}, matw(512n, 1536n, 121), mat(512n, 1536n, 122), Unit{}))
+
+# Tile, y and dx apart: 8 images of 64 tokens at SmolLM2's width (512 x 576 out), and 3 images of 5 tokens of 7 numbers
+# (105 cells, so the leaves' last shares of cells are short)
+def c_ty(+b: Nat, +m: Nat, +c: Nat, a: RR<Unit, TA.Mat<b, c>, TA.Mat<m, c>>, z: RR<Unit, TA.Mat<b, c>, TA.Mat<m, c>>) -> U32:
+  match a z:
+    case RR{y1, d1, g1} RR{y2, d2, g2}: dm(m, c, y1, y2)
+
+def c_tdx(+b: Nat, +m: Nat, +c: Nat, a: RR<Unit, TA.Mat<b, c>, TA.Mat<m, c>>, z: RR<Unit, TA.Mat<b, c>, TA.Mat<m, c>>) -> U32:
+  match a z:
+    case RR{y1, d1, g1} RR{y2, d2, g2}: dm(b, c, d1, d2)
+
+def tile_y() -> U32:
+  u32_max(
+    c_ty(8n, 512n, 576n, run(~Unit, ~TA.Mat<8n, 576n>, ~TA.Mat<512n, 576n>, ~Unit, ~T.Tile(8n, 64n, 576n), Unit{}, mat(8n, 576n, 211), mat(512n, 576n, 212), Unit{}), run(~Unit, ~TA.Mat<8n, 576n>, ~TA.Mat<512n, 576n>, ~Unit, ~G.Tile(8n, 64n, 576n), Unit{}, mat(8n, 576n, 211), mat(512n, 576n, 212), Unit{})),
+    c_ty(3n, 15n, 7n, run(~Unit, ~TA.Mat<3n, 7n>, ~TA.Mat<15n, 7n>, ~Unit, ~T.Tile(3n, 5n, 7n), Unit{}, mat(3n, 7n, 213), mat(15n, 7n, 214), Unit{}), run(~Unit, ~TA.Mat<3n, 7n>, ~TA.Mat<15n, 7n>, ~Unit, ~G.Tile(3n, 5n, 7n), Unit{}, mat(3n, 7n, 213), mat(15n, 7n, 214), Unit{})))
+
+def tile_dx() -> U32:
+  u32_max(
+    c_tdx(8n, 512n, 576n, run(~Unit, ~TA.Mat<8n, 576n>, ~TA.Mat<512n, 576n>, ~Unit, ~T.Tile(8n, 64n, 576n), Unit{}, mat(8n, 576n, 211), mat(512n, 576n, 212), Unit{}), run(~Unit, ~TA.Mat<8n, 576n>, ~TA.Mat<512n, 576n>, ~Unit, ~G.Tile(8n, 64n, 576n), Unit{}, mat(8n, 576n, 211), mat(512n, 576n, 212), Unit{})),
+    c_tdx(3n, 15n, 7n, run(~Unit, ~TA.Mat<3n, 7n>, ~TA.Mat<15n, 7n>, ~Unit, ~T.Tile(3n, 5n, 7n), Unit{}, mat(3n, 7n, 213), mat(15n, 7n, 214), Unit{}), run(~Unit, ~TA.Mat<3n, 7n>, ~TA.Mat<15n, 7n>, ~Unit, ~G.Tile(3n, 5n, 7n), Unit{}, mat(3n, 7n, 213), mat(15n, 7n, 214), Unit{})))
 
 def c_mul(+n: Nat, +c: Nat, a: RR<Unit, T.Two<TA.Mat<n, c>, TA.Mat<n, c>>, TA.Mat<n, c>>, b: RR<Unit, T.Two<TA.Mat<n, c>, TA.Mat<n, c>>, TA.Mat<n, c>>) -> U32:
   match a b:
@@ -341,17 +361,27 @@ def gn() -> U32:
 
 # every case, on one line
 def all_cases() -> IO(Unit):
-  IO.print(U32.show(silu()) ++ " " ++ U32.show(mul2()) ++ " " ++ U32.show(sumdup()) ++ " " ++ U32.show(rms()) ++ " " ++ U32.show(rope()) ++ " " ++ U32.show(attn()) ++ " " ++ U32.show(step(T.SGD{0.01}, 0n)) ++ " " ++ U32.show(step(T.Momentum{0.01, 0.9}, 1n)) ++ " " ++ U32.show(step(T.Opt.at(T.CAdamW{0.001, 0.9, 0.999, 0.00000001, 0.01, 0.1, 0.001}, 0.1, 0.001), 2n)) ++ " " ++ U32.show(mse()) ++ " " ++ U32.show(emb()) ++ " " ++ U32.show(ce()) ++ " " ++ U32.show(attn_small()) ++ " " ++ U32.show(gn()) ++ " " ++ U32.show(attnf()) ++ " " ++ U32.show(attnf_small()) ++ " " ++ U32.show(conv2d()) ++ " " ++ U32.show(gelue_y()) ++ " " ++ U32.show(gelue_dx()))
+  IO.print(U32.show(silu()) ++ " " ++ U32.show(mul2()) ++ " " ++ U32.show(sumdup()) ++ " " ++ U32.show(rms()) ++ " " ++ U32.show(rope()) ++ " " ++ U32.show(attn()) ++ " " ++ U32.show(step(T.SGD{0.01}, 0n)) ++ " " ++ U32.show(step(T.Momentum{0.01, 0.9}, 1n)) ++ " " ++ U32.show(step(T.Opt.at(T.CAdamW{0.001, 0.9, 0.999, 0.00000001, 0.01, 0.1, 0.001}, 0.1, 0.001), 2n)) ++ " " ++ U32.show(mse()) ++ " " ++ U32.show(emb()) ++ " " ++ U32.show(ce()) ++ " " ++ U32.show(attn_small()) ++ " " ++ U32.show(gn()) ++ " " ++ U32.show(attnf()) ++ " " ++ U32.show(attnf_small()) ++ " " ++ U32.show(conv2d()) ++ " " ++ U32.show(gelue_y()) ++ " " ++ U32.show(gelue_dx()) ++ " " ++ U32.show(tile_y()) ++ " " ++ U32.show(tile_dx()))
 
 # case k alone (0 = SiLU .. 11 = CrossEntropy, 12 = attention at small sizes, 13 = GroupNorm, 14 = full attention at
-# SmolLM2's sizes, 15 = full attention at small sizes, 16 = Conv2d, 17 = GELUErf's y, 18 = its dx). In the line above, a case's bangs can follow host work in the same
+# SmolLM2's sizes, 15 = full attention at small sizes, 16 = Conv2d, 17 = GELUErf's y, 18 = its dx, 19 = Tile's y, 20 = its dx). In the line above, a case's bangs can follow host work in the same
 # evaluation and then run on the CPU threads: under nsys, the whole line made 15 bangs on the device, and cross-entropy
 # read 0 ulps there against 4 alone. So make gpu runs each case as its own program (nsys: every case's bangs on the
 # device, 2026-10-21).
+def one_20(k: Nat) -> U32:
+  match k:
+    case 0n: tile_dx()
+    case 1n+q: 4294967295
+
+def one_19(k: Nat) -> U32:
+  match k:
+    case 0n: tile_y()
+    case 1n+q: one_20(q)
+
 def one_18(k: Nat) -> U32:
   match k:
     case 0n: gelue_dx()
-    case 1n+q: 4294967295
+    case 1n+q: one_19(q)
 
 def one_17(k: Nat) -> U32:
   match k:
