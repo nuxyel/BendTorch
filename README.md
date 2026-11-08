@@ -6,8 +6,8 @@
   <a href="https://github.com/nuxyel/BendTorch/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/nuxyel/BendTorch/ci.yml?branch=main&style=flat-square&label=ci&labelColor=4d4a44&color=7e9a5e" alt="CI"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-8b83b5?style=flat-square&labelColor=4d4a44" alt="MIT license"></a>
   <a href="https://bend-lang.com"><img src="https://img.shields.io/badge/Bend-2.0.40-8b83b5?style=flat-square&labelColor=4d4a44" alt="Bend 2.0.40"></a>
-  <img src="https://img.shields.io/badge/laws%20proved-37-7e9a5e?style=flat-square&labelColor=4d4a44" alt="37 laws proved">
-  <img src="https://img.shields.io/badge/planted%20bugs-174%2F174%20as%20expected-7e9a5e?style=flat-square&labelColor=4d4a44" alt="174 planted bugs, 174 as expected">
+  <img src="https://img.shields.io/badge/laws%20proved-39-7e9a5e?style=flat-square&labelColor=4d4a44" alt="39 laws proved">
+  <img src="https://img.shields.io/badge/planted%20bugs-178%2F178%20as%20expected-7e9a5e?style=flat-square&labelColor=4d4a44" alt="178 planted bugs, 178 as expected">
 </p>
 
 **BendTorch** trains neural networks in [Bend 2](https://bend-lang.com) with general pieces: layers with typed forward
@@ -69,6 +69,7 @@ $ bend tests/bad_seq.bend      # Linear(784, 128) followed by Linear(64, 10)
 | `causal` | attention gives probability exactly 0 to every later position: the softmax of row i runs over exactly i + 1 positions, counted by its own loop |
 | `causal_keys` | attention reads only keys 0..i for the query at position i, one score each |
 | `causal_grad` | the backward pass sends no gradient to a key or value after the query's position: row i of the scores' gradient is computed over exactly i + 1 positions |
+| `causal_pv`, `causal_kv` | attention's products read only what a position can see: every number of row i of the output (and of dQ) sums exactly i + 1 products, keys 0..i, and every number of key j's row of dK and dV sums exactly t - j, rows j..t-1, so the masked half of each product is not computed |
 | `kv_of_group`, `gqa_head`, `kv_cols` | with `g` query heads per key/value head, query head `j·g + i` reads key/value head `j`; `kv_cols` says it of the columns both passes of attention read, which come from one function |
 | `attn_par_fwd`, `attn_par_bwd` | attention's tree of parallel sequences gives exactly what running them one after another gives, at every depth and however the sequences are split: the parallel passes are the sequential ones |
 | `full_keys`, `full`, `full_grad` | `FullAttention`, the same layer without the mask, reads every key for every query: the query at position i gets t scores, its softmax runs over all t positions, and its row of the scores' gradient sums over all t; `attn_par_fwd_full` and `attn_par_bwd_full` are the tree laws for its passes |
@@ -84,7 +85,7 @@ them again with Bend's kernel proved in Lean, with no `@unsafe`, no `?TODO` and 
 explains each proof. The linear laws are about an exact model where numbers are `Nat`; the F32 code computes the same
 formulas and is tested, not proved, to do so.
 
-174 deliberate faults planted in the code and the specification (`scripts/mutate.py`) each behave as expected: 171
+178 deliberate faults planted in the code and the specification (`scripts/mutate.py`) each behave as expected: 175
 are caught by a law or a test, and three survive by design, because they still compute the right result. One is right
 by accident (a one-cell array wraps every index to 0), and a bounds check catches the same fault; one only changes a
 GPU block size, and any block size that divides a row gives the same sum, bit for bit: the law `block_sum` proves it;
@@ -211,7 +212,7 @@ Linux x86_64, clang, Python 3.14, `curl`. The Python venv with PyTorch takes abo
 make setup   # Bend 2.0.40 (SHA256-checked), Lean 4.34.0, the Python venv of reference/; no sudo
 make data    # MNIST and Tiny Shakespeare into data/, the twins' initial weights and batches (seed 0)
 make check   # the laws (--verdict), the rejected programs, every layer, the MLP, MNIST, the Llama and a SmolLM2-sized block against PyTorch (~2 min)
-make mutate  # the 174 deliberate faults
+make mutate  # the 178 deliberate faults
 make bench   # BendTorch against PyTorch on MNIST, the tiny Llama and the block (~6 min)
 make check-js  # the same tests on the JavaScript build, run with Bun; the outputs must be the native build's bits
 ```
