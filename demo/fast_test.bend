@@ -10,7 +10,11 @@
 #   moment, in 64 blocks; the Embedding's AdamW step on a 1537x577 table; GroupNorm forward and backward (y, dX, the
 #   gain's and the bias's gradients, added into gradients that are not zero) on 8 images of 256 pixels in 8 groups of 16
 #   channels (16 forward blocks, 8 backward), 4 images of 1024 pixels in 3 groups of 16 (blocks with no work in both
-#   passes) and 3 images of 5 pixels in 3 groups of 2 (one block), and its AdamW step on the gain and the bias.
+#   passes) and 3 images of 5 pixels in 3 groups of 2 (one block), and its AdamW step on the gain and the bias;
+#   Attention forward and backward (y, dQ, dK, dV; the forward pass is fast.bend's units in blocks, the backward pass
+#   main.bend's, which reads the forward pass's stash) on 3 sequences of 5 with 3 query heads over each of 2 key/value
+#   heads (6 units in 8 blocks, two of them empty) and on the ViT block's 16 sequences of 16, one head of 64, on
+#   inputs without the specials (one NaN in a row of Q turns the whole row, and its head's gradients, into NaN).
 import Base
 import ../torch/main.bend as T
 import ../torch/fast.bend as F
@@ -262,12 +266,26 @@ def d_lnstep(+d: Nat, a: T.Step<T.LN<d>>, b: T.Step<T.LN<d>>) -> U32:
 def gn_step() -> U32:
   d_lnstep(128n, T.ln_step(128n, adamw(), lnp(128n, 131), lnp(128n, 133), T.TwoMom{lnp(128n, 135), lnp(128n, 137)}), F.ln_step(128n, adamw(), lnp(128n, 131), lnp(128n, 133), T.TwoMom{lnp(128n, 135), lnp(128n, 137)}))
 
+# ---- Attention: y, dQ, dK and dV ----
+
+def d_att(+n: Nat, +w: Nat, +kvw: Nat, a: RU<T.Two<TA.Mat<n, w>, T.Two<TA.Mat<n, kvw>, TA.Mat<n, kvw>>>, n, w>, b: RU<T.Two<TA.Mat<n, w>, T.Two<TA.Mat<n, kvw>, TA.Mat<n, kvw>>>, n, w>) -> U32:
+  match a b:
+    case RU{TA.Mat{y1}, T.Two{TA.Mat{q1}, T.Two{TA.Mat{k1}, TA.Mat{v1}}}} RU{TA.Mat{y2}, T.Two{TA.Mat{q2}, T.Two{TA.Mat{k2}, TA.Mat{v2}}}}:
+      (((diff(Nat.mul(n, w), y1, y2) + diff(Nat.mul(n, w), q1, q2) : U32) + diff(Nat.mul(n, kvw), k1, k2) : U32) + diff(Nat.mul(n, kvw), v1, v2) : U32)
+
+def attn_gqa() -> U32:
+  d_att(15n, 24n, 8n, run_u(~T.Two<TA.Mat<15n, 24n>, T.Two<TA.Mat<15n, 8n>, TA.Mat<15n, 8n>>>, ~15n, ~24n, ~T.AttnS, ~T.Attention(15n, 24n, 8n, 3n, 5n, 2n, 3n, 4n, 0.5, {==}, {==}, {==}), T.Two{matn(15n, 24n, 141), T.Two{matn(15n, 8n, 142), matn(15n, 8n, 143)}}, matn(15n, 24n, 144)), run_u(~T.Two<TA.Mat<15n, 24n>, T.Two<TA.Mat<15n, 8n>, TA.Mat<15n, 8n>>>, ~15n, ~24n, ~T.AttnS, ~F.Attention(15n, 24n, 8n, 3n, 5n, 2n, 3n, 4n, 0.5, {==}, {==}, {==}), T.Two{matn(15n, 24n, 141), T.Two{matn(15n, 8n, 142), matn(15n, 8n, 143)}}, matn(15n, 24n, 144)))
+
+def attn_vit() -> U32:
+  d_att(256n, 64n, 64n, run_u(~T.Two<TA.Mat<256n, 64n>, T.Two<TA.Mat<256n, 64n>, TA.Mat<256n, 64n>>>, ~256n, ~64n, ~T.AttnS, ~T.Attention(256n, 64n, 64n, 16n, 16n, 1n, 1n, 64n, 0.125, {==}, {==}, {==}), T.Two{matn(256n, 64n, 151), T.Two{matn(256n, 64n, 152), matn(256n, 64n, 153)}}, matn(256n, 64n, 154)), run_u(~T.Two<TA.Mat<256n, 64n>, T.Two<TA.Mat<256n, 64n>, TA.Mat<256n, 64n>>>, ~256n, ~64n, ~T.AttnS, ~F.Attention(256n, 64n, 64n, 16n, 16n, 1n, 1n, 64n, 0.125, {==}, {==}, {==}), T.Two{matn(256n, 64n, 151), T.Two{matn(256n, 64n, 152), matn(256n, 64n, 153)}}, matn(256n, 64n, 154)))
+
 def test_main() -> IO(Unit):
   do IO<Unit>:
     IO.print(U32.show(first3()) ++ " " ++ U32.show(first4()) ++ " " ++ U32.show(second()) ++ " " ++ U32.show(big_lin()) ++ " " ++ U32.show(tiny_nb()) ++ " " ++ U32.show(big_nb()))
     IO.print(U32.show(opt_steps()) ++ " " ++ U32.show(lin_adamw()) ++ " " ++ U32.show(silu(~512n, ~1536n, 85)) ++ " " ++ U32.show(mul2()) ++ " " ++ U32.show(silu(~32n, ~64n, 87)) ++ " " ++ U32.show(residual()))
     IO.print(U32.show(packed(True{})) ++ " " ++ U32.show(packed(False{})) ++ " " ++ U32.show(emb_step()))
     IO.print(U32.show(gn_big()) ++ " " ++ U32.show(gn_odd()) ++ " " ++ U32.show(gn_small()) ++ " " ++ U32.show(gn_step()))
+    IO.print(U32.show(attn_gqa()) ++ " " ++ U32.show(attn_vit()))
 
 # This program takes no arguments. Since Bend 2.0.38 a runtime option goes between +RTS and -RTS, and one written
 # without them arrives here as an argument while the program runs on the default thread count, so a check of 1 and 16
