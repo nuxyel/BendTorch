@@ -2243,7 +2243,7 @@ That is the work, and it is a piece of its own rather than an afternoon's extens
   `j`'s, with `r` keys after it, is `1 + r`. Each proof follows the row's loop, which passes the length on
   (`cnt_trow`, `cnt_tcol`). That a dot of length `k` sums `k` products is read from `sdot`. 39 laws in all.
 - **Counted** (Cachegrind, one thread, Bend 2.0.40, the core alone minus a program that only fills and hashes its
-  inputs, as in #28's plan):
+  inputs):
 
   | core | devel | triangle | |
   |---|---:|---:|---:|
@@ -2269,7 +2269,7 @@ That is the work, and it is a piece of its own rather than an afternoon's extens
 ## fast.bend's Attention: the forward pass's units in blocks over shared arrays (2026-11-08, #28)
 
 - **Why.** On 16 threads the attention core barely used them: at the ViT block's shape it ran 0.77 ms a pass on 16
-  threads against 1.20 on one (#28's plan, step 0, idle machine). `main.bend`'s forward pass copies each unit's rows
+  threads against 1.20 on one (idle machine, 2026-11-08). `main.bend`'s forward pass copies each unit's rows
   and columns of Q, K and V out (`fslices`), runs the units in a tree of parallel lets, and copies their outputs back
   into O (`blocks_in`), the copies on one thread before and after the tree.
 - **What.** `fast.bend`'s `Attention` now has its own forward pass, `attn_fwd`: tensor-fork's `par4` shares Q, K, V
@@ -2293,8 +2293,8 @@ That is the work, and it is a piece of its own rather than an afternoon's extens
   | SmolLM2-135M, one thread | 13.68 | 9.32 | 9.12 |
   | SmolLM2-135M, 16 threads | 5.49 (5.03-5.89) | 4.15 (3.92-4.30) | 3.37 (3.28-3.54) |
 
-  At the ViT shape the copies were a third of the one-thread time and most of what kept 16 threads from helping; at
-  SmolLM2's, with 6 units of t = 128, the arithmetic dominates and the gain is the copies' share, 19% on 16 threads.
+  At the ViT shape the forward pass in blocks takes 39% off the one-thread time and 64% off the 16-thread time; at
+  SmolLM2's, with 6 units of t = 128 where the arithmetic dominates, 2% and 19%.
   Every run gave one output. Not timed: a whole training step (the backward pass is `main.bend`'s, so a step gains
   less than the forward does).
 - **Mutants**, each checked to build and to move `fast_test`'s numbers: a unit's query heads starting at its key/value
