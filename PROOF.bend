@@ -261,6 +261,30 @@ def cnt_gdrow(m: Nat, +hd: Nat, +ia: U32, +ib: U32, +bs: U32, +acc: List<&2, F32
 def Laws.causal_grad(i, t, hd, sc, ds, dc, vs, vc, d, v, p, g):
   Equal.trans(Nat, T.gr_n(T.grow(i, t, hd, sc, ds, dc, vs, vc, d, v, p, g)), Nat.add(1n+i, 0n), 1n+i, cnt_gdrow(i, hd, ((U32.from_nat(i) * ds : U32) + dc : U32), vc, vs, Nil{}, T.dot0(hd, ((U32.from_nat(i) * ds : U32) + dc : U32), vc, 1, 1, d, v), sc, (U32.from_nat(i) * U32.from_nat(t) : U32), p, g), NL.add_zero(1n+i))
 
+# trow hands on the count k it was given, whatever it wrote
+def cnt_trow(left: Nat, +d: U32, +k: Nat, +ia: U32, +bs: U32, +bc: U32, +orow: U32, o: Array<F32>, r: T.D2) -> {T.pn_n(T.trow(left, d, k, ia, bs, bc, orow, o, r)) == k : Nat}:
+  match left r:
+    case 0n T.D2{a, b, +s}:
+      {==}
+    case 1n+n T.D2{a, b, +s}:
+      cnt_trow(n, (d + 1 : U32), k, ia, bs, bc, orow, Array.set(F32, o, (orow + d : U32), s), T.dot0(k, ia, (bc + (d + 1 : U32) : U32), 1, bs, a, b))
+
+# PROOF (causal_pv): trow0 is trow with k = 1 + i, and trow hands k on (cnt_trow).
+def Laws.causal_pv(i, c, t, bs, bc, ow, oc, a, b, o):
+  cnt_trow(Nat.sub(c, 1n), 0, 1n+i, (U32.from_nat(i) * U32.from_nat(t) : U32), bs, bc, ((U32.from_nat(i) * ow : U32) + oc : U32), o, T.dot0(1n+i, (U32.from_nat(i) * U32.from_nat(t) : U32), bc, 1, bs, a, b))
+
+# tcol hands on the count k it was given, as trow
+def cnt_tcol(left: Nat, +d: U32, +k: Nat, +ia: U32, +sa: U32, +ib0: U32, +bs: U32, +orow: U32, o: Array<F32>, r: T.D2) -> {T.pn_n(T.tcol(left, d, k, ia, sa, ib0, bs, orow, o, r)) == k : Nat}:
+  match left r:
+    case 0n T.D2{a, b, +s}:
+      {==}
+    case 1n+n T.D2{a, b, +s}:
+      cnt_tcol(n, (d + 1 : U32), k, ia, sa, ib0, bs, orow, T.acc_set((orow + d : U32), s, Array.get(F32, o, (orow + d : U32))), T.dot0(k, ia, (ib0 + (d + 1 : U32) : U32), sa, bs, a, b))
+
+# PROOF (causal_kv): tcol0 is tcol with k = 1 + r (cnt_tcol).
+def Laws.causal_kv(j, r, c, t, bs, bc, a, b, o):
+  cnt_tcol(Nat.sub(c, 1n), 0, 1n+r, ((U32.from_nat(j) * U32.from_nat(t) : U32) + U32.from_nat(j) : U32), U32.from_nat(t), ((U32.from_nat(j) * bs : U32) + bc : U32), bs, (U32.from_nat(j) * U32.from_nat(c) : U32), o, T.dot0(1n+r, ((U32.from_nat(j) * U32.from_nat(t) : U32) + U32.from_nat(j) : U32), ((U32.from_nat(j) * bs : U32) + bc : U32), U32.from_nat(t), bs, a, b))
+
 # PROOF (full_keys, full, full_grad): the causal proofs with m in place of i, because a full row reads every key
 # 0..m; the row's count is then 1 + m from the same drow lemmas.
 def Laws.full_keys(i, m, hd, qs, qc, ks, kc, q, k):
