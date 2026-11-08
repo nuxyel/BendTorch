@@ -89,11 +89,11 @@ GPU = gpu
 
 def gpu_layers():
     # torch/gpu.bend's other layers, optimizer step, losses and embedding must keep main.bend's bits with +RTS --gpu off -RTS:
-    # demo/gpu_layers_test.bend prints 19 zeros (Conv2d's case, then GELUErf's y and dx)
+    # demo/gpu_layers_test.bend prints 21 zeros (Conv2d's case, GELUErf's y and dx, then Tile's y and dx)
     b = subprocess.run(["bend", "demo/gpu_layers_test.bend", "-o", ".scratch/mut_gpu_layers"], capture_output=True, env=ENV)
     if b.returncode != 0:
         return False
-    return subprocess.run([".scratch/mut_gpu_layers", "+RTS", "--gpu", "off", "--threads", "16", "-RTS"], capture_output=True, text=True).stdout.split() == ["0"] * 19
+    return subprocess.run([".scratch/mut_gpu_layers", "+RTS", "--gpu", "off", "--threads", "16", "-RTS"], capture_output=True, text=True).stdout.split() == ["0"] * 21
 
 
 GPUL = gpu_layers
@@ -101,9 +101,9 @@ GPUL = gpu_layers
 
 def gpu_expcr():
     # make gpu's exactness check: with exp_cr in place of F32.exp, every GPU layer case gives main.bend's bits on the
-    # device (scripts/gpu_expcr.sh prints 19 zeros); needs CUDA, and make mutate runs under the heavy-run lock
+    # device (scripts/gpu_expcr.sh prints 21 zeros); needs CUDA, and make mutate runs under the heavy-run lock
     r = subprocess.run(["scripts/gpu_expcr.sh"], capture_output=True, text=True, env=ENV)
-    return r.returncode == 0 and r.stdout.strip().splitlines()[-1].split() == ["0"] * 19
+    return r.returncode == 0 and r.stdout.strip().splitlines()[-1].split() == ["0"] * 21
 
 
 EXPCR = gpu_expcr
@@ -229,6 +229,12 @@ MUTANTS = [
      "ew1(~T.gelu_erf_v, t, l, e, x1, o)", "ew1(~T.gelu_v, t, l, e, x1, o)", GPUL, "caught"),
     ("gpu GELUErf: the backward pass takes SiLU's derivative", "torch/gpu.bend",
      "ewi(~T.gelu_erf_d, t, l, e, o, x1)", "ewi(~T.silu_d, t, l, e, o, x1)", GPUL, "caught"),
+    ("gpu Tile: the last output row of each image reads the next image's row", "torch/gpu.bend",
+     "i2c_set(e, Array.get(F32, d, ((U32.div(U32.div(e, c), t) * c : U32)", "i2c_set(e, Array.get(F32, d, ((U32.div((U32.div(e, c) + 1 : U32), t) * c : U32)", GPUL, "caught"),
+    ("gpu Tile: the backward pass leaves out each image's last row", "torch/gpu.bend",
+     "tib_rows(U32.to_nat(t), (((U32.div(e, c) * t : U32)", "tib_rows(Nat.sub(U32.to_nat(t), 1n), (((U32.div(e, c) * t : U32)", GPUL, "caught"),
+    ("gpu Tile: the backward pass keeps the last row instead of the sum", "torch/gpu.bend",
+     "gi_put(acc, Array.get(F32, dy, j), dx)", "gi_put(0.0, Array.get(F32, dy, j), dx)", GPUL, "caught"),
     ("gpu GroupNorm: a leaf takes the first image's block of its group", "torch/gpu.bend",
      "r4_y(T.gnf_grp(hw, (U32.div(t, ng) * hwc : U32)", "r4_y(T.gnf_grp(hw, (U32.mod(t, ng) * hwc : U32)", GPUL, "caught"),
     ("gpu GroupNorm: dx swaps the two means", "torch/gpu.bend",
