@@ -11,10 +11,10 @@ the CPU threads or on the device), this checks, in both outputs:
 
 and prints one line: for each model, the largest distance in ulps between the lane's numbers and main.bend's over its
 four runs (the five models in order), then the largest between the lane's one and step runs. With --zero every number
-of that line must be 0 (the lanes on the CPU threads); with --gpu, lin's and the k = 1 number must be (the device takes
+of that line must be 0 (the lanes on the CPU threads); with --device, lin's and the k = 1 number must be (the device takes
 CUDA's float exp in SiLU, softmax and cross-entropy, so the other models are printed without a bound).
 
-    reference/.venv/bin/python reference/accum_lanes.py [--zero | --gpu] <main-lane output> <lane output>
+    reference/.venv/bin/python reference/accum_lanes.py [--zero | --device] <main-lane output> <lane output>
 """
 
 import sys
@@ -66,7 +66,7 @@ def checks(name: str, out: dict[str, np.ndarray], failures: list[str]) -> float:
 
 
 def main(argv: list[str]) -> int:
-    mode = argv[1] if argv[1:2] in (["--zero"], ["--gpu"]) else None
+    mode = argv[1] if argv[1:2] in (["--zero"], ["--device"]) else None
     paths = argv[2:] if mode else argv[1:]
     if len(paths) != 2:
         print(__doc__)
@@ -81,7 +81,7 @@ def main(argv: list[str]) -> int:
     print(f"accum_lanes: acc against big at worst {max(w_ref, w_lane):.3f} of the tolerance", file=sys.stderr)
     if mode == "--zero" and any(dist + [k1]):
         failures.append("the lane's numbers are not main.bend's bits")
-    if mode == "--gpu" and (dist[0] or k1):
+    if mode == "--device" and (dist[0] or k1):
         failures.append("lin (no exp) or k = 1 is not exact on the device")
     for f in failures[:20]:
         print(f, file=sys.stderr)

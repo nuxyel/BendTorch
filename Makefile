@@ -100,7 +100,7 @@ check-accum: build-accum_test
 	$(PY) reference/test_accum.py .scratch/accum_test
 
 # gradient accumulation over the parallel and device lanes: demo/accum_lanes.bend takes its layers from torch/fast.bend;
-# its copies with torch/main.bend's (the reference) and torch/gpu.bend's (on the CPU threads here, --gpu off) are made
+# its copies with torch/main.bend's (the reference) and torch/gpu.bend's (on the CPU threads here, +RTS --gpu off -RTS) are made
 # by changing the import line, as make gpu does for mnist
 check-accum-lanes: build-accum_lanes
 	sed 's|^import ../torch/fast.bend as F$$|import ../torch/main.bend as F|' demo/accum_lanes.bend > .scratch/accum_lanes_main.bend && grep -q '^import ../torch/main.bend as F$$' .scratch/accum_lanes_main.bend
@@ -195,7 +195,7 @@ gpu: cuda-toolkit  ## torch/gpu.bend on the GPU (needs a CUDA toolkit in CUDA_HO
 	bend .scratch/accum_lanes_main.bend -o .scratch/accum_lanes_main && .scratch/accum_lanes_main > .scratch/accum_lanes_main.txt
 	CUDA_HOME=$(CUDA_HOME) LD_LIBRARY_PATH=$(CUDA_LIB) bend .scratch/accum_lanes_gpu.bend -o .scratch/accum_lanes_gpu_cuda
 	for m in 0 1 2 3 4; do for r in 0 1 2 3; do LD_LIBRARY_PATH=$(CUDA_LIB) .scratch/accum_lanes_gpu_cuda $$m $$r || exit 1; done; done > .scratch/accum_lanes_cuda.txt
-	$(PY) reference/accum_lanes.py --gpu .scratch/accum_lanes_main.txt .scratch/accum_lanes_cuda.txt > .scratch/accum_lanes_dev.txt
+	$(PY) reference/accum_lanes.py --device .scratch/accum_lanes_main.txt .scratch/accum_lanes_cuda.txt > .scratch/accum_lanes_dev.txt
 	set -- $$(cat .scratch/accum_lanes_dev.txt); echo "gpu: gradient accumulation over gpu.bend's layers on the GPU: k = 1 is Train.step ($$6 ulps), lin $$1 ulps (no exp), and through CUDA's float exp, with no bound (see the next check): mlp $$2, attn $$3, gn $$4, emb $$5"
 	CUDA_HOME=$(CUDA_HOME) scripts/gpu_expcr.sh accum | tee .scratch/gpu_expcr_accum.txt
 	test "$$(tail -1 .scratch/gpu_expcr_accum.txt)" = "0 0 0 0 0 0" && echo "gpu: with exp_cr, gradient accumulation over gpu.bend's layers gives main.bend's bits on the device" || { echo "gpu: with exp_cr the accumulation still differs from main.bend"; exit 1; }

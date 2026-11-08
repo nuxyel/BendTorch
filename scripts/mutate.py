@@ -112,7 +112,7 @@ EXPCR = gpu_expcr
 
 def accum_lanes():
     # gradient accumulation over the parallel and device lanes (demo/accum_lanes.bend, reference/accum_lanes.py): the
-    # copies whose layers are torch/main.bend's and torch/gpu.bend's (on the CPU threads, --gpu off) and the source,
+    # copies whose layers are torch/main.bend's and torch/gpu.bend's (on the CPU threads, +RTS --gpu off -RTS) and the source,
     # whose layers are torch/fast.bend's, must give the same bits, k = 1 must be Train.step, and k = 4 one step on the
     # four micro-batches
     src = Path("demo/accum_lanes.bend").read_text()
