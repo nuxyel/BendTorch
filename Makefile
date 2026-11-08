@@ -2,7 +2,7 @@
 export BEND_NO_TELEMETRY := 1
 export PATH := $(HOME)/.bend/bin:$(HOME)/.elan/bin:$(PATH)
 PY := reference/.venv/bin/python
-DEMOS := mlp_test ops_test mnist tiny_llama tiny_rt tensor_test imap_check fast_test gpu_test gpu_layers_test depth_check smol_block infra_test dtype_test tiny_mixed reader_test safetensors_test tiny_bf16opt loop_test fullattn_test fullattn_lane cfg_test conv2d_probe im2col_probe
+DEMOS := mlp_test ops_test mnist tiny_llama tiny_rt tensor_test imap_check fast_test gpu_test gpu_layers_test depth_check smol_block infra_test dtype_test tiny_mixed reader_test safetensors_test tiny_bf16opt loop_test fullattn_test fullattn_lane cfg_test conv2d_probe im2col_probe accum_test
 # torch/load.bend's defs that reach the foreign binary reader (bend-ml-binary-read@0.2.0.1): the list may change only on purpose
 LOAD_DEFS := read_go read_sized read read_f32_at read_bf16_at size weights train_read train St.read St.then St.fill tensors_from tensors piece safetensors
 # torch/gpu.bend's defs that rely on bend-ml-tensor-gpu's @unsafe Array.fork (its leaves do not: they are plain Bend)
@@ -61,7 +61,7 @@ build-%:
 
 # make check's tests, one target each, so that scripts/affected.py can run those a change reads; make check runs
 # them all, in this order, after building every demo
-CHECKS := check-infra check-cfg check-reader check-safetensors check-ops check-conv2d check-im2col check-tensor check-imap check-mlp check-mnist check-tiny check-tiny-rt check-dtype check-tiny-mixed check-tiny-bf16opt check-block check-fast check-gpu-test check-gpu-layers check-fullattn check-fullattn-lane check-depth check-loop
+CHECKS := check-infra check-cfg check-reader check-safetensors check-ops check-conv2d check-im2col check-tensor check-imap check-mlp check-accum check-mnist check-tiny check-tiny-rt check-dtype check-tiny-mixed check-tiny-bf16opt check-block check-fast check-gpu-test check-gpu-layers check-fullattn check-fullattn-lane check-depth check-loop
 .PHONY: $(CHECKS)
 
 check: laws build $(CHECKS)  ## the laws, then every layer, the tensor operations, the MLP, MNIST, the tiny Llama and a SmolLM2-sized block against PyTorch
@@ -95,6 +95,9 @@ check-imap: build-imap_check
 
 check-mlp: build-mlp_test
 	$(PY) reference/test_mlp.py .scratch/mlp_test
+
+check-accum: build-accum_test
+	$(PY) reference/test_accum.py .scratch/accum_test
 
 check-mnist: build-mnist
 	$(PY) reference/test_mnist.py .scratch/mnist
