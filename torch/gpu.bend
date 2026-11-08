@@ -12,6 +12,7 @@
 # - SiLU, GELUErf, Mul2, Add2, Residual, Mat.dup and Mat.sum2: their element-wise loops.
 # - RMSNorm, RoPE and Attention (main.bend's names; fast.bend's are main.bend's, on the CPU).
 # - im2col, col2im and Conv2d: the gather and its scatter as cell bangs, then the linear layer's three products.
+# - Tile: its broadcast and the sum of its rows as cell bangs.
 # - MSE, CrossEntropy and Embedding (its rows, its gradient and its step), so that a training step's work, the loss
 #   included, stays on the device; the host reads back a few numbers a row for the loss.
 # The names are fast.bend's, so a program switches by its import line alone (the Makefile builds the GPU demos so).
@@ -1821,6 +1822,71 @@ def Conv2d(+n: Nat, +c: Nat, +co: Nat, +k: Nat, +hs: Nat, +ws: Nat, +p: Nat, +s1
     prm => xs => off => T.lin_load(T.ckk(c, k), co, prm, xs, off),
     prm => xs => off => T.lin_store(T.ckk(c, k), co, prm, xs, off),
     u => U32.from_nat(Nat.mul(co, Nat.add(1n, T.ckk(c, k))))}
+
+# ---- Tile on the device (main.bend's Tile): the forward pass a cell bang over the b·t·c output cells, each copying the
+# input cell main.bend's tile_src names, (r / t)·c + k for output row r and column k; the backward a cell bang over the
+# b·c input cells, each summing the t rows of dy that read it, i·t .. i·t + t - 1 at its column, from 0.0 in increasing
+# row, which is the order main.bend's tile_cells adds them into its zeros. Both passes give main.bend's bits.
+
+type ETI is Data:
+  ETI{n: U32, t: U32, c: U32}
+
+def eti(+n: Nat, +t: Nat, +c: Nat) -> ETI:
+  ETI{U32.from_nat(n), U32.from_nat(t), U32.from_nat(c)}
+
+# output cell e of row r = e / c, column k = e mod c: the input cell (r / t)·c + k
+def tif_cell(+e: U32, +t: U32, +c: U32, s: CIC) -> CIC:
+  match s:
+    case CIC{d, o}:
+      i2c_set(e, Array.get(F32, d, ((U32.div(U32.div(e, c), t) * c : U32) + U32.mod(e, c) : U32)), o)
+
+def tif_loop(k: Nat, +e: U32, +l: U32, +t: U32, +c: U32, s: CIC) -> CIC:
+  match k:
+    case 0n: s
+    case 1n+q: tif_loop(q, (e + l : U32), l, t, c, tif_cell(e, t, c, s))
+
+def lf_tif(+t: U32, +l: U32, +g: ETI, x1: Array<F32>, x2: Array<F32>, x3: Array<F32>, x4: Array<F32>, o: Array<F32>) -> Array<F32>:
+  match g:
+    case ETI{+n, +tt, +c}: cic_o(tif_loop(TG.share(t, n, l), t, l, tt, c, CIC{x1, o}))
+
+# the tile's rows of dy at one column, j stepping by c, added into the running sum in increasing row
+def tib_rows(k: Nat, +j: U32, +c: U32, s: GIS) -> GIS:
+  match k s:
+    case 0n s2: s2
+    case 1n+q GIS{dy, dx, +acc}: tib_rows(q, (j + c : U32), c, gi_put(acc, Array.get(F32, dy, j), dx))
+
+# input cell e of image i = e / c, column k = e mod c: the sum of dy's rows i·t .. i·t + t - 1 at column k
+def tib_cell(+e: U32, +t: U32, +c: U32, s: CIC) -> CIC:
+  match s:
+    case CIC{d, o}:
+      gis_set(e, tib_rows(U32.to_nat(t), (((U32.div(e, c) * t : U32) * c : U32) + U32.mod(e, c) : U32), c, GIS{d, o, 0.0}))
+
+def tib_loop(k: Nat, +e: U32, +l: U32, +t: U32, +c: U32, s: CIC) -> CIC:
+  match k:
+    case 0n: s
+    case 1n+q: tib_loop(q, (e + l : U32), l, t, c, tib_cell(e, t, c, s))
+
+def lf_tib(+t: U32, +l: U32, +g: ETI, x1: Array<F32>, x2: Array<F32>, x3: Array<F32>, x4: Array<F32>, o: Array<F32>) -> Array<F32>:
+  match g:
+    case ETI{+n, +tt, +c}: cic_o(tib_loop(TG.share(t, n, l), t, l, tt, c, CIC{x1, o}))
+
+def tile_fin(-r: Nat, -c: Nat, q: TG.R1) -> TA.Mat<r, c>:
+  match q:
+    case TG.R1{x1, x2, x3, x4, a}: TA.Mat{a}
+
+def tile_fwd(+b: Nat, +t: Nat, +c: Nat, m: TA.Mat<b, c>) -> TA.Mat<Nat.mul(b, t), c>:
+  match m:
+    case TA.Mat{x}:
+      tile_fin(Nat.mul(b, t), c, TG.run1_new(~ETI, ~lf_tif, TG.depth(Nat.mul(Nat.mul(b, t), c)), eti(Nat.mul(Nat.mul(b, t), c), t, c), x, nn(Unit{}), nn(Unit{}), nn(Unit{}), TA.cap_depth(Nat.mul(Nat.mul(b, t), c))))
+
+def tile_bwd(+b: Nat, +t: Nat, +c: Nat, m: TA.Mat<Nat.mul(b, t), c>) -> TA.Mat<b, c>:
+  match m:
+    case TA.Mat{dy}:
+      tile_fin(b, c, TG.run1_new(~ETI, ~lf_tib, TG.depth(Nat.mul(b, c)), eti(Nat.mul(b, c), t, c), dy, nn(Unit{}), nn(Unit{}), nn(Unit{}), TA.cap_depth(Nat.mul(b, c))))
+
+# b images (rows) of c numbers, each row broadcast over t tokens: Mat<b, c> to Mat<b·t, c> (main.bend's Tile)
+def Tile(+b: Nat, +t: Nat, +c: Nat) -> T.Layer<Unit, TA.Mat<b, c>, TA.Mat<Nat.mul(b, t), c>, Unit>:
+  T.Layer{p => x => T.Fwd{p, tile_fwd(b, t, c, x), Unit{}}, p => s => dy => g => T.Bwd{p, tile_bwd(b, t, c, dy), g}, op => p => g => st => T.no_step(Unit, op, p, g, st), u => Unit{}, p => T.PL{p, Nil{}}, p => xs => off => T.PA{p, xs, off}, p => xs => off => T.PA{p, xs, off}, u => 0}
 
 # ---- main.bend's names for the same layers (#13) ----
 #
