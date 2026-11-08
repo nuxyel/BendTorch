@@ -9,8 +9,9 @@
 # (x·Wᵀ, dY·W, dYᵀ·X added into dW) taken from bend-ml-tensor-fork instead of bend-ml-tensor-array, and their optimizer
 # step in blocks. SiLU, ActIn, Mul2, Add2, Residual, Mat.dup and Mat.sum2 are main.bend's with their element-wise loops
 # in blocks (tensor-fork's par1..par4), the optimizer step (mat_step, lin_step) too. GroupNorm is main.bend's block
-# code in blocks: the forward pass a range of (image, group) blocks a block, the backward pass a range of groups. Every
-# number is computed by
+# code in blocks: the forward pass a range of (image, group) blocks a block, the backward pass a range of groups.
+# Attention's forward pass is main.bend's units (one sequence's key/value group) in blocks, reading Q, K and V and
+# writing O in place; its backward pass is main.bend's. Every number is computed by
 # main.bend's own loop or tensor-array's own cells, so the bits are main.bend's at every depth and thread count
 # (tests: demo/fast_test.bend). Small matrices run in one block (ew_depth), as in main.bend.
 #
@@ -455,7 +456,73 @@ def ln_step(+d: Nat, +op: T.Opt, p: T.LN<d>, g: T.LN<d>, st: T.OptState<T.LN<d>>
 def GroupNorm(+n: Nat, +hw: Nat, +ng: Nat, +cg: Nat, +eps: F32) -> T.Layer<T.LN<Nat.mul(ng, cg)>, TA.Mat<Nat.mul(n, hw), Nat.mul(ng, cg)>, TA.Mat<Nat.mul(n, hw), Nat.mul(ng, cg)>, TA.Mat<Nat.mul(n, hw), Nat.mul(ng, cg)>>:
   T.Layer{p => x => gn_fwd(n, hw, ng, cg, eps, p, x), p => s => dy => g => gn_bwd(n, hw, ng, cg, eps, p, s, dy, g), op => p => g => st => ln_step(Nat.mul(ng, cg), op, p, g, st), u => T.LN{TA.Mat.zeros(1n, Nat.mul(ng, cg)), TA.Mat.zeros(1n, Nat.mul(ng, cg))}, p => T.ln_dump(Nat.mul(ng, cg), p), p => xs => off => T.ln_load(Nat.mul(ng, cg), p, xs, off), p => xs => off => T.ln_store(Nat.mul(ng, cg), p, xs, off), u => U32.from_nat(Nat.mul(2n, Nat.mul(ng, cg)))}
 
-# main.bend's RMSNorm, RoPE, Attention, MSE and CrossEntropy under their own names (Embedding below, with its step in
+# ---- Attention's forward pass: main.bend's units in blocks over the shared arrays ----
+# A unit is one sequence's key/value group, as in main.bend: its g query heads, each over the group's key/value head.
+# main.bend copies each unit's rows and columns of Q, K and V out, runs its tree of units, and copies the outputs back
+# into O, the copies on one thread before and after the tree; here par4 shares Q, K, V and O, and each head runs
+# main.bend's own functions (probs, trow0, tmul) at the unit's offsets in them, writing its columns of its sequence's
+# rows of O in place. Units write disjoint cells, the sums are main.bend's in its order, so the bits are main.bend's.
+# The backward pass is main.bend's (it needs Q, K, V, dO, dQ, dK and dV, seven arrays, and par4 shares four).
+
+type AE is Data:
+  AE{t: Nat, g: Nat, hd: Nat, w: Nat, kvw: Nat, kv: Nat, sc: F32}
+
+def atf_fin(q: Array<F32>, k: Array<F32>, r: T.PO) -> TF.B4<F32, F32, F32, F32>:
+  match r:
+    case T.PO{p, v, o}:
+      TF.B4{q, k, v, o}
+
+def atf_head2(+t: Nat, +hd: Nat, +w: Nat, +kvw: Nat, +kc: U32, +oc: U32, v: Array<F32>, o: Array<F32>, r: T.QK) -> TF.B4<F32, F32, F32, F32>:
+  match r:
+    case T.QK{q, k, p}:
+      atf_fin(q, k, T.tmul(Nat.sub(t, 1n), 0n, hd, t, U32.from_nat(kvw), kc, U32.from_nat(w), oc, T.trow0(0n, hd, t, U32.from_nat(kvw), kc, U32.from_nat(w), oc, p, v, o)))
+
+# one query head: its columns of Q and of O from qc (its sequence's first row included), its key/value head's columns
+# of K and V from kc; main.bend's head_f2c with the offsets of the shared arrays
+def atf_head(+e: AE, +qc: U32, +kc: U32, r: TF.B4<F32, F32, F32, F32>) -> TF.B4<F32, F32, F32, F32>:
+  match e r:
+    case AE{+t, +g, +hd, +w, +kvw, +kv, +sc} TF.B4{q, k, v, o}:
+      atf_head2(t, hd, w, kvw, kc, qc, v, o, T.probs(t, hd, sc, U32.from_nat(w), qc, U32.from_nat(kvw), kc, q, k))
+
+# a unit's query heads in order, hd columns apart, over one key/value head
+def atf_heads(left: Nat, +e: AE, +qc: U32, +kc: U32, +hdu: U32, r: TF.B4<F32, F32, F32, F32>) -> TF.B4<F32, F32, F32, F32>:
+  match left:
+    case 0n:
+      r
+    case 1n+n:
+      atf_heads(n, e, (qc + hdu : U32), kc, hdu, atf_head(e, qc, kc, r))
+
+# unit u: sequence u / kv, key/value head j = u % kv and its query heads j·g .. j·g + g - 1 (main.bend's kv_of)
+def atf_unit(+e: AE, +u: U32, r: TF.B4<F32, F32, F32, F32>) -> TF.B4<F32, F32, F32, F32>:
+  match e:
+    case AE{+t, +g, +hd, +w, +kvw, +kv, +sc}:
+      +bi = U32.div(u, U32.from_nat(kv))
+      +j = U32.mod(u, U32.from_nat(kv))
+      atf_heads(g, e, (((bi * U32.from_nat(t) : U32) * U32.from_nat(w) : U32) + ((j * U32.from_nat(g) : U32) * U32.from_nat(hd) : U32) : U32), (((bi * U32.from_nat(t) : U32) * U32.from_nat(kvw) : U32) + (j * U32.from_nat(hd) : U32) : U32), U32.from_nat(hd), r)
+
+def atf_units(left: Nat, +e: AE, +u: U32, r: TF.B4<F32, F32, F32, F32>) -> TF.B4<F32, F32, F32, F32>:
+  match left:
+    case 0n:
+      r
+    case 1n+n:
+      atf_units(n, e, (u + 1 : U32), atf_unit(e, u, r))
+
+# a block: units i0 .. i0 + cnt - 1
+def atf_leaf(+e: AE, +i0: U32, +cnt: Nat, r: TF.B4<F32, F32, F32, F32>) -> TF.B4<F32, F32, F32, F32>:
+  atf_units(cnt, e, i0, r)
+
+def atf_out(-n: Nat, -w: Nat, r: TF.B4<F32, F32, F32, F32>) -> T.Fwd<Unit, TA.Mat<n, w>, T.AttnS>:
+  match r:
+    case TF.B4{q, k, v, o}:
+      T.Fwd{Unit{}, TA.Mat{o}, T.AttnS{q, k, v}}
+
+# the b·kv units in 2^d blocks, d enough for one unit a block
+def attn_fwd(+n: Nat, +w: Nat, +kvw: Nat, +b: Nat, +t: Nat, +kv: Nat, +g: Nat, +hd: Nat, +sc: F32, x: T.Two<TA.Mat<n, w>, T.Two<TA.Mat<n, kvw>, TA.Mat<n, kvw>>>) -> T.Fwd<Unit, TA.Mat<n, w>, T.AttnS>:
+  match x:
+    case T.Two{TA.Mat{q}, T.Two{TA.Mat{k}, TA.Mat{v}}}:
+      atf_out(n, w, TF.par4(~AE, ~F32, ~F32, ~F32, ~F32, ~atf_leaf, AE{t, g, hd, w, kvw, kv, sc}, TF.depth(Nat.mul(b, kv)), Nat.mul(b, kv), q, k, v, T.zeros_a(Nat.mul(n, w))))
+
+# main.bend's RMSNorm, RoPE, MSE and CrossEntropy under their own names, and Attention with the forward pass above (Embedding below, with its step in
 # blocks), so that a program that takes its layers from here can take device versions of the same names from another
 # file by its import line alone (they run as in main.bend)
 def RMSNorm(+n: Nat, +d: Nat, +eps: F32) -> T.Layer<TA.Mat<1n, d>, TA.Mat<n, d>, TA.Mat<n, d>, TA.Mat<n, d>>:
@@ -465,7 +532,7 @@ def RoPE(+n: Nat, +w: Nat, +t: Nat, +h: Nat, +half: Nat, +base: F32, -e: {w == N
   T.RoPE(n, w, t, h, half, base, e)
 
 def Attention(+n: Nat, +w: Nat, +kvw: Nat, +b: Nat, +t: Nat, +kv: Nat, +g: Nat, +hd: Nat, +sc: F32, -e1: {n == Nat.mul(b, t) : Nat}, -e2: {w == Nat.mul(Nat.mul(kv, g), hd) : Nat}, -e3: {kvw == Nat.mul(kv, hd) : Nat}) -> T.Layer<Unit, T.Two<TA.Mat<n, w>, T.Two<TA.Mat<n, kvw>, TA.Mat<n, kvw>>>, TA.Mat<n, w>, T.AttnS>:
-  T.Attention(n, w, kvw, b, t, kv, g, hd, sc, e1, e2, e3)
+  T.Layer{p => x => attn_fwd(n, w, kvw, b, t, kv, g, hd, sc, x), p => s => dy => g2 => T.attn_bwd(n, w, kvw, T.AttnDims{b, t, kv, g, hd, sc}, s, dy), op => p => g2 => st => T.no_step(Unit, op, p, g2, st), u => Unit{}, p => T.PL{p, Nil{}}, p => xs => off => T.PA{p, xs, off}, p => xs => off => T.PA{p, xs, off}, u => 0}
 
 def MSE(+n: Nat, +c: Nat, y: TA.Mat<n, c>, t: TA.Mat<n, c>) -> T.LossOut<TA.Mat<n, c>>:
   T.MSE(n, c, y, t)
