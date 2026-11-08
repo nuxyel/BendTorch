@@ -2317,3 +2317,23 @@ theorem, and the README rows say so.
 
 **No device twin**: `gpu.bend` needs the same walk and a CUDA toolkit, which is absent here; the maintainer writes and
 runs it after the merge, and `docs/limitations.md` says so.
+
+## Tile on the GPU lane (2026-11-07)
+
+- `torch/gpu.bend`'s `Tile`, `main.bend`'s types and name. The forward pass is a cell bang over the `b·t·c` output
+  cells, each copying the input cell `main.bend`'s `tile_src` names, `(r / t)·c + k` for output row `r` and column `k`,
+  in `U32`. The backward pass is a cell bang over the `b·c` input cells, each adding the `t` rows of dy that read it,
+  in increasing row from 0.0: that is the order `tile_cells` adds them into its zeros, so the sums have `main.bend`'s
+  bits. The leaves reuse the conv section's `CIC`, `i2c_set`, `gi_put` and `gis_set`; `tile_fwd`, `tile_bwd` and
+  `Tile` reach tensor-gpu and are in `GPU_DEFS`.
+- `demo/gpu_layers_test.bend` cases 19 and 20, y and dx apart: 8 images of 64 tokens at SmolLM2's width (512 x 576 out)
+  and 3 images of 5 tokens of 7 numbers (105 cells, so the leaves' last shares are short). 0 ulps on 1 and 16 CPU
+  threads with `+RTS --gpu off -RTS`, and 0 on the RTX 4050: no exponential is taken, so `make gpu` bounds both at 0.
+  The Makefile, `scripts/gpu_expcr.sh` and `scripts/mutate.py` expect 21 cases.
+- Three mutants, each first checked to build and to move the numbers: the last output row of each image reads the next
+  image's row (case 19 off), the backward pass leaves out each image's last row and the backward pass keeps the last
+  row instead of the sum (case 20 off). `make mutate ONLY=<the three>`: 3 of 3 caught; 177 mutants in all.
+- Gates (Bend 2.0.40, busy machine, bits only): `make laws` (`GPU_DEFS` with `tile_fwd`, `tile_bwd`, `Tile`), `make
+  check`, and `make gpu`: SiLU 4 ulps, cross-entropy 4, attention 176,128, small 7,680, full 172,032, full small 8,192,
+  GELUErf's dx 113, every other case 0, Tile's two included; all 21 cases 0 with `exp_cr`; MNIST, the tiny Llama and
+  the SmolLM2-sized block on the GPU against PyTorch, and the GPU builds' outputs are `bench/bits.txt`'s.
