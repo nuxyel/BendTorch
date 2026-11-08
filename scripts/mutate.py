@@ -65,11 +65,11 @@ SMOLST = smol_st
 
 
 def fast():
-    # torch/fast.bend's layers and optimizer step must keep main.bend's bits (demo/fast_test.bend prints 19 zeros)
+    # torch/fast.bend's layers and optimizer step must keep main.bend's bits (demo/fast_test.bend prints 21 zeros)
     b = subprocess.run(["bend", "demo/fast_test.bend", "-o", ".scratch/mut_fast_test"], capture_output=True, env=ENV)
     if b.returncode != 0:
         return False
-    return subprocess.run([".scratch/mut_fast_test", "+RTS", "--threads", "16", "-RTS"], capture_output=True, text=True).stdout.split() == ["0"] * 19
+    return subprocess.run([".scratch/mut_fast_test", "+RTS", "--threads", "16", "-RTS"], capture_output=True, text=True).stdout.split() == ["0"] * 21
 
 
 FAST = fast
@@ -324,6 +324,16 @@ MUTANTS = [
      "block_in(t, hd, kvw, r0, Nat.mul(j, hd), bk, dk)", "block_in(t, hd, kvw, r0, 0n, bk, dk)", OPS, "caught"),
     ("Fork: the backward pass drops the second layer's input gradient", "torch/main.bend",
      "      Bwd{Two{p1, p2}, add(dx1, dx2), Two{g1, g2}}", "      Bwd{Two{p1, p2}, dx1, Two{g1, g2}}", laws, "caught"),
+    ("fast attention: a unit's query heads start at its key/value head's columns", "torch/fast.bend",
+     "      atf_heads(g, e, (((bi * U32.from_nat(t) : U32) * U32.from_nat(w) : U32) + ((j * U32.from_nat(g) : U32) * U32.from_nat(hd) : U32) : U32), (((bi * U32.from_nat(t) : U32) * U32.from_nat(kvw) : U32) + (j * U32.from_nat(hd) : U32) : U32), U32.from_nat(hd), r)",
+     "      atf_heads(g, e, (((bi * U32.from_nat(t) : U32) * U32.from_nat(w) : U32) + (j * U32.from_nat(hd) : U32) : U32), (((bi * U32.from_nat(t) : U32) * U32.from_nat(kvw) : U32) + (j * U32.from_nat(hd) : U32) : U32), U32.from_nat(hd), r)", FAST, "caught"),
+    ("fast attention: every unit reads and writes the first sequence's rows", "torch/fast.bend",
+     "      atf_heads(g, e, (((bi * U32.from_nat(t) : U32) * U32.from_nat(w) : U32) + ((j * U32.from_nat(g) : U32) * U32.from_nat(hd) : U32) : U32), (((bi * U32.from_nat(t) : U32) * U32.from_nat(kvw) : U32) + (j * U32.from_nat(hd) : U32) : U32), U32.from_nat(hd), r)",
+     "      atf_heads(g, e, (((j * U32.from_nat(g) : U32) * U32.from_nat(hd) : U32) : U32), ((j * U32.from_nat(hd) : U32) : U32), U32.from_nat(hd), r)", FAST, "caught"),
+    ("fast attention: a unit takes its sequence as u % kv and its key/value head as u / kv", "torch/fast.bend",
+     "      +bi = U32.div(u, U32.from_nat(kv))\n      +j = U32.mod(u, U32.from_nat(kv))", "      +bi = U32.mod(u, U32.from_nat(kv))\n      +j = U32.div(u, U32.from_nat(kv))", FAST, "caught"),
+    ("fast attention: a block runs one unit fewer than its range", "torch/fast.bend",
+     "  atf_units(cnt, e, i0, r)", "  atf_units(Nat.sub(cnt, 1n), e, i0, r)", FAST, "caught"),
     ("packed AdamW: a block of words starts at element i0 instead of 2·i0", "torch/fast.bend",
      "      +e0 = (i0 + i0 : U32)\n      pq_b(", "      +e0 = i0\n      pq_b(", FAST, "caught"),
     ("packed AdamW: the last block runs past n (an odd matrix's last word gets a second moment)", "torch/fast.bend",
