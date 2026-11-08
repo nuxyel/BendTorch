@@ -141,6 +141,7 @@ general here is Bend's **templates**: a `Layer` record passed as `~l` is substit
 | Each layer's output and gradients equal PyTorch's within the tolerance | **tested**, 10 seeds, with IEEE edge cases for the activations | `reference/test_ops.py` |
 | The optimizers equal `torch.optim` step by step | **tested** | `reference/test_mlp.py` |
 | k micro-batches through `Train.accumulate` and one `Train.flush` equal PyTorch's accumulated step (`loss / k`, k backward passes, one optimizer step), and one step on the k·B rows up to the order of the sums; with k = 1 they give `Train.step`'s bits | **tested**: SGD, momentum, Adam, AdamW, AdamW with BF16 moments, 8 seeds, 8 mutants | `reference/test_accum.py` |
+| The same over `fast.bend`'s and `gpu.bend`'s layers gives `main.bend`'s bits (five small models: LinearFirst, Linear, LinearNB, RMSNorm, SwiGLU, attention with RoPE, Residual, GroupNorm, Embedding; AdamW), k = 1 is `Train.step` and k = 4 one step on the four micro-batches | **tested** on the CPU threads; on the GPU exact for the model without an exponential, the others through CUDA's float `exp` only (`exp_cr`: 0); 4 mutants | `reference/accum_lanes.py` |
 | A step runs under its configuration only when it is of the state's family and passes `OptCfg.ok`, and with NaN otherwise | **law** about the package's own `Opt.guard`, for every configuration and each kind of state | `guard_nomom`, `guard_onemom`, `guard_twomom`, `guard_packed` |
 | The configuration given to `Train.new` is the one every step uses; `Train.with_cfg` changes it and keeps the moments; a checkpoint resumes under the configuration of the state it is read into | **tested** against `torch.optim.AdamW` (a sweep, a warmup, a mid-run change) and bit for bit (resume) | `reference/test_cfg.py` |
 | An Adam configuration's `c1`, `c2` agree with its `b1`, `b2` (`OptCfg.ok`); a program stops on one that does not (`OptCfg.check`), and without the check every step refuses it, so every loss after the first is NaN | **tested** at run time (F32 is opaque to the checker, so it cannot be a law): 5,486 configurations, 5 mutants | `reference/test_infra.py` |
@@ -164,7 +165,7 @@ algebra of the formulas (`dy·(W·x) == (Wᵀ·dy)·x`), with no rounding to rea
 (`F32.mul(3.0, 3.0)` does not reduce), so a law about F32 values can only treat the operations as uninterpreted; no
 IEEE 754 property is claimed anywhere.
 
-`scripts/mutate.py` changes the code and the specification on purpose (182 mutants) and checks that a gate fails. A
+`scripts/mutate.py` changes the code and the specification on purpose (186 mutants) and checks that a gate fails. A
 mutant that survives a gate is listed with the reason (today three: the whole-tensor sum's index map, which the
 numbers miss by accident and a bounds check catches, and two equivalent mutants, the GPU cross-entropy's block size and
 the packed AdamW's last block; since M8 the laws catch the two that used to slip past them, `kv_of` bypassed and a softmax over one

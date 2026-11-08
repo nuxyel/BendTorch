@@ -137,8 +137,13 @@ Numbers marked "busy machine" were taken with other jobs running and are a first
   On the GPU its forward pass gives `main.bend`'s bits; its gradient takes CUDA's float `exp` and differs by up to 113
   ulps on the test's inputs (`make gpu`'s `exp_cr` check gives 0 there).
 - Gradient accumulation (`Train.accumulate`, `Train.flush`, #36) relies on every backward pass adding into the
-  gradient it receives, the layer protocol. It is tested on a 7-6-3 MLP with `main.bend`'s layers and with `fast.bend`'s
-  linear layers (`reference/test_accum.py`), not over `gpu.bend`'s layers or the rest of `fast.bend`'s.
+  gradient it receives, the layer protocol. It is tested against PyTorch on a 7-6-3 MLP (`reference/test_accum.py`),
+  and over the three lanes on five small models (`demo/accum_lanes.bend`: LinearFirst, Linear, LinearNB, RMSNorm,
+  SwiGLU, attention with RoPE, Residual, GroupNorm, Embedding, MSE and cross-entropy, AdamW only): `fast.bend`'s and
+  `gpu.bend`'s layers give `main.bend`'s bits on the CPU threads. On the GPU the models with an exponential (SiLU,
+  softmax, cross-entropy) differ by up to 468 ulps after two steps, all through CUDA's float `exp` (`exp_cr` gives 0);
+  the one without is exact. Not in it: `gpu.bend`'s `Conv2d`, `GELUErf` and `FullAttention`, AdamW with packed BF16
+  moments, and SGD and momentum on those two lanes.
 - `LossOut.div`, the 1/k of each micro-batch's loss, takes a matrix output (`LossOut<Mat<n, c>>`); a loss over another
   output type divides its own gradient. After a flush, the state's `loss` is the last micro-batch's (divided by k), not
   the step's: a loop that reports the step's loss adds up the k it saw.

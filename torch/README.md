@@ -40,6 +40,10 @@ def step2(tr: T.Train<P>, x0: X, y0: List<&2, Nat>, x1: X, y1: List<&2, Nat>) ->
       T.Train.accumulate(~P, ~X, ~Y, ~S, ~List<&2, Nat>, ~Model(), ~ce2, tr, x0, y0), x1, y1))
 ```
 
+The same calls work over `fast.bend`'s and `gpu.bend`'s layers: `demo/accum_lanes.bend` trains five small models
+(attention, SwiGLU, GroupNorm, an embedding and a linear stack) both ways, and on the CPU threads both lanes give
+`main.bend`'s bits; on the GPU only CUDA's float `exp` moves them (`make gpu`).
+
 From 1.x (BendTorch #24): `Train.step` and `Train.step_at` no longer take a configuration, and the record has one more
 field, after `st` (`T.Train{p, g, st, cfg, p1, p2, loss}`), so a pattern on it gains one. Until 1.3.0 the step's own
 argument decided everything but which buffers to make: the learning rate given to `Train.new` was not used, and a
