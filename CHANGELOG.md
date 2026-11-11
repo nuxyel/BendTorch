@@ -80,7 +80,7 @@ Three more in the same file, proved the same way, **42 laws in all** (with `dtyp
   `im2col` and `col2im` around `LinearNB`'s forward, backward and optimizer step; `P` is the `co x c*k*k` weight
   alone, so the parameter count drops by `co`. Tested against `F.conv2d(..., bias=None)` and its autograd on the
   three shapes `reference/conv2d_check.py` uses: y, dX and dW are **0.000e+00** on all three
-  (`reference/conv2dnb_check.py`). Not in this change: the device lane (the `gpu.bend` twin comes after the merge).
+  (`reference/conv2dnb_check.py`). By @adeerkhan (#40).
 
 - **`Tile`**: a per-image row broadcast, for adaLN-conditioned blocks (BendTorch#19). Row `i` of a `b x c` input
   becomes rows `i·t .. i·t+t-1` of a `(b·t) x c` output, and the backward sums each image's `t` rows back into its
@@ -111,12 +111,16 @@ Three more in the same file, proved the same way, **42 laws in all** (with `dtyp
   threads (`demo/gpu_layers_test.bend`, cases 19 to 22, so `make gpu` runs 23 cases). RoPE2d's angle tables are built
   on the host, as `RoPE`'s are: CUDA's float `cos` and `sin` round 1 ulp away from the host's on 6 to 20% of a table's
   entries.
+- `Conv2dNB` in `torch/gpu.bend`: both passes give `main.bend`'s bits on the RTX 4050 and on 1 and 16 CPU threads, at
+  `Conv2d`'s four shapes (`demo/gpu_layers_test.bend`, case 23, so `make gpu` runs 24 cases).
 
 ### Tests
 
 - Twelve more mutants: three device mutants each of `Tile` and `RoPE2d`, and six on the CPU (`Tile`'s sum, its source
   row and its destination row; `RoPE2d`'s x position, the x run's offset and the y run's table entry).
-- With gradient accumulation's twelve, 198 mutants in all: 195 caught, 3 surviving by design.
+- Six mutants of `Conv2dNB`, three on each lane: the forward pass with a zero weight, the input gradient through a
+  zero weight, and the weight gradient from zero patches (CPU) or from a zero starting gradient (device).
+- 204 mutants in all, with gradient accumulation's twelve: 201 caught, 3 surviving by design.
 - `reference/rope2d_check.py` takes the probe from the command line, as `tile_check.py` does. It always read
   `.scratch/rope2d_probe` before, so `make mutate` tested a mutant of `RoPE2d`'s CPU code against the unmutated binary.
 
