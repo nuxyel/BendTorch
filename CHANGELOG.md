@@ -38,8 +38,8 @@ with a fourth digit (`2.0.0.0`). The engineering log behind each entry, measurem
 
 ### Laws
 
-Two new laws in `LAWS.bend`, proved in `PROOF.bend` and checked again by `bend PROOF.bend --verdict`, 37 laws in all
-(with `dtype.bend`'s `unpair_pair`). Both by @adeerkhan (#32).
+Two new laws in `LAWS.bend`, proved in `PROOF.bend` and checked again by `bend PROOF.bend --verdict`. Both by
+@adeerkhan (#32).
 
 - `conv_roundtrip_window`: the round trip at **any** stride and padding, per cell. Slot `(ch, ky, kx)` of output
   position `(oy, ox)` is image cell `(oy·s + ky - p, ox·s + kx - p)`, channel `ch`, so the gather and the scatter name
@@ -55,6 +55,64 @@ Two new laws in `LAWS.bend`, proved in `PROOF.bend` and checked again by `bend P
   `kx < k` are `k = 1 + ky + a` and `k = 1 + kx + b`, as `gqa_head` writes one bound; the bound that `k·k` leaves
   for the inner cell is `radix_bound`. #29's numbers at `k = s = 2, 3, 4` were already exact; the law is what makes
   them so for every `k`.
+
+Two more in the same file, proved the same way, **39 laws in all** (with `dtype.bend`'s `unpair_pair`), both by
+@adeerkhan (#34):
+
+- `tile_row`: the `t` output rows of image row `i` are all image row `i`, in order — `i·t + j` divided by `t` is `i`
+  for `j ≤ s`, the division fact under the broadcast and under the backward's sum (`div_blocks` then `div_rest`).
+- `tile_sum`: every one of the `t` rows of image `i` reads (forward) and adds into (backward) the same cell of image
+  row `i`, column `k`, which is what makes the backward a **sum** of the `t` rows rather than the last of them.
+
+Three more in the same file, proved the same way, **42 laws in all** (with `dtype.bend`'s `unpair_pair`), all by
+@adeerkhan (#33):
+
+- `rope2_partition`: a head's `2·half_y + 2·half_x` numbers are tiled by `RoPE2d`'s two runs with no gap and no
+  overlap, each pair once — the y run starts at `0` and the x run one `half_y` past it, at `j = half_y`.
+- `rope2_is_rope`: at `tw = 1` and `half_x = 0` the y run **is** `RoPE`: the same pair `(c, c + half)` of head `head`
+  in row `r`, at the same address `r·w + head·(half+half) + c`.
+- `rope2_is_rope_tab`: the same for the table entry: at `tw = 1`, `(r mod (th·1))/1 · half + j` is `RoPE`'s
+  `(r mod th)·half + j`.
+
+### New
+
+- **`Tile`**: a per-image row broadcast, for adaLN-conditioned blocks (BendTorch#19). Row `i` of a `b x c` input
+  becomes rows `i·t .. i·t+t-1` of a `(b·t) x c` output, and the backward sums each image's `t` rows back into its
+  row, so `x * (1 + scale)` with a per-image scale is `Tile` then `Mul2` with the tiling on the device. The addressing
+  is two `Nat` defs the loop calls through `U32.from_nat` (no division in the hot path: the walk is images → rows →
+  row → cells). Two laws: `tile_row` (the `t` rows of image `i` are image row `i` — a division fact, `div_blocks`
+  then `div_rest`) and `tile_sum` (all `t` rows read and add into the same cell, so the backward is a sum). Tested
+  against PyTorch `repeat_interleave` and its autograd: `0.000e+00` on both, with a last-row backward off by
+  `2.000e+00`. Not in this change: the device lane (no CUDA toolkit here).
+
+- **`RoPE2d`**: 2D rotary positions, for an image transformer (BendTorch#18). A head's `2*half_y` numbers rotate
+  by the row's `y` and its `2*half_x` by its `x`, so rows `(0,1)` and `(1,0)` of a 2x2 grid rotate by different
+  angles at the same distance — the case one 1D rotation cannot express. `RoPE` itself is untouched. The pairs are
+  walked in two runs over disjoint dimensions rather than one run with a per-pair choice, which also removes a
+  `F32.pow` per pair (`Bool.pick` evaluates both branches). Tested against a hand-built 2D rotation
+  (`reference/rope2d_check.py`): `1.192e-07` forward and `1.192e-07` backward, tolerance `1e-6`. Three laws:
+  `rope2_partition` (the two runs tile the head: no gap, no overlap, each pair once) and `rope2_is_rope` /
+  `rope2_is_rope_tab` (at `tw = 1`, `half_x = 0` the y run is `RoPE`, address and entry). Stated over the addressing
+  defs in `main.bend` (`rope2_ht`, `rope2_yy`, `rope2_xx`, `rope2_yaddr`, `rope2_xaddr`, `rope2_yentry`,
+  `rope2_xentry`), which the layer's own `U32` code calls through `U32.from_nat`: no comparison, no pick, no `U32`
+  arithmetic left in the addressing, so the laws are about the code and not a copy of it. That move is free:
+  `1024x64`, 20 passes, 0.02 s before and 0.02 s after (median of three). Still not in this change: the device twin (no CUDA
+  toolkit here).
+
+### GPU lane
+
+- `Tile` and `RoPE2d` in `torch/gpu.bend`: both passes give `main.bend`'s bits on the RTX 4050 and on 1 and 16 CPU
+  threads (`demo/gpu_layers_test.bend`, cases 19 to 22, so `make gpu` runs 23 cases). RoPE2d's angle tables are built
+  on the host, as `RoPE`'s are: CUDA's float `cos` and `sin` round 1 ulp away from the host's on 6 to 20% of a table's
+  entries.
+
+### Tests
+
+- Twelve more mutants, 186 in all (183 caught, 3 surviving by design): three device mutants each of `Tile` and
+  `RoPE2d`, and six on the CPU (`Tile`'s sum, its source row and its destination row; `RoPE2d`'s x position, the x
+  run's offset and the y run's table entry).
+- `reference/rope2d_check.py` takes the probe from the command line, as `tile_check.py` does. It always read
+  `.scratch/rope2d_probe` before, so `make mutate` tested a mutant of `RoPE2d`'s CPU code against the unmutated binary.
 
 ## 2.0.2 (2026-11-07)
 

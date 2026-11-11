@@ -2382,6 +2382,98 @@ def mul2_b2(+n: Nat, +c: Nat, s: Two<TA.Mat<n, c>, TA.Mat<n, c>>, d: Two<TA.Mat<
 def Mul2(+n: Nat, +c: Nat) -> Layer<Unit, Two<TA.Mat<n, c>, TA.Mat<n, c>>, TA.Mat<n, c>, Two<TA.Mat<n, c>, TA.Mat<n, c>>>:
   Layer{p => x => mul2_f(n, c, x), p => s => dy => g => mul2_b2(n, c, s, Mat.dup(n, c, dy)), op => p => g => st => no_step(Unit, op, p, g, st), u => Unit{}, p => PL{p, Nil{}}, p => xs => off => PA{p, xs, off}, p => xs => off => PA{p, xs, off}, u => 0}
 
+# ---- Tile: a per-image row broadcast (BendTorch#19) ----
+# Row i of the b x c input becomes rows i*t .. i*t+t-1 of the (b*t) x c output, and the backward sums each image's t
+# rows back into its row, so a per-image vector reaches a per-token state as Tile then Mul2, with the tiling on the
+# device. The addressing is the two Nat defs below, which the loop calls through U32.from_nat; the laws tile_row and
+# tile_sum are about them. The walk is one chain (images, rows, row, cells) because Bend has no mutual recursion.
+
+# the input row an output row r comes from
+def tile_row_of(+t: Nat, +r: Nat) -> Nat:
+  Nat.div(r, t)
+
+# the input cell that output row r, column k reads
+def tile_src(+c: Nat, +t: Nat, +r: Nat, +k: Nat) -> Nat:
+  Nat.add(Nat.mul(tile_row_of(t, r), c), k)
+
+# the output cell of image row i, its j-th row, column k
+def tile_dst(+c: Nat, +t: Nat, +i: Nat, +j: Nat, +k: Nat) -> Nat:
+  Nat.add(Nat.mul(Nat.add(Nat.mul(i, t), j), c), k)
+
+# the arrays the walk threads: s is the one it reads, o the one it writes
+type TSet is Type:
+  TSet{s: Array<F32>, o: Array<F32>}
+
+# o[i] = v, with the array read handed back
+def tile_set(+i: U32, rs: Array<F32> & F32, ro: Array<F32>) -> TSet:
+  match rs:
+    case Tuple{s, +v}:
+      TSet{s, Array.set(F32, ro, i, v)}
+
+# acc[src] += v
+def tile_put(+src: U32, +v: F32, r: Array<F32> & F32) -> Array<F32>:
+  match r:
+    case Tuple{a, +old}:
+      Array.set(F32, a, src, (old + v : F32))
+
+# dx[src] += the value already read from dy
+def tile_add(+src: U32, rdy: Array<F32> & F32, rdx: Array<F32>) -> TSet:
+  match rdy:
+    case Tuple{dy, +v}:
+      TSet{dy, tile_put(src, v, Array.get(F32, rdx, src))}
+
+# `left` cells of one row: forward reads the input at s and writes the output at d, backward reads d and adds at s
+def tile_cells(+left: Nat, +fwd: Bool, +d: U32, +s: U32, st: TSet) -> TSet:
+  match left fwd st:
+    case 0n True{} st2:
+      st2
+    case 1n+q True{} TSet{a, o}:
+      tile_cells(q, True{}, (d + 1 : U32), (s + 1 : U32), tile_set(d, Array.get(F32, a, s), o))
+    case 0n False{} st2:
+      st2
+    case 1n+q False{} TSet{a, o}:
+      tile_cells(q, False{}, (d + 1 : U32), (s + 1 : U32), tile_add(s, Array.get(F32, a, d), o))
+
+# row j of image i; the law's tile_row is about tile_row_of, so this walk ends in _go like the other loops
+def tile_row_go(+fwd: Bool, +t: Nat, +c: Nat, +i: Nat, +j: Nat, st: TSet) -> TSet:
+  tile_cells(c, fwd, U32.from_nat(tile_dst(c, t, i, j, 0n)),
+    U32.from_nat(tile_src(c, t, Nat.add(Nat.mul(i, t), j), 0n)), st)
+
+# the t rows of image i
+def tile_rows(+left_j: Nat, +fwd: Bool, +t: Nat, +c: Nat, +i: Nat, st: TSet) -> TSet:
+  match left_j st:
+    case 0n st2:
+      st2
+    case 1n+q st2:
+      tile_rows(q, fwd, t, c, i, tile_row_go(fwd, t, c, i, Nat.sub(t, left_j), st2))
+
+# every image, then the arrays back
+def tile_imgs(+left_i: Nat, +i: Nat, +fwd: Bool, +b: Nat, +t: Nat, +c: Nat, st: TSet) -> TSet:
+  match left_i st:
+    case 0n st2:
+      st2
+    case 1n+q st2:
+      tile_imgs(q, Nat.add(i, 1n), fwd, b, t, c, tile_rows(t, fwd, t, c, i, st2))
+
+def tile_fin(-r: Nat, -c2: Nat, st: TSet) -> TA.Mat<r, c2>:
+  match st:
+    case TSet{s, o}:
+      TA.Mat{o}
+
+def tile_fwd(+b: Nat, +t: Nat, +c: Nat, m: TA.Mat<b, c>) -> TA.Mat<Nat.mul(b, t), c>:
+  match m:
+    case TA.Mat{x}:
+      tile_fin(Nat.mul(b, t), c, tile_imgs(b, 0n, True{}, b, t, c, TSet{x, zeros_a(Nat.mul(Nat.mul(b, t), c))}))
+
+def tile_bwd(+b: Nat, +t: Nat, +c: Nat, m: TA.Mat<Nat.mul(b, t), c>) -> TA.Mat<b, c>:
+  match m:
+    case TA.Mat{dy}:
+      tile_fin(b, c, tile_imgs(b, 0n, False{}, b, t, c, TSet{dy, zeros_a(Nat.mul(b, c))}))
+
+# b images (rows) of c numbers, each row broadcast over t tokens: Mat<b, c> to Mat<b*t, c>
+def Tile(+b: Nat, +t: Nat, +c: Nat) -> Layer<Unit, TA.Mat<b, c>, TA.Mat<Nat.mul(b, t), c>, Unit>:
+  Layer{p => x => Fwd{p, tile_fwd(b, t, c, x), Unit{}}, p => s => dy => g => Bwd{p, tile_bwd(b, t, c, dy), g}, op => p => g => st => no_step(Unit, op, p, g, st), u => Unit{}, p => PL{p, Nil{}}, p => xs => off => PA{p, xs, off}, p => xs => off => PA{p, xs, off}, u => 0}
+
 # ---- Residual: y = x + f(x), for any layer f from n x c to n x c ----
 
 # over any X with a copy (dup), an addition (add) and a layer that adds a pair (join): Seq(Fork(Id, f), join). Residual
@@ -2470,6 +2562,134 @@ def rope_go(+n: Nat, +w: Nat, +fwd: Bool, +t: Nat, +h: Nat, +half: Nat, +base: F
 # n rows (b sequences of t positions), w = h heads of 2*half numbers each
 def RoPE(+n: Nat, +w: Nat, +t: Nat, +h: Nat, +half: Nat, +base: F32, -e: {w == Nat.mul(h, Nat.add(half, half)) : Nat}) -> Layer<Unit, TA.Mat<n, w>, TA.Mat<n, w>, Unit>:
   Layer{p => x => Fwd{p, rope_go(n, w, True{}, t, h, half, base, x), Unit{}}, p => s => dy => g => Bwd{p, rope_go(n, w, False{}, t, h, half, base, dy), g}, op => p => g => st => no_step(Unit, op, p, g, st), u => Unit{}, p => PL{p, Nil{}}, p => xs => off => PA{p, xs, off}, p => xs => off => PA{p, xs, off}, u => 0}
+
+# =====================================================================================================
+# 2D rotary positions (BendTorch#18): a head's 2*half_y + 2*half_x numbers split into a y half and an x half, so an
+# image's two axes rotate by their own frequencies. Row r of b*th*tw gives y = (r mod (th*tw))/tw and x = r mod tw.
+# The pairs are walked in two runs over disjoint dimensions (never a comparison), each with its own table: the y run
+# needs one angle per (y, c) and the x run one per (x, c). The address and table arithmetic the runs compute is the
+# model in torch/spec.bend, and the laws rope2_partition / rope2_is_rope speak about it.
+# =====================================================================================================
+
+# the numbers in one head: 2*half_y for the y axis, then 2*half_x for the x axis
+def rope2_ht(+hy: Nat, +hx: Nat) -> Nat:
+  Nat.add(Nat.mul(hy, 2n), Nat.mul(hx, 2n))
+
+# row r's place on the th x tw grid: position = r mod (th*tw), y = position / tw, x = position mod tw
+def rope2_yy(+nt: Nat, +tw: Nat, +r: Nat) -> Nat:
+  Nat.div(Nat.mod(r, nt), tw)
+
+def rope2_xx(+nt: Nat, +tw: Nat, +r: Nat) -> Nat:
+  Nat.mod(Nat.mod(r, nt), tw)
+
+# the y pair at j of head `head` in row r: (addr, addr + half_y), inside the head's first 2*half_y numbers
+def rope2_yaddr(+w: Nat, +hy: Nat, +hx: Nat, +r: Nat, +head: Nat, +j: Nat) -> Nat:
+  Nat.add(Nat.add(Nat.mul(r, w), Nat.mul(head, rope2_ht(hy, hx))), j)
+
+# the x pair at j: last 2*half_x numbers of the head, so the address starts 2*half_y further in
+def rope2_xaddr(+w: Nat, +hy: Nat, +hx: Nat, +r: Nat, +head: Nat, +j: Nat) -> Nat:
+  Nat.add(Nat.add(Nat.add(Nat.mul(r, w), Nat.mul(head, rope2_ht(hy, hx))), Nat.mul(hy, 2n)), j)
+
+# the table entries: the row's y (the y table has one angle per (y, c)) and x (one per (x, c)) times the half, plus j
+def rope2_yentry(+nt: Nat, +tw: Nat, +hy: Nat, +r: Nat, +j: Nat) -> Nat:
+  Nat.add(Nat.mul(rope2_yy(nt, tw, r), hy), j)
+
+def rope2_xentry(+nt: Nat, +tw: Nat, +hx: Nat, +r: Nat, +j: Nat) -> Nat:
+  Nat.add(Nat.mul(rope2_xx(nt, tw, r), hx), j)
+
+# the y table: th positions of half_y angles each (rope_ang with half = half_y), and the x table: tw positions of
+# half_x. A walk with nothing to do gets a one-word table and is skipped, so the empty case never reads it.
+def rope2_tabN(+size: Nat, +half: Nat, +base: F32) -> CS:
+  match size:
+    case 0n:
+      CS{zeros_a(1n), zeros_a(1n)}
+    case 1n+c:
+      rope_tab(c, 0, U32.from_nat(half), base, CS{zeros_a(size), zeros_a(size)})
+
+# pair e of the y run: row e/(h*hy), head (e mod h*hy)/hy, j = e mod hy. The head's y part is its first 2*hy numbers,
+# so the pair is (base + j, base + j + hy) and the table entry is the row's y times hy plus j.
+def rope2_yone(+e: Nat, +fwd: Bool, +h: Nat, +hy: Nat, +hx: Nat, +w: Nat, +nt: Nat, +tw: Nat, st: RS3) -> RS3:
+  match st:
+    case RS3{x, cs, sn}:
+      +hh = Nat.mul(h, hy)
+      +r = Nat.div(e, hh)
+      +head = Nat.div(Nat.mod(e, hh), hy)
+      +j = Nat.mod(e, hy)
+      +i1 = U32.from_nat(rope2_yaddr(w, hy, hx, r, head, j))
+      +i2 = U32.from_nat(rope2_yaddr(w, hy, hx, r, head, Nat.add(j, hy)))
+      +k = U32.from_nat(rope2_yentry(nt, tw, hy, r, j))
+      rope_p2(fwd, i1, i2, k, cs, sn, Array.get(F32, x, i1))
+
+# pair e of the x run: row e/(h*hx), head (e mod h*hx)/hx, j = e mod hx. The x part is the head's last 2*hx numbers,
+# so the pair is (base + 2*hy + j, base + 2*hy + j + hx) and the table entry is the row's x times hx plus j.
+def rope2_xone(+e: Nat, +fwd: Bool, +h: Nat, +hy: Nat, +hx: Nat, +w: Nat, +nt: Nat, +tw: Nat, st: RS3) -> RS3:
+  match st:
+    case RS3{x, cs, sn}:
+      +hh = Nat.mul(h, hx)
+      +r = Nat.div(e, hh)
+      +head = Nat.div(Nat.mod(e, hh), hx)
+      +j = Nat.mod(e, hx)
+      +i1 = U32.from_nat(rope2_xaddr(w, hy, hx, r, head, j))
+      +i2 = U32.from_nat(rope2_xaddr(w, hy, hx, r, head, Nat.add(j, hx)))
+      +k = U32.from_nat(rope2_xentry(nt, tw, hx, r, j))
+      rope_p2(fwd, i1, i2, k, cs, sn, Array.get(F32, x, i1))
+
+# pairs e.., left more after e
+def rope2_ye(+left: Nat, +e: Nat, +fwd: Bool, +h: Nat, +hy: Nat, +hx: Nat, +w: Nat, +nt: Nat, +tw: Nat, st: RS3) -> RS3:
+  match left:
+    case 0n:
+      rope2_yone(e, fwd, h, hy, hx, w, nt, tw, st)
+    case 1n+q:
+      rope2_ye(q, Nat.add(e, 1n), fwd, h, hy, hx, w, nt, tw, rope2_yone(e, fwd, h, hy, hx, w, nt, tw, st))
+
+def rope2_xe(+left: Nat, +e: Nat, +fwd: Bool, +h: Nat, +hy: Nat, +hx: Nat, +w: Nat, +nt: Nat, +tw: Nat, st: RS3) -> RS3:
+  match left:
+    case 0n:
+      rope2_xone(e, fwd, h, hy, hx, w, nt, tw, st)
+    case 1n+q:
+      rope2_xe(q, Nat.add(e, 1n), fwd, h, hy, hx, w, nt, tw, rope2_xone(e, fwd, h, hy, hx, w, nt, tw, st))
+
+# count pairs: none means the run is skipped (half_x = 0 makes the x run empty; half_y = 0 the y run)
+def rope2_run(+count: Nat, +fwd: Bool, +h: Nat, +hy: Nat, +hx: Nat, +w: Nat, +nt: Nat, +tw: Nat, st: RS3, y: Bool) -> RS3:
+  match count:
+    case 0n:
+      st
+    case 1n+c:
+      match y:
+        case True{}:
+          rope2_ye(c, 0n, fwd, h, hy, hx, w, nt, tw, st)
+        case False{}:
+          rope2_xe(c, 0n, fwd, h, hy, hx, w, nt, tw, st)
+
+def rope2_fin(-n: Nat, -w: Nat, st: RS3) -> TA.Mat<n, w>:
+  match st:
+    case RS3{x, cs, sn}:
+      TA.Mat{x}
+
+# the x run after the y run: the array is the y run's, the tables are each run's own
+def rope2_two(+n: Nat, +w: Nat, +countx: Nat, +fwd: Bool, +h: Nat, +hy: Nat, +hx: Nat, +nt: Nat, +tw: Nat, xcs: Array<F32>, xsn: Array<F32>, st: RS3) -> TA.Mat<n, w>:
+  match st:
+    case RS3{x, ycs, ysn}:
+      rope2_fin(n, w, rope2_run(countx, fwd, h, hy, hx, w, nt, tw, RS3{x, xcs, xsn}, False{}))
+
+def rope2_go2(+n: Nat, +w: Nat, +fwd: Bool, +th: Nat, +tw: Nat, +h: Nat, +hy: Nat, +hx: Nat, x: Array<F32>, yt: CS, xt: CS) -> TA.Mat<n, w>:
+  match yt xt:
+    case CS{ycs, ysn} CS{xcs, xsn}:
+      +nt = Nat.mul(th, tw)
+      rope2_two(n, w, Nat.mul(n, Nat.mul(h, hx)), fwd, h, hy, hx, nt, tw, xcs, xsn,
+        rope2_run(Nat.mul(n, Nat.mul(h, hy)), fwd, h, hy, hx, w, nt, tw, RS3{x, ycs, ysn}, True{}))
+
+# the two tables are the y one, th*hy angles (one per (y, c)), and the x one, tw*hx (one per (x, c)); both are
+# built on the host so the angles use the host's cos and sin, as RoPE's table does
+def rope2_go(+n: Nat, +w: Nat, +fwd: Bool, +th: Nat, +tw: Nat, +h: Nat, +hy: Nat, +hx: Nat, +base: F32, m: TA.Mat<n, w>) -> TA.Mat<n, w>:
+  match m:
+    case TA.Mat{x}:
+      rope2_go2(n, w, fwd, th, tw, h, hy, hx, x, rope2_tabN(Nat.mul(th, hy), hy, base), rope2_tabN(Nat.mul(tw, hx), hx, base))
+
+# n rows (b images of th*tw tokens), w = h heads of 2*half_y + 2*half_x numbers each; RoPE is the tw = 1, half_x = 0 case
+def RoPE2d(+n: Nat, +w: Nat, +th: Nat, +tw: Nat, +h: Nat, +half_y: Nat, +half_x: Nat, +base: F32,
+  -e: {w == Nat.mul(h, Nat.add(Nat.mul(half_y, 2n), Nat.mul(half_x, 2n))) : Nat}) -> Layer<Unit, TA.Mat<n, w>, TA.Mat<n, w>, Unit>:
+  Layer{p => x => Fwd{p, rope2_go(n, w, True{}, th, tw, h, half_y, half_x, base, x), Unit{}}, p => s => dy => g => Bwd{p, rope2_go(n, w, False{}, th, tw, h, half_y, half_x, base, dy), g}, op => p => g => st => no_step(Unit, op, p, g, st), u => Unit{}, p => PL{p, Nil{}}, p => xs => off => PA{p, xs, off}, p => xs => off => PA{p, xs, off}, u => 0}
 
 # =====================================================================================================
 # Causal attention with grouped-query heads: queries n x (h*hd), keys and values n x (kv*hd), h = kv*g; query head

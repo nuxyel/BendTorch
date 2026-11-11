@@ -43,6 +43,8 @@ CFG = numeric("cfg_test", "test_cfg.py")
 CONV = numeric("conv2d_probe", "conv2d_check.py")
 ACC = numeric("accum_test", "test_accum.py")
 I2C = numeric("im2col_probe", "im2col_check.py")
+TILE = numeric("tile_probe", "tile_check.py")
+ROPE2 = numeric("rope2d_probe", "rope2d_check.py")
 
 
 ST135 = Path(os.environ.get("LLAMA_BEND", "../llama.bend")) / "data/smollm2-135m/hf/model.safetensors"
@@ -90,11 +92,11 @@ GPU = gpu
 
 def gpu_layers():
     # torch/gpu.bend's other layers, optimizer step, losses and embedding must keep main.bend's bits with +RTS --gpu off -RTS:
-    # demo/gpu_layers_test.bend prints 19 zeros (Conv2d's case, then GELUErf's y and dx)
+    # demo/gpu_layers_test.bend prints 23 zeros (Conv2d's case, GELUErf's y and dx, Tile's y and dx, then RoPE2d's y and dx)
     b = subprocess.run(["bend", "demo/gpu_layers_test.bend", "-o", ".scratch/mut_gpu_layers"], capture_output=True, env=ENV)
     if b.returncode != 0:
         return False
-    return subprocess.run([".scratch/mut_gpu_layers", "+RTS", "--gpu", "off", "--threads", "16", "-RTS"], capture_output=True, text=True).stdout.split() == ["0"] * 19
+    return subprocess.run([".scratch/mut_gpu_layers", "+RTS", "--gpu", "off", "--threads", "16", "-RTS"], capture_output=True, text=True).stdout.split() == ["0"] * 23
 
 
 GPUL = gpu_layers
@@ -102,9 +104,9 @@ GPUL = gpu_layers
 
 def gpu_expcr():
     # make gpu's exactness check: with exp_cr in place of F32.exp, every GPU layer case gives main.bend's bits on the
-    # device (scripts/gpu_expcr.sh prints 19 zeros); needs CUDA, and make mutate runs under the heavy-run lock
+    # device (scripts/gpu_expcr.sh prints 23 zeros); needs CUDA, and make mutate runs under the heavy-run lock
     r = subprocess.run(["scripts/gpu_expcr.sh"], capture_output=True, text=True, env=ENV)
-    return r.returncode == 0 and r.stdout.strip().splitlines()[-1].split() == ["0"] * 19
+    return r.returncode == 0 and r.stdout.strip().splitlines()[-1].split() == ["0"] * 23
 
 
 EXPCR = gpu_expcr
@@ -254,6 +256,12 @@ MUTANTS = [
      "ew1(~T.gelu_erf_v, t, l, e, x1, o)", "ew1(~T.gelu_v, t, l, e, x1, o)", GPUL, "caught"),
     ("gpu GELUErf: the backward pass takes SiLU's derivative", "torch/gpu.bend",
      "ewi(~T.gelu_erf_d, t, l, e, o, x1)", "ewi(~T.silu_d, t, l, e, o, x1)", GPUL, "caught"),
+    ("gpu Tile: the last output row of each image reads the next image's row", "torch/gpu.bend",
+     "i2c_set(e, Array.get(F32, d, ((U32.div(U32.div(e, c), t) * c : U32)", "i2c_set(e, Array.get(F32, d, ((U32.div((U32.div(e, c) + 1 : U32), t) * c : U32)", GPUL, "caught"),
+    ("gpu Tile: the backward pass leaves out each image's last row", "torch/gpu.bend",
+     "tib_rows(U32.to_nat(t), (((U32.div(e, c) * t : U32)", "tib_rows(Nat.sub(U32.to_nat(t), 1n), (((U32.div(e, c) * t : U32)", GPUL, "caught"),
+    ("gpu Tile: the backward pass keeps the last row instead of the sum", "torch/gpu.bend",
+     "gi_put(acc, Array.get(F32, dy, j), dx)", "gi_put(0.0, Array.get(F32, dy, j), dx)", GPUL, "caught"),
     ("gpu GroupNorm: a leaf takes the first image's block of its group", "torch/gpu.bend",
      "r4_y(T.gnf_grp(hw, (U32.div(t, ng) * hwc : U32)", "r4_y(T.gnf_grp(hw, (U32.mod(t, ng) * hwc : U32)", GPUL, "caught"),
     ("gpu GroupNorm: dx swaps the two means", "torch/gpu.bend",
@@ -262,6 +270,12 @@ MUTANTS = [
      "gdw_imgs(Nat.sub(n, 1n), t, U32.div(t, cg), hw", "gdw_imgs(Nat.sub(n, 1n), t, U32.div(t, ng), hw", GPUL, "caught"),
     ("gpu RoPE: the backward pass rotates forward", "torch/gpu.bend",
      "T.Bwd{p, rope_go(n, w, False{}, t, h, half, base, dy), g}", "T.Bwd{p, rope_go(n, w, True{}, t, h, half, base, dy), g}", GPUL, "caught"),
+    ("gpu RoPE2d: the backward pass rotates forward", "torch/gpu.bend",
+     "T.Bwd{p, rope2_go(n, w, False{}, th, tw, h, half_y, half_x, base, dy), g}", "T.Bwd{p, rope2_go(n, w, True{}, th, tw, h, half_y, half_x, base, dy), g}", GPUL, "caught"),
+    ("gpu RoPE2d: the x run's table entry takes the row's y", "torch/gpu.bend",
+     "+k = ((U32.mod(U32.mod(r, nt), tw) * hx : U32) + j : U32)", "+k = ((U32.div(U32.mod(r, nt), tw) * hx : U32) + j : U32)", GPUL, "caught"),
+    ("gpu RoPE2d: the y run's angle takes the row, not its place in the image", "torch/gpu.bend",
+     "+k = ((U32.div(U32.mod(r, nt), tw) * hy : U32) + j : U32)", "+k = ((U32.div(r, tw) * hy : U32) + j : U32)", GPUL, "caught"),
     ("gpu attention: dK and dV leave out the group's last head", "torch/gpu.bend",
      "tsum_h(Nat.sub(gn, 1n), ia, ib, j,", "tsum_h(Nat.sub(gn, 2n), ia, ib, j,", GPUL, "caught"),
     ("gpu attention: the second row of a pair of P's rows reads its keys one place late", "torch/gpu.bend",
@@ -464,6 +478,20 @@ MUTANTS = [
     ("col2im: the scatter starts one gathered cell late", "torch/main.bend",
      "        Array.get(F32, d, U32.from_nat(0n)),\n        Array.new(F32, TA.cap_depth(size), 0.0))}",
      "        Array.get(F32, d, U32.from_nat(1n)),\n        Array.new(F32, TA.cap_depth(size), 0.0))}", I2C, "caught"),
+    ("tile: the backward keeps the tile's last row instead of the sum", "torch/main.bend",
+     "    case Tuple{a, +old}:\n      Array.set(F32, a, src, (old + v : F32))\n\n# dx[src]",
+     "    case Tuple{a, +old}:\n      Array.set(F32, a, src, v)\n\n# dx[src]", TILE, "caught"),
+    ("tile: the last row of each image reads the next image's row", "torch/main.bend",
+     "def tile_row_of(+t: Nat, +r: Nat) -> Nat:\n  Nat.div(r, t)",
+     "def tile_row_of(+t: Nat, +r: Nat) -> Nat:\n  Nat.div(Nat.add(r, 1n), t)", laws, "caught"),
+    ("tile: every row of a tile is written to the tile's first row", "torch/main.bend",
+     "  Nat.add(Nat.mul(Nat.add(Nat.mul(i, t), j), c), k)", "  Nat.add(Nat.mul(Nat.add(Nat.mul(i, t), 0n), c), k)", TILE, "caught"),
+    ("rope2d: the row's x is its place divided by tw, as y is", "torch/main.bend",
+     "  Nat.mod(Nat.mod(r, nt), tw)", "  Nat.div(Nat.mod(r, nt), tw)", ROPE2, "caught"),
+    ("rope2d: the x run starts where the y run does", "torch/main.bend",
+     "Nat.mul(head, rope2_ht(hy, hx))), Nat.mul(hy, 2n)), j)", "Nat.mul(head, rope2_ht(hy, hx))), Nat.mul(hy, 0n)), j)", laws, "caught"),
+    ("rope2d: the y run's table entry takes the row's x", "torch/main.bend",
+     "  Nat.add(Nat.mul(rope2_yy(nt, tw, r), hy), j)", "  Nat.add(Nat.mul(rope2_xx(nt, tw, r), hy), j)", ROPE2, "caught"),
     ("gpu im2col: the device gather reads the padding cells", "torch/gpu.bend",
      "      i2c_put(e, Bool.and(ok1, Bool.and(ok2, U32.is_lt(ix, w))), (src + ch : U32), CIC{d, o})",
      "      i2c_put(e, U32.is_lt(pos, (n * per : U32)), (src + ch : U32), CIC{d, o})", GPUL, "caught"),

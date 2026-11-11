@@ -6,7 +6,7 @@
   <a href="https://github.com/nuxyel/BendTorch/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/nuxyel/BendTorch/ci.yml?branch=main&style=flat-square&label=ci&labelColor=4d4a44&color=7e9a5e" alt="CI"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-8b83b5?style=flat-square&labelColor=4d4a44" alt="MIT license"></a>
   <a href="https://bend-lang.com"><img src="https://img.shields.io/badge/Bend-2.0.40-8b83b5?style=flat-square&labelColor=4d4a44" alt="Bend 2.0.40"></a>
-  <img src="https://img.shields.io/badge/laws%20proved-37-7e9a5e?style=flat-square&labelColor=4d4a44" alt="37 laws proved">
+  <img src="https://img.shields.io/badge/laws%20proved-42-7e9a5e?style=flat-square&labelColor=4d4a44" alt="42 laws proved">
   <img src="https://img.shields.io/badge/planted%20bugs-186%2F186%20as%20expected-7e9a5e?style=flat-square&labelColor=4d4a44" alt="186 planted bugs, 186 as expected">
 </p>
 
@@ -93,7 +93,7 @@ by accident (a one-cell array wraps every index to 0), and a bounds check catche
 GPU block size, and any block size that divides a row gives the same sum, bit for bit: the law `block_sum` proves it;
 the third lets packed AdamW write past n into cells that hold zeros and stay zero.
 
-<p align="center"><img src="docs/media/mutants.webp" alt="174 planted faults: 171 caught, 3 survive by design" width="80%"></p>
+<p align="center"><img src="docs/media/mutants.webp" alt="186 planted faults: 183 caught, 3 survive by design" width="80%"></p>
 
 ## 03 · It trains, and it computes what PyTorch computes
 

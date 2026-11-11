@@ -115,7 +115,16 @@ Numbers marked "busy machine" were taken with other jobs running and are a first
 - Offsets and sizes are 64-bit (two U32s), so files past 4 GiB (1.7B's F32 weights, a 360M AdamW checkpoint) are read;
   the reader takes up to 2^32 - 1 numbers a file.
 
-## Features
+- `RoPE2d` (`main.bend`, BendTorch#18) rotates a head's first `2·half_y` numbers by the row's `y` and its last
+  `2·half_x` by its `x`, so an image's two axes carry their own frequencies: row `r` of `b·th·tw` gives
+  `y = (r mod (th·tw))/tw`, `x = r mod tw`. `RoPE` is untouched. Tested at one shape against a hand-built 2D rotation
+  (`reference/rope2d_check.py`: a 2x2 grid, head split 2+2, forward and backward, `1.192e-07` at a tolerance of
+  `1e-6`); its three laws are stated over the addressing defs in `main.bend` (`rope2_yaddr`, `rope2_xaddr`,
+  `rope2_yentry`, `rope2_xentry`, which the layer's `U32` code calls through `U32.from_nat`), so there is no
+  comparison, no pick and no `U32` arithmetic left in the addressing. The float claims (identity at `(0,0)`; `(y,x)`
+  then `(-y,-x)`) remain tests: a law cannot compare `F32`. On the GPU (`gpu.bend`) both passes give `main.bend`'s bits
+  (`demo/gpu_layers_test.bend`, cases 21 and 22) because the angle tables are built on the host, as `RoPE`'s are:
+  CUDA's float `cos` and `sin` round 1 ulp away from the host's on 6 to 20% of a table's entries.
 
 - The layers work on matrices: a tensor is a `Mat<r, c>`, with batches and heads folded into rows and columns.
 - Convolution is `Conv2d`, `im2col` then `Linear`'s three products, in `main.bend` and, with the gather and scatter as
@@ -136,6 +145,9 @@ Numbers marked "busy machine" were taken with other jobs running and are a first
 - The exact GELU (`GELUErf`) is in `main.bend` and `gpu.bend`, not in `fast.bend` (which has no GELU of either form).
   On the GPU its forward pass gives `main.bend`'s bits; its gradient takes CUDA's float `exp` and differs by up to 113
   ulps on the test's inputs (`make gpu`'s `exp_cr` check gives 0 there).
+- `Tile` (a per-image row broadcast) is in `main.bend` and `gpu.bend`, not in `fast.bend`. On the GPU both passes give
+  `main.bend`'s bits (`demo/gpu_layers_test.bend`, cases 19 and 20), and the CPU lane's numbers are
+  `reference/tile_check.py`'s.
 - Gradient accumulation (`Train.accumulate`, `Train.flush`, #36) relies on every backward pass adding into the
   gradient it receives, the layer protocol. It is tested against PyTorch on a 7-6-3 MLP (`reference/test_accum.py`),
   and over the three lanes on five small models (`demo/accum_lanes.bend`: LinearFirst, Linear, LinearNB, RMSNorm,

@@ -2220,6 +2220,149 @@ That is the work, and it is a piece of its own rather than an afternoon's extens
   ulps, cross-entropy 4, attention 176,128, small 7,680, full 172,032, full small 8,192, GELUErf's dx 113; all 19 cases
   0 with `exp_cr`), `reader`, `smol`, `smol-gpu`, `bits-smol`, `check-js`, and `make mutate`: 174 of 174 as expected
   (171 caught, the 3 that survive by design), 44 minutes.
+## 2026-11-04: `Tile` (BendTorch#19), and the timings nuxyel asked for
+
+A conditioned block modulates per image (`h = h * (1 + scale)`), but the state is per token, and nothing broadcast a
+per-image row over its tokens: the modulation had to be repeated on the host and rebuilt with `Mat.from_list`. `Tile`
+is the smallest piece nuxyel asked for: `Mat<b,c>` to `Mat<b*t,c>`, row `i` of the input becoming rows
+`i*t .. i*t+t-1`, with the backward summing each image's `t` rows back into its row.
+
+The walk is one chain — images, rows, row, cells — because Bend has no mutual recursion here, and the addressing is two
+`Nat` defs (`tile_src`, `tile_dst`) that the loop calls through `U32.from_nat`, so the hot path has no division (the
+division lives in the forward's index only through `tile_src`, computed once per row, not per cell).
+
+### Score
+
+`reference/tile_check.py`, probe rebuilt from source, a 2 x 4 input over `t = 3` (6 x 4) and a 6 x 4 dY:
+
+    Tile: max |Bend - torch| forward 0.000e+00  backward 0.000e+00  (tolerance 1e-6)
+    a last-row backward would be off by 2.000e+00
+    PASS
+
+The second line is the point: a backward that kept the last row of each tile instead of summing them has the right
+shape and passes a shape check, and it is off by 2.0 here.
+
+### The laws
+
+`tile_row`: the `t` output rows of image `i` are all image row `i`, i.e. `(i*t + j) / t = i` for `j <= s` with
+`t = 1 + s`. The proof is `div_blocks` (the `i` whole blocks of `t` leave `go(j, s, i, 0)`) then `div_rest` (a
+remainder `j <= s` does not complete another block).
+`tile_sum`: every one of the `t` rows reads (forward) and adds into (backward) the same cell — `tile_src(c, t, i*t+j, k)
+= i*c + k`. It is `tile_row` carried through the column arithmetic, so it is nearly a corollary and the README row says
+so; it is still the statement the backward rests on.
+
+`make laws` green with 36 laws in `LAWS.bend` (37 in all); `--verdict` green; `make build` green.
+
+### The timings (#19 asked for them before deciding on a fused `Modulate`)
+
+The comparison is one elementwise pass over Tile's output shape (512 x 128, i.e. 8 images x 64 tokens x 128 wide)
+against that pass plus the tile broadcast; both written as 20,000 iterations threading a 512 x 128 matrix, medians of
+three, `/usr/bin/time`, wall clock with 0.01 s resolution:
+
+    one elementwise pass                1.51, 1.46, 1.49 s   (median 1.49 s, 74.5 us a step)
+    Tile then the same pass              1.40, 1.45, 1.45 s   (median 1.45 s, 72.5 us a step)
+
+So the broadcast is **not measurably slower** than materialising the operand it replaces: the single-pass version fills a
+512 x 128 matrix with the tiled scale, and the tiled version fills 8 x 128 and broadcasts it on the device. At this
+shape a fused `Modulate` would buy nothing measurable; what #19 measured was the *host* staging, and `Tile` is the
+piece that removes it. Reported on the issue.
+
+### Not in this change
+
+The device lane: `make gpu` is unavailable here (no `nvcc`, no `CUDA_HOME`), so `gpu.bend`'s copy is deferred rather
+than committed untested.
+
+## 2026-11-04: RoPE2d (BendTorch#18) — the layer, its three laws, and what stays a test
+
+`RoPE` rotates row `r` by `r mod t` with one frequency set, so an image's two axes share it. `RoPE2d` is the separate
+def nuxyel asked for (`RoPE` untouched): row `r` of `b*th*tw` gives `y = (r mod (th*tw))/tw` and `x = r mod tw`; the
+head's first `2*half_y` numbers rotate by `y`, its last `2*half_x` by `x`, each with its own inverse frequencies. Same
+shape as `RoPE`: one table (`rope2_tab`, an entry per (position, dim of the head)), one in-place pair rotation per pair
+(`rope_p2`/`rope_p3`, unchanged), both directions from one `fwd` flag, `Unit` state, the layer record copied.
+
+The layer runs the two halves as **two runs over disjoint dimensions**, the y part then the x part, each with its own
+table. `Bool.pick` evaluates both branches, so a per-pair pick called `F32.pow` twice to use one result; the two runs
+call it once. Same rotations, same order within a head, and the bits did not move: the reference check is
+byte-identical to the run before the refactor.
+
+### The laws, stated over the code
+
+The three laws are about the addressing defs **in `torch/main.bend`** — `rope2_ht`, `rope2_yaddr`, `rope2_xaddr`,
+`rope2_yentry`, `rope2_xentry` — which the layer's `U32` code calls through `U32.from_nat`. That is what makes them
+laws about the code rather than about a model of it: a change to the layer's addressing breaks them.
+
+- `rope2_partition`: the two runs tile the head's `2*half_y + 2*half_x` numbers with no gap and no overlap — the x run
+  starts one `half_y` past the y pair at `j = half_y`, and each run walks its own `j` from `0` to its half.
+- `rope2_is_rope`: at `tw = 1`, `half_x = 0` the y run is `RoPE`, at the same address `r*w + head*(half+half) + c`.
+- `rope2_is_rope_tab`: the same for the table entry, `(r mod th)*half + j`.
+
+The fourth thing BendTorch#18 asks for, "identity at `(0,0)`", and the `(y,x)` then `(-y,-x)` round trip, are `F32`
+statements. Laws here are `Nat`/`Bool` and never `F32`, so they stay as tests — the reference check's `1.192e-07` on
+`back(fwd(x))` is that claim, measured.
+
+**Honest about strength.** `rope2_is_rope` and `rope2_is_rope_tab` are near-definitional: once `tw = 1` and
+`half_x = 0` are substituted, both sides are the same `Nat` expression (the proof is `mul2`, `add_zero`, `div_one`,
+`mul_one_r`). They pin the two *formulas* to each other — a change to either breaks the law — but they are not a deeper
+theorem, and the README rows say so.
+
+### Runs
+
+    bend torch/main.bend --check-only        ALL PROOFS CHECK
+    bend PROOF.bend --check-only             ALL PROOFS CHECK
+    bend PROOF.bend --verdict                ALL PROOFS CHECK
+    make laws                                green, 37 laws in LAWS.bend (38 in all)
+    make build                               green, all 24 demos compile
+    make check-rope2d                        PASS, 1.192e-07 forward and backward
+                                             the two axes differ: y[1] != y[2] -> True
+
+**No device twin**: `gpu.bend` needs the same walk and a CUDA toolkit, which is absent here; the maintainer writes and
+runs it after the merge, and `docs/limitations.md` says so.
+
+## Tile on the GPU lane (2026-11-07)
+
+- `torch/gpu.bend`'s `Tile`, `main.bend`'s types and name. The forward pass is a cell bang over the `b·t·c` output
+  cells, each copying the input cell `main.bend`'s `tile_src` names, `(r / t)·c + k` for output row `r` and column `k`,
+  in `U32`. The backward pass is a cell bang over the `b·c` input cells, each adding the `t` rows of dy that read it,
+  in increasing row from 0.0: that is the order `tile_cells` adds them into its zeros, so the sums have `main.bend`'s
+  bits. The leaves reuse the conv section's `CIC`, `i2c_set`, `gi_put` and `gis_set`; `tile_fwd`, `tile_bwd` and
+  `Tile` reach tensor-gpu and are in `GPU_DEFS`.
+- `demo/gpu_layers_test.bend` cases 19 and 20, y and dx apart: 8 images of 64 tokens at SmolLM2's width (512 x 576 out)
+  and 3 images of 5 tokens of 7 numbers (105 cells, so the leaves' last shares are short). 0 ulps on 1 and 16 CPU
+  threads with `+RTS --gpu off -RTS`, and 0 on the RTX 4050: no exponential is taken, so `make gpu` bounds both at 0.
+  The Makefile, `scripts/gpu_expcr.sh` and `scripts/mutate.py` expect 21 cases.
+- Three mutants, each first checked to build and to move the numbers: the last output row of each image reads the next
+  image's row (case 19 off), the backward pass leaves out each image's last row and the backward pass keeps the last
+  row instead of the sum (case 20 off). `make mutate ONLY=<the three>`: 3 of 3 caught; 177 mutants in all.
+- Gates (Bend 2.0.40, busy machine, bits only): `make laws` (`GPU_DEFS` with `tile_fwd`, `tile_bwd`, `Tile`), `make
+  check`, and `make gpu`: SiLU 4 ulps, cross-entropy 4, attention 176,128, small 7,680, full 172,032, full small 8,192,
+  GELUErf's dx 113, every other case 0, Tile's two included; all 21 cases 0 with `exp_cr`; MNIST, the tiny Llama and
+
+## RoPE2d on the GPU lane (2026-11-07)
+
+- `torch/gpu.bend`'s `RoPE2d`, `main.bend`'s types and name. The two angle tables are built on the host by
+  `main.bend`'s `rope2_tabN`, as `RoPE`'s twin builds its one, then one bang rotates every pair of both runs: pair
+  `e < n·h·half_y` is the y run's pair `e` with the y table, the rest the x run's pair `e - n·h·half_y` with the x
+  table. Each pair is rotated by `main.bend`'s `rope_p2` at the addresses and table entries `rope2_yone` and
+  `rope2_xone` compute, written here in `U32`. The two runs touch disjoint numbers, so one bang does both. `rope2_go2`,
+  `rope2_go` and `RoPE2d` reach tensor-gpu and are in `GPU_DEFS`.
+- Why the tables stay on the host: I ran `main.bend`'s own expressions for RoPE's tables (`rope_ang`'s `F32.pow`, then
+  `F32.cos` and `F32.sin`) in a bang on the RTX 4050 and compared every entry with the host's (a probe, not kept). The
+  cos and sin of the host's angles differ by 1 ulp on 6 to 20% of the entries: 8 and 6 of 128 (8 positions, half 16),
+  202 and 171 of 2,048 (64 positions, half 32), 82 and 74 of 1,024 (64 and 16, base 100,000), 12,770 and 11,623 of
+  65,536 (4,096 and 16). The angle itself differs by up to 2 ulps on 118 of 2,048 and 113 of 1,024 entries, and the
+  cos of a device angle by up to 128 ulps. With `+RTS --gpu off -RTS` every entry is the host's. So the tables would
+  cost `main.bend`'s bits on the device, and on the host they are `th·half_y + tw·half_x` angles a call.
+- `demo/gpu_layers_test.bend` cases 21 and 22 (after Tile's 19 and 20), y and dx apart: 8 images of 8 x 8 tokens at SmolLM2's width (9 heads of
+  16 y and 16 x pairs) and 3 images of 3 x 5 tokens, 2 heads of 3 y and 2 x pairs (90 pairs, so the leaves' last
+  shares are short). 0 ulps on 1 and 16 CPU threads with `+RTS --gpu off -RTS`, and 0 on the RTX 4050, so `make gpu`
+  bounds both at 0. The Makefile, `scripts/gpu_expcr.sh` and `scripts/mutate.py` expect 23 cases.
+- Three mutants, each first checked to build and to move the numbers: the backward pass rotates forward (case 22 off),
+  the x run's table entry takes the row's y and the y run's angle takes the row instead of its place in the image
+  (both cases off). `make mutate ONLY=<the three>`: 3 of 3 caught; 180 mutants in all, with Tile's three.
+- Gates (Bend 2.0.40, busy machine, bits only): `make laws` (`GPU_DEFS` with `rope2_go2`, `rope2_go`, `RoPE2d`), `make
+  check`, and `make gpu`: SiLU 4 ulps, cross-entropy 4, attention 176,128, small 7,680, full 172,032, full small 8,192,
+  GELUErf's dx 113, every other case 0, RoPE2d's two included; all 23 cases 0 with `exp_cr`; MNIST, the tiny Llama and
+  the SmolLM2-sized block on the GPU against PyTorch, and the GPU builds' outputs are `bench/bits.txt`'s.
 
 ## Gradient accumulation (2026-11-07, #36)
 
@@ -2300,3 +2443,16 @@ That is the work, and it is a piece of its own rather than an afternoon's extens
   check about 2 min of it, mostly building the three copies); `make gpu` green (6 min 15 s), its new lines: k = 1 0
   ulps, `lin` 0, `mlp` 320, `attn` 320, `gn` 80, `emb` 468, and `0 0 0 0 0 0` with `exp_cr`; `make mutate` on the four
   new mutants: 4 of 4 caught (8 min); `scripts/affected.py self-check` passes.
+
+## Tile and RoPE2d together on devel, and their CPU mutants (2026-11-11)
+
+- #34 (Tile) and #33 (RoPE2d) merged into devel. The two device twins, written on 2026-11-07 over each PR's head, both
+  used cases 19 and 20 of `demo/gpu_layers_test.bend`; on devel Tile keeps 19 and 20 and RoPE2d takes 21 and 22, so
+  the Makefile, `scripts/gpu_expcr.sh` and `scripts/mutate.py` expect 23 cases.
+- Six CPU mutants, none of which the PRs had: Tile's backward keeping the last row instead of the sum, its last row
+  reading the next image's row (the law `tile_row` fails), every row of a tile written to its first row; RoPE2d's x
+  taken as its position divided by `tw`, the x run starting where the y run does (the law `rope2_partition` fails),
+  the y run's table entry taking the row's x.
+- Two of the RoPE2d mutants survived at first. `reference/rope2d_check.py` ignored the binary `make mutate` passes it
+  and always ran `.scratch/rope2d_probe`, the unmutated build. With the binary taken from the command line, as
+  `tile_check.py` does, both are caught: 186 mutants, 183 caught and 3 surviving by design.

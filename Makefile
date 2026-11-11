@@ -2,11 +2,11 @@
 export BEND_NO_TELEMETRY := 1
 export PATH := $(HOME)/.bend/bin:$(HOME)/.elan/bin:$(PATH)
 PY := reference/.venv/bin/python
-DEMOS := mlp_test ops_test mnist tiny_llama tiny_rt tensor_test imap_check fast_test gpu_test gpu_layers_test depth_check smol_block infra_test dtype_test tiny_mixed reader_test safetensors_test tiny_bf16opt loop_test fullattn_test fullattn_lane cfg_test conv2d_probe im2col_probe accum_test accum_lanes
+DEMOS := mlp_test ops_test mnist tiny_llama tiny_rt tensor_test imap_check fast_test gpu_test gpu_layers_test depth_check smol_block infra_test dtype_test tiny_mixed reader_test safetensors_test tiny_bf16opt loop_test fullattn_test fullattn_lane cfg_test conv2d_probe im2col_probe tile_probe rope2d_probe accum_test accum_lanes
 # torch/load.bend's defs that reach the foreign binary reader (bend-ml-binary-read@0.2.0.1): the list may change only on purpose
 LOAD_DEFS := read_go read_sized read read_f32_at read_bf16_at size weights train_read train St.read St.then St.fill tensors_from tensors piece safetensors
 # torch/gpu.bend's defs that rely on bend-ml-tensor-gpu's @unsafe Array.fork (its leaves do not: they are plain Bend)
-GPU_DEFS := lin_fwd lin_b2 lin_bwd Mat.dup Mat.sum2 silu_f silu_b SiLU gelue_f gelue_b GELUErf mul2_f mul2_b Mul2 add2_f Add2 Residual opt_mat mat_step lin_step2 lin_step LinearF linf_bwd LinearFirstF lnb_b2 LinearNBF rms_f rms_b2 rms_b RMSNorm gn_f gn_b2 gn_b ln_step2 ln_step GroupNorm rope_go2 rope_go RoPE af2 af1 af0 attn_f ab3 ab2 ab1 attn_b af2_f af1_f af0_f attn_f_f ab3_f ab2_f ab1_f attn_b_f Attention FullAttention mse_go MSE emb_f2 emb_f emb_b2 emb_bwd Embedding cx_4 cx_3 cx_2 cx_1 CrossEntropy im2col col2im conv_b2 Conv2d Linear LinearFirst LinearNB
+GPU_DEFS := lin_fwd lin_b2 lin_bwd Mat.dup Mat.sum2 silu_f silu_b SiLU gelue_f gelue_b GELUErf mul2_f mul2_b Mul2 add2_f Add2 Residual opt_mat mat_step lin_step2 lin_step LinearF linf_bwd LinearFirstF lnb_b2 LinearNBF rms_f rms_b2 rms_b RMSNorm gn_f gn_b2 gn_b ln_step2 ln_step GroupNorm rope_go2 rope_go RoPE rope2_go2 rope2_go RoPE2d af2 af1 af0 attn_f ab3 ab2 ab1 attn_b af2_f af1_f af0_f attn_f_f ab3_f ab2_f ab1_f attn_b_f Attention FullAttention mse_go MSE emb_f2 emb_f emb_b2 emb_bwd Embedding cx_4 cx_3 cx_2 cx_1 CrossEntropy im2col col2im conv_b2 Conv2d tile_fwd tile_bwd Tile Linear LinearFirst LinearNB
 # a file's defs outside the proofs, as the checker lists them ("defs that depend on @unsafe: a, b"), without the hub's
 # (0x<hash>/main.f): each package pins its own
 OUTSIDE = sed -n 's/^defs that depend on [^:]*: //p' | tr ',' '\n' | sed 's/^ *//' | grep -E '^[A-Za-z0-9_.]+$$'
@@ -61,7 +61,7 @@ build-%:
 
 # make check's tests, one target each, so that scripts/affected.py can run those a change reads; make check runs
 # them all, in this order, after building every demo
-CHECKS := check-infra check-cfg check-reader check-safetensors check-ops check-conv2d check-im2col check-tensor check-imap check-mlp check-accum check-accum-lanes check-mnist check-tiny check-tiny-rt check-dtype check-tiny-mixed check-tiny-bf16opt check-block check-fast check-gpu-test check-gpu-layers check-fullattn check-fullattn-lane check-depth check-loop
+CHECKS := check-infra check-cfg check-reader check-safetensors check-ops check-conv2d check-im2col check-tile check-rope2d check-tensor check-imap check-mlp check-accum check-accum-lanes check-mnist check-tiny check-tiny-rt check-dtype check-tiny-mixed check-tiny-bf16opt check-block check-fast check-gpu-test check-gpu-layers check-fullattn check-fullattn-lane check-depth check-loop
 .PHONY: $(CHECKS)
 
 check: laws build $(CHECKS)  ## the laws, then every layer, the tensor operations, the MLP, MNIST, the tiny Llama and a SmolLM2-sized block against PyTorch
@@ -86,6 +86,12 @@ check-conv2d: build-conv2d_probe
 
 check-im2col: build-im2col_probe
 	$(PY) reference/im2col_check.py .scratch/im2col_probe
+
+check-tile: build-tile_probe
+	$(PY) reference/tile_check.py .scratch/tile_probe
+
+check-rope2d: build-rope2d_probe
+	$(PY) reference/rope2d_check.py .scratch/rope2d_probe
 
 check-tensor: build-tensor_test
 	$(PY) reference/test_tensor.py .scratch/tensor_test
@@ -141,7 +147,7 @@ check-gpu-test: build-gpu_test
 	for t in 1 16; do test "$$(.scratch/gpu_test +RTS --threads $$t -RTS | tr '\n' ' ')" = "0 0 0 0 0 0 0 0 " && echo "gpu: torch/gpu.bend's layers give main.bend's bits ($$t CPU threads)" || { echo "gpu: the bits differ ($$t threads)"; exit 1; }; done
 
 check-gpu-layers: build-gpu_layers_test
-	for t in 1 16; do test "$$(.scratch/gpu_layers_test +RTS --gpu off --threads $$t -RTS | tr '\n' ' ')" = "0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 " && echo "gpu: torch/gpu.bend's element-wise layers, RMSNorm, GroupNorm, RoPE, attention, full attention, optimizer step, MSE, embedding, cross-entropy and Conv2d give main.bend's bits ($$t CPU threads)" || { echo "gpu: the bits differ ($$t threads)"; exit 1; }; done
+	for t in 1 16; do test "$$(.scratch/gpu_layers_test +RTS --gpu off --threads $$t -RTS | tr '\n' ' ')" = "0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 " && echo "gpu: torch/gpu.bend's element-wise layers, RMSNorm, GroupNorm, RoPE, RoPE2d, attention, full attention, optimizer step, MSE, embedding, cross-entropy, Conv2d and Tile give main.bend's bits ($$t CPU threads)" || { echo "gpu: the bits differ ($$t threads)"; exit 1; }; done
 
 check-fullattn: build-fullattn_test
 	$(PY) reference/test_fullattn.py .scratch/fullattn_test
@@ -186,10 +192,10 @@ gpu: cuda-toolkit  ## torch/gpu.bend on the GPU (needs a CUDA toolkit in CUDA_HO
 	ldd .scratch/gpu_test_cuda | grep -q libnvrtc && echo "gpu: the test binary links libnvrtc" || { echo "gpu: gpu_test_cuda does not link libnvrtc; the build is CPU-only"; exit 1; }
 	test "$$(LD_LIBRARY_PATH=$(CUDA_LIB) .scratch/gpu_test_cuda | tr '\n' ' ')" = "0 0 0 0 0 0 0 0 " && echo "gpu: torch/gpu.bend's layers give main.bend's bits on the GPU" || { echo "gpu: the bits differ on the GPU"; exit 1; }
 	CUDA_HOME=$(CUDA_HOME) LD_LIBRARY_PATH=$(CUDA_LIB) bend demo/gpu_layers_test.bend -o .scratch/gpu_layers_test_cuda
-	for k in 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18; do LD_LIBRARY_PATH=$(CUDA_LIB) .scratch/gpu_layers_test_cuda $$k || exit 1; done | tr '\n' ' ' | tee .scratch/gpu_layers.txt; echo
-	set -- $$(cat .scratch/gpu_layers.txt); test "$$1" -le 4 && test "$${12}" -le 4 && test "$$2 $$3 $$4 $$5 $$7 $$8 $$9 $${10} $${11} $${14} $${17} $${18}" = "0 0 0 0 0 0 0 0 0 0 0 0" && echo "gpu: the same bits on the GPU (GELUErf's y and its erf included), but SiLU ($$1 ulps), cross-entropy ($${12}), attention ($$6 ulps, at small sizes $${13}, full $${15} and full at small sizes $${16}) and GELUErf's dx ($${19}), with no bound (see the next check), through CUDA's float exp" || { echo "gpu: the layers differ on the GPU beyond CUDA's exp"; exit 1; }
+	for k in 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22; do LD_LIBRARY_PATH=$(CUDA_LIB) .scratch/gpu_layers_test_cuda $$k || exit 1; done | tr '\n' ' ' | tee .scratch/gpu_layers.txt; echo
+	set -- $$(cat .scratch/gpu_layers.txt); test "$$1" -le 4 && test "$${12}" -le 4 && test "$$2 $$3 $$4 $$5 $$7 $$8 $$9 $${10} $${11} $${14} $${17} $${18} $${20} $${21} $${22} $${23}" = "0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0" && echo "gpu: the same bits on the GPU (GELUErf's y and its erf, Tile and RoPE2d included), but SiLU ($$1 ulps), cross-entropy ($${12}), attention ($$6 ulps, at small sizes $${13}, full $${15} and full at small sizes $${16}) and GELUErf's dx ($${19}), with no bound (see the next check), through CUDA's float exp" || { echo "gpu: the layers differ on the GPU beyond CUDA's exp"; exit 1; }
 	CUDA_HOME=$(CUDA_HOME) scripts/gpu_expcr.sh | tee .scratch/gpu_expcr.txt
-	test "$$(tail -1 .scratch/gpu_expcr.txt)" = "0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 " && echo "gpu: with exp_cr (the host's exp bits) in place of F32.exp, every case gives main.bend's bits on the device: the device code is exact but for CUDA's exp" || { echo "gpu: with exp_cr the device still differs from main.bend"; exit 1; }
+	test "$$(tail -1 .scratch/gpu_expcr.txt)" = "0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 " && echo "gpu: with exp_cr (the host's exp bits) in place of F32.exp, every case gives main.bend's bits on the device: the device code is exact but for CUDA's exp" || { echo "gpu: with exp_cr the device still differs from main.bend"; exit 1; }
 	sed 's|^import ../torch/fast.bend as F$$|import ../torch/main.bend as F|' demo/accum_lanes.bend > .scratch/accum_lanes_main.bend && grep -q '^import ../torch/main.bend as F$$' .scratch/accum_lanes_main.bend
 	sed 's|^import ../torch/fast.bend as F$$|import ../torch/gpu.bend as F|' demo/accum_lanes.bend > .scratch/accum_lanes_gpu.bend && grep -q '^import ../torch/gpu.bend as F$$' .scratch/accum_lanes_gpu.bend
 	bend .scratch/accum_lanes_main.bend -o .scratch/accum_lanes_main && .scratch/accum_lanes_main > .scratch/accum_lanes_main.txt
