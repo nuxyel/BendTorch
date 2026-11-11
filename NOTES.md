@@ -2570,3 +2570,11 @@ runs it after the merge, and `docs/limitations.md` says so.
 - **Gates** (Bend 2.0.40): `make laws check bits check-js smol bits-smol`, the four new mutants caught.
 - **Left**: the backward pass over shared arrays (seven arrays: packing the reads would copy them, which is what this
   removes from the forward pass).
+
+## The triangle branch merged into devel (2026-11-11, #28)
+
+- `attn-triangle` (the two entries above: the causal products over the triangle, laws `causal_pv` and `causal_kv`, and
+  `fast.bend`'s Attention forward pass in blocks) merged on top of Tile, RoPE2d, gradient accumulation and Conv2dNB.
+  The conflicts were the lists and the counts: `triangle_probe` and `check-triangle` join the Makefile's lists, the
+  CHANGELOG's laws section counts 39, 41 and 44 in the order the laws landed, and the mutants figure was drawn again by
+  `docs/media/mutants.mjs`: 44 laws, 212 mutants, 209 caught, the same three surviving by design.
