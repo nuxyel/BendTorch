@@ -161,7 +161,7 @@ algebra of the formulas (`dy·(W·x) == (Wᵀ·dy)·x`), with no rounding to rea
 (`F32.mul(3.0, 3.0)` does not reduce), so a law about F32 values can only treat the operations as uninterpreted; no
 IEEE 754 property is claimed anywhere.
 
-`scripts/mutate.py` changes the code and the specification on purpose (174 mutants) and checks that a gate fails. A
+`scripts/mutate.py` changes the code and the specification on purpose (186 mutants) and checks that a gate fails. A
 mutant that survives a gate is listed with the reason (today three: the whole-tensor sum's index map, which the
 numbers miss by accident and a bounds check catches, and two equivalent mutants, the GPU cross-entropy's block size and
 the packed AdamW's last block; since M8 the laws catch the two that used to slip past them, `kv_of` bypassed and a softmax over one
