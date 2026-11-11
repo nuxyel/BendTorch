@@ -2599,3 +2599,13 @@ runs it after the merge, and `docs/limitations.md` says so.
   probe uses `main.bend`'s layers; `gpu.bend` has `Tile`, `Mul2`, `Add2`, `SiLU` and `Linear`, but no `LayerNorm`).
 - Gates (Bend 2.0.40, busy machine, pass/fail only): `make laws check` green (8 min 7 s); `scripts/affected.py
   self-check` passes. No file in `torch/` changed, so no mutants.
+
+## Release 2.1.0: the gates (2026-11-11)
+
+- At 84e0fbd's code (Tile, RoPE2d, gradient accumulation, Conv2dNB, the triangle's sums, adaLN by composition, the
+  packages at 2.1.0.0), Bend 2.0.40: `make laws check bits corpus gpu smol smol-gpu bits-smol reader check-js
+  mutate-smol` green (corpus sha256 a9b9fa1cffdef55c, 2.0.2's, the same bits on 1 and 16 threads; mutate-smol 6 of 6);
+  `make mutate` 212 of 212 at the merge of the triangle branch, whose `torch/` is this code's.
+- `make package CORE=bendtorch VERSION=2.1.0.0` failed first: `scripts/package.sh` still wanted 19 zeros from
+  `fast_test`, which prints 21 since the triangle branch's Attention case (the branch had updated the Makefile,
+  `check_js.sh` and `mutate.py`, not the package script). Fixed; every package test green.
