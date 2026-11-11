@@ -1747,3 +1747,63 @@ def Laws.rope2_is_rope_tab(half, r, j, th):
     Equal.cong(Nat, Nat, z => Nat.add(Nat.mul(z, half), j),
       Nat.mod(r, Nat.mul(th, 1n)), Nat.mod(r, th),
       Equal.cong(Nat, Nat, z => Nat.mod(r, z), Nat.mul(th, 1n), th, NL.mul_one_r(th))))
+
+# MaxPool2d's count (BendTorch#39): q whole blocks of s = 1 + r + a numbers (div_blocks) and the r
+# left over do not complete another one (div_rest); the +1 is the window at the block's start.
+def Laws.mp_count(q, r, a, s, sr):
+  +sp = Nat.add(r, a)
+  Equal.cong(Nat, Nat, z => Nat.add(z, 1n),
+    Nat.div(Nat.add(Nat.mul(q, s), r), s), q,
+    Equal.trans(Nat,
+      Nat.div(Nat.add(Nat.mul(q, s), r), s),
+      Nat.div(Nat.add(Nat.mul(q, 1n+sp), r), 1n+sp),
+      q,
+      Equal.cong(Nat, Nat, z => Nat.div(Nat.add(Nat.mul(q, z), r), z), s, Nat.add(1n, sp), sr),
+      Equal.trans(Nat,
+        Nat.div(Nat.add(Nat.mul(q, 1n+sp), r), 1n+sp),
+        Pair.fst(Nat, Nat, Nat.divmod.go(r, sp, Nat.add(q, 0n), 0n)),
+        q,
+        Equal.cong(Nat & Nat, Nat, z => Pair.fst(Nat, Nat, z),
+          Nat.divmod.go(Nat.add(Nat.mul(q, 1n+sp), r), sp, 0n, 0n),
+          Nat.divmod.go(r, sp, Nat.add(q, 0n), 0n),
+          div_blocks(q, sp, r, 0n)),
+        Equal.trans(Nat,
+          Pair.fst(Nat, Nat, Nat.divmod.go(r, sp, Nat.add(q, 0n), 0n)),
+          Nat.add(q, 0n),
+          q,
+          div_rest(r, a, Nat.add(q, 0n), 0n),
+          NL.add_zero(q)))))
+
+# MaxPool2d's scatter (BendTorch#39): the write cell is base + plane·c with base = image·h·w·c + ch,
+# which is mp_flat's (image·h·w + plane)·c + ch once the product is distributed and regrouped.
+def Laws.mp_scatter(c, h, w, ch, image, row, col, ky, kx, k, a, b, ky_lt, kx_lt):
+  +A = Nat.mul(Nat.mul(image, h), w)
+  +B = Nat.add(Nat.mul(Nat.add(row, ky), w), Nat.add(col, kx))
+  +AC = Nat.mul(A, c)
+  +BC = Nat.mul(B, c)
+  Equal.trans(Nat,
+    Nat.add(Nat.mul(Nat.add(Nat.mul(image, Nat.mul(h, w)), B), c), ch),
+    Nat.add(Nat.mul(Nat.add(A, B), c), ch),
+    Nat.add(Nat.add(AC, ch), BC),
+    Equal.cong(Nat, Nat, z => Nat.add(Nat.mul(Nat.add(z, B), c), ch),
+      Nat.mul(image, Nat.mul(h, w)), A,
+      NL.mul_assoc(image, h, w)),
+    Equal.trans(Nat,
+      Nat.add(Nat.mul(Nat.add(A, B), c), ch),
+      Nat.add(Nat.add(AC, BC), ch),
+      Nat.add(Nat.add(AC, ch), BC),
+      Equal.cong(Nat, Nat, z => Nat.add(z, ch), Nat.mul(Nat.add(A, B), c), Nat.add(AC, BC),
+        Equal.sym(Nat, Nat.add(AC, BC), Nat.mul(Nat.add(A, B), c), NL.mul_dist(A, B, c))),
+      Equal.trans(Nat,
+        Nat.add(Nat.add(AC, BC), ch),
+        Nat.add(AC, Nat.add(BC, ch)),
+        Nat.add(Nat.add(AC, ch), BC),
+        Equal.sym(Nat, Nat.add(AC, Nat.add(BC, ch)), Nat.add(Nat.add(AC, BC), ch),
+          NL.add_assoc(AC, BC, ch)),
+        Equal.trans(Nat,
+          Nat.add(AC, Nat.add(BC, ch)),
+          Nat.add(AC, Nat.add(ch, BC)),
+          Nat.add(Nat.add(AC, ch), BC),
+          Equal.cong(Nat, Nat, z => Nat.add(AC, z), Nat.add(BC, ch), Nat.add(ch, BC),
+            NL.add_comm(BC, ch)),
+          NL.add_assoc(AC, ch, BC)))))
