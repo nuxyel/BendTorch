@@ -45,6 +45,7 @@ ACC = numeric("accum_test", "test_accum.py")
 I2C = numeric("im2col_probe", "im2col_check.py")
 TILE = numeric("tile_probe", "tile_check.py")
 ROPE2 = numeric("rope2d_probe", "rope2d_check.py")
+CNB = numeric("conv2dnb_probe", "conv2dnb_check.py")
 
 
 ST135 = Path(os.environ.get("LLAMA_BEND", "../llama.bend")) / "data/smollm2-135m/hf/model.safetensors"
@@ -96,7 +97,7 @@ def gpu_layers():
     b = subprocess.run(["bend", "demo/gpu_layers_test.bend", "-o", ".scratch/mut_gpu_layers"], capture_output=True, env=ENV)
     if b.returncode != 0:
         return False
-    return subprocess.run([".scratch/mut_gpu_layers", "+RTS", "--gpu", "off", "--threads", "16", "-RTS"], capture_output=True, text=True).stdout.split() == ["0"] * 23
+    return subprocess.run([".scratch/mut_gpu_layers", "+RTS", "--gpu", "off", "--threads", "16", "-RTS"], capture_output=True, text=True).stdout.split() == ["0"] * 24
 
 
 GPUL = gpu_layers
@@ -106,7 +107,7 @@ def gpu_expcr():
     # make gpu's exactness check: with exp_cr in place of F32.exp, every GPU layer case gives main.bend's bits on the
     # device (scripts/gpu_expcr.sh prints 23 zeros); needs CUDA, and make mutate runs under the heavy-run lock
     r = subprocess.run(["scripts/gpu_expcr.sh"], capture_output=True, text=True, env=ENV)
-    return r.returncode == 0 and r.stdout.strip().splitlines()[-1].split() == ["0"] * 23
+    return r.returncode == 0 and r.stdout.strip().splitlines()[-1].split() == ["0"] * 24
 
 
 EXPCR = gpu_expcr
@@ -492,6 +493,24 @@ MUTANTS = [
      "Nat.mul(head, rope2_ht(hy, hx))), Nat.mul(hy, 2n)), j)", "Nat.mul(head, rope2_ht(hy, hx))), Nat.mul(hy, 0n)), j)", laws, "caught"),
     ("rope2d: the y run's table entry takes the row's x", "torch/main.bend",
      "  Nat.add(Nat.mul(rope2_yy(nt, tw, r), hy), j)", "  Nat.add(Nat.mul(rope2_xx(nt, tw, r), hy), j)", ROPE2, "caught"),
+    ("conv2dnb: the forward pass ignores the weight (a zero weight)", "torch/main.bend",
+     ", x), prm)),\n    prm => st => dy => gg => convnb_b2",
+     ", x), TA.Mat.zeros(co, ckk(c, k)))),\n    prm => st => dy => gg => convnb_b2", CNB, "caught"),
+    ("conv2dnb: the input gradient goes back through a zero weight", "torch/main.bend",
+     "par, dy, prm))),\n    op => prm => gg => st => mat_step(co, ckk(c, k)",
+     "par, dy, TA.Mat.zeros(co, ckk(c, k))))),\n    op => prm => gg => st => mat_step(co, ckk(c, k)", CNB, "caught"),
+    ("conv2dnb: the weight gradient is taken from a zero patch matrix", "torch/main.bend",
+     "ckk(c, k), co, par, st, gg,",
+     "ckk(c, k), co, par, TA.Mat.zeros(Nat.mul(n, cohw(k, hs, ws, p, s1)), ckk(c, k)), gg,", CNB, "caught"),
+    ("gpu Conv2dNB: the forward pass ignores the weight (a zero weight)", "torch/gpu.bend",
+     ", x), prm)),\n    prm => st => dy => gg => convnb_b2",
+     ", x), TA.Mat.zeros(co, T.ckk(c, k)))),\n    prm => st => dy => gg => convnb_b2", GPUL, "caught"),
+    ("gpu Conv2dNB: the input gradient goes back through a zero weight", "torch/gpu.bend",
+     "0n, dy, prm))),\n    op => prm => gg => st => mat_step(co, T.ckk(c, k)",
+     "0n, dy, TA.Mat.zeros(co, T.ckk(c, k))))),\n    op => prm => gg => st => mat_step(co, T.ckk(c, k)", GPUL, "caught"),
+    ("gpu Conv2dNB: the weight gradient starts from zero instead of the one it is handed", "torch/gpu.bend",
+     "T.ckk(c, k), co, st, gg, TG.matmul_precise",
+     "T.ckk(c, k), co, st, TA.Mat.zeros(co, T.ckk(c, k)), TG.matmul_precise", GPUL, "caught"),
     ("gpu im2col: the device gather reads the padding cells", "torch/gpu.bend",
      "      i2c_put(e, Bool.and(ok1, Bool.and(ok2, U32.is_lt(ix, w))), (src + ch : U32), CIC{d, o})",
      "      i2c_put(e, U32.is_lt(pos, (n * per : U32)), (src + ch : U32), CIC{d, o})", GPUL, "caught"),
