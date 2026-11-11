@@ -33,7 +33,7 @@ with a fourth digit (`2.0.0.0`). The engineering log behind each entry, measurem
   either form, a step or an advance of t at every micro-batch, a flush that leaves t where it was, in either form), and
   four over the lanes (a `Fork` whose second layer starts its backward pass from a zero gradient, which only an
   accumulated step can see; the GroupNorm step trading the gain's and the bias's gradients in `gpu.bend` and in
-  `fast.bend`; `gpu.bend`'s Residual dropping its skip connection), 186 in all.
+  `fast.bend`; `gpu.bend`'s Residual dropping its skip connection).
 - **Moving from 2.0.2**: nothing changes for a program that does not call the new functions.
 
 ### Laws
@@ -108,9 +108,9 @@ Three more in the same file, proved the same way, **42 laws in all** (with `dtyp
 
 ### Tests
 
-- Twelve more mutants, 186 in all (183 caught, 3 surviving by design): three device mutants each of `Tile` and
-  `RoPE2d`, and six on the CPU (`Tile`'s sum, its source row and its destination row; `RoPE2d`'s x position, the x
-  run's offset and the y run's table entry).
+- Twelve more mutants: three device mutants each of `Tile` and `RoPE2d`, and six on the CPU (`Tile`'s sum, its source
+  row and its destination row; `RoPE2d`'s x position, the x run's offset and the y run's table entry).
+- With gradient accumulation's twelve, 198 mutants in all: 195 caught, 3 surviving by design.
 - `reference/rope2d_check.py` takes the probe from the command line, as `tile_check.py` does. It always read
   `.scratch/rope2d_probe` before, so `make mutate` tested a mutant of `RoPE2d`'s CPU code against the unmutated binary.
 
