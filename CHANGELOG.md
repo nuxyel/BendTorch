@@ -35,6 +35,8 @@ Two more in the same file, proved the same way, **39 laws in all** (with `dtype.
 - `tile_sum`: every one of the `t` rows of image `i` reads (forward) and adds into (backward) the same cell of image
   row `i`, column `k`, which is what makes the backward a **sum** of the `t` rows rather than the last of them.
 
+### New
+
 - **`Tile`**: a per-image row broadcast, for adaLN-conditioned blocks (BendTorch#19). Row `i` of a `b x c` input
   becomes rows `i·t .. i·t+t-1` of a `(b·t) x c` output, and the backward sums each image's `t` rows back into its
   row, so `x * (1 + scale)` with a per-image scale is `Tile` then `Mul2` with the tiling on the device. The addressing
@@ -150,8 +152,8 @@ only. Both by or with @adeerkhan.
 
 ### Laws
 
-Eight new laws in `LAWS.bend`, proved in `PROOF.bend` and checked again by `bend PROOF.bend --verdict`, 37 laws
-in all (with `dtype.bend`'s `unpair_pair`): Conv2d's two (above), the guard's four, and Tile's two (below):
+Six new laws in `LAWS.bend`, proved in `PROOF.bend` and checked again by `bend PROOF.bend --verdict`, 35 laws in all
+(with `dtype.bend`'s `unpair_pair`): Conv2d's two (above) and the guard's four:
 
 - `guard_nomom`, `guard_onemom`, `guard_twomom`, `guard_packed`: for every configuration and each kind of state (no
   buffers, one, two, two packed in BF16), the optimizer `Opt.guard` hands the step is
