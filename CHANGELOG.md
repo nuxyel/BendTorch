@@ -70,6 +70,21 @@ Three more in the same file, proved the same way, **42 laws in all** (with `dtyp
   `1024x64`, 20 passes, 0.02 s before and 0.02 s after (median of three). Still not in this change: the device twin (no CUDA
   toolkit here).
 
+### GPU lane
+
+- `Tile` and `RoPE2d` in `torch/gpu.bend`: both passes give `main.bend`'s bits on the RTX 4050 and on 1 and 16 CPU
+  threads (`demo/gpu_layers_test.bend`, cases 19 to 22, so `make gpu` runs 23 cases). RoPE2d's angle tables are built
+  on the host, as `RoPE`'s are: CUDA's float `cos` and `sin` round 1 ulp away from the host's on 6 to 20% of a table's
+  entries.
+
+### Tests
+
+- Twelve more mutants, 186 in all (183 caught, 3 surviving by design): three device mutants each of `Tile` and
+  `RoPE2d`, and six on the CPU (`Tile`'s sum, its source row and its destination row; `RoPE2d`'s x position, the x
+  run's offset and the y run's table entry).
+- `reference/rope2d_check.py` takes the probe from the command line, as `tile_check.py` does. It always read
+  `.scratch/rope2d_probe` before, so `make mutate` tested a mutant of `RoPE2d`'s CPU code against the unmutated binary.
+
 ## 2.0.2 (2026-11-07)
 
 A patch release: the tensor packages bend-ml published on 2026-11-06, and the speed numbers on Bend 2.0.40. No layer,
