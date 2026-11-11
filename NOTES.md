@@ -2336,6 +2336,7 @@ runs it after the merge, and `docs/limitations.md` says so.
 - Gates (Bend 2.0.40, busy machine, bits only): `make laws` (`GPU_DEFS` with `tile_fwd`, `tile_bwd`, `Tile`), `make
   check`, and `make gpu`: SiLU 4 ulps, cross-entropy 4, attention 176,128, small 7,680, full 172,032, full small 8,192,
   GELUErf's dx 113, every other case 0, Tile's two included; all 21 cases 0 with `exp_cr`; MNIST, the tiny Llama and
+  the SmolLM2-sized block on the GPU against PyTorch, and the GPU builds' outputs are `bench/bits.txt`'s.
 
 ## RoPE2d on the GPU lane (2026-11-07)
 
