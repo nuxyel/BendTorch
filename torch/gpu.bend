@@ -1908,6 +1908,25 @@ def Conv2d(+n: Nat, +c: Nat, +co: Nat, +k: Nat, +hs: Nat, +ws: Nat, +p: Nat, +s1
     prm => xs => off => T.lin_store(T.ckk(c, k), co, prm, xs, off),
     u => U32.from_nat(Nat.mul(co, Nat.add(1n, T.ckk(c, k))))}
 
+def convnb_b2(+n: Nat, +c: Nat, +co: Nat, +k: Nat, +hs: Nat, +ws: Nat, +p: Nat, +s1: Nat, b: T.Bwd<TA.Mat<co, T.ckk(c, k)>, TA.Mat<Nat.mul(n, T.cohw(k, hs, ws, p, s1)), T.ckk(c, k)>>) -> T.Bwd<TA.Mat<co, T.ckk(c, k)>, TA.Mat<Nat.mul(n, T.chw(k, hs, ws, p)), c>>:
+  match b:
+    case T.Bwd{prm, dx, gg}:
+      T.Bwd{prm, col2im(n, T.cimg(k, hs, p), T.cimg(k, ws, p), c, k, p, Nat.add(1n, s1), dx), gg}
+
+# Conv2dNB (main.bend's Conv2d without the bias): device im2col, then the device LinearNB's products; the backward is
+# the device LinearNB's, then device col2im. The parameters are the co x c·k·k weight alone, so mat_step and
+# main.bend's Mat dump, restore and store serve it as they serve LinearNB.
+def Conv2dNB(+n: Nat, +c: Nat, +co: Nat, +k: Nat, +hs: Nat, +ws: Nat, +p: Nat, +s1: Nat, +par: Nat) -> T.Layer<TA.Mat<co, T.ckk(c, k)>, TA.Mat<Nat.mul(n, T.chw(k, hs, ws, p)), c>, TA.Mat<Nat.mul(n, T.cohw(k, hs, ws, p, s1)), co>, TA.Mat<Nat.mul(n, T.cohw(k, hs, ws, p, s1)), T.ckk(c, k)>>:
+  T.Layer{
+    prm => x => T.lnb_f2(Nat.mul(n, T.cohw(k, hs, ws, p, s1)), T.ckk(c, k), co, TG.matmul_nt(Nat.mul(n, T.cohw(k, hs, ws, p, s1)), T.ckk(c, k), co, 0n, im2col(n, T.cimg(k, hs, p), T.cimg(k, ws, p), c, k, p, Nat.add(1n, s1), x), prm)),
+    prm => st => dy => gg => convnb_b2(n, c, co, k, hs, ws, p, s1, lnb_b2(Nat.mul(n, T.cohw(k, hs, ws, p, s1)), T.ckk(c, k), co, st, gg, TG.matmul_precise(Nat.mul(n, T.cohw(k, hs, ws, p, s1)), co, T.ckk(c, k), 0n, dy, prm))),
+    op => prm => gg => st => mat_step(co, T.ckk(c, k), op, prm, gg, st),
+    u => TA.Mat.zeros(co, T.ckk(c, k)),
+    prm => T.Mat.dump(co, T.ckk(c, k), prm),
+    prm => xs => off => T.Mat.restore(co, T.ckk(c, k), prm, xs, off),
+    prm => xs => off => T.Mat.store(co, T.ckk(c, k), prm, xs, off),
+    u => U32.from_nat(Nat.mul(co, T.ckk(c, k)))}
+
 # ---- Tile on the device (main.bend's Tile): the forward pass a cell bang over the b·t·c output cells, each copying the
 # input cell main.bend's tile_src names, (r / t)·c + k for output row r and column k; the backward a cell bang over the
 # b·c input cells, each summing the t rows of dy that read it, i·t .. i·t + t - 1 at its column, from 0.0 in increasing
