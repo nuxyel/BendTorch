@@ -2304,6 +2304,98 @@ def mul2_b2(+n: Nat, +c: Nat, s: Two<TA.Mat<n, c>, TA.Mat<n, c>>, d: Two<TA.Mat<
 def Mul2(+n: Nat, +c: Nat) -> Layer<Unit, Two<TA.Mat<n, c>, TA.Mat<n, c>>, TA.Mat<n, c>, Two<TA.Mat<n, c>, TA.Mat<n, c>>>:
   Layer{p => x => mul2_f(n, c, x), p => s => dy => g => mul2_b2(n, c, s, Mat.dup(n, c, dy)), op => p => g => st => no_step(Unit, op, p, g, st), u => Unit{}, p => PL{p, Nil{}}, p => xs => off => PA{p, xs, off}, p => xs => off => PA{p, xs, off}, u => 0}
 
+# ---- Tile: a per-image row broadcast (BendTorch#19) ----
+# Row i of the b x c input becomes rows i*t .. i*t+t-1 of the (b*t) x c output, and the backward sums each image's t
+# rows back into its row, so a per-image vector reaches a per-token state as Tile then Mul2, with the tiling on the
+# device. The addressing is the two Nat defs below, which the loop calls through U32.from_nat; the laws tile_row and
+# tile_sum are about them. The walk is one chain (images, rows, row, cells) because Bend has no mutual recursion.
+
+# the input row an output row r comes from
+def tile_row_of(+t: Nat, +r: Nat) -> Nat:
+  Nat.div(r, t)
+
+# the input cell that output row r, column k reads
+def tile_src(+c: Nat, +t: Nat, +r: Nat, +k: Nat) -> Nat:
+  Nat.add(Nat.mul(tile_row_of(t, r), c), k)
+
+# the output cell of image row i, its j-th row, column k
+def tile_dst(+c: Nat, +t: Nat, +i: Nat, +j: Nat, +k: Nat) -> Nat:
+  Nat.add(Nat.mul(Nat.add(Nat.mul(i, t), j), c), k)
+
+# the arrays the walk threads: s is the one it reads, o the one it writes
+type TSet is Type:
+  TSet{s: Array<F32>, o: Array<F32>}
+
+# o[i] = v, with the array read handed back
+def tile_set(+i: U32, rs: Array<F32> & F32, ro: Array<F32>) -> TSet:
+  match rs:
+    case Tuple{s, +v}:
+      TSet{s, Array.set(F32, ro, i, v)}
+
+# acc[src] += v
+def tile_put(+src: U32, +v: F32, r: Array<F32> & F32) -> Array<F32>:
+  match r:
+    case Tuple{a, +old}:
+      Array.set(F32, a, src, (old + v : F32))
+
+# dx[src] += the value already read from dy
+def tile_add(+src: U32, rdy: Array<F32> & F32, rdx: Array<F32>) -> TSet:
+  match rdy:
+    case Tuple{dy, +v}:
+      TSet{dy, tile_put(src, v, Array.get(F32, rdx, src))}
+
+# `left` cells of one row: forward reads the input at s and writes the output at d, backward reads d and adds at s
+def tile_cells(+left: Nat, +fwd: Bool, +d: U32, +s: U32, st: TSet) -> TSet:
+  match left fwd st:
+    case 0n True{} st2:
+      st2
+    case 1n+q True{} TSet{a, o}:
+      tile_cells(q, True{}, (d + 1 : U32), (s + 1 : U32), tile_set(d, Array.get(F32, a, s), o))
+    case 0n False{} st2:
+      st2
+    case 1n+q False{} TSet{a, o}:
+      tile_cells(q, False{}, (d + 1 : U32), (s + 1 : U32), tile_add(s, Array.get(F32, a, d), o))
+
+# row j of image i; the law's tile_row is about tile_row_of, so this walk ends in _go like the other loops
+def tile_row_go(+fwd: Bool, +t: Nat, +c: Nat, +i: Nat, +j: Nat, st: TSet) -> TSet:
+  tile_cells(c, fwd, U32.from_nat(tile_dst(c, t, i, j, 0n)),
+    U32.from_nat(tile_src(c, t, Nat.add(Nat.mul(i, t), j), 0n)), st)
+
+# the t rows of image i
+def tile_rows(+left_j: Nat, +fwd: Bool, +t: Nat, +c: Nat, +i: Nat, st: TSet) -> TSet:
+  match left_j st:
+    case 0n st2:
+      st2
+    case 1n+q st2:
+      tile_rows(q, fwd, t, c, i, tile_row_go(fwd, t, c, i, Nat.sub(t, left_j), st2))
+
+# every image, then the arrays back
+def tile_imgs(+left_i: Nat, +i: Nat, +fwd: Bool, +b: Nat, +t: Nat, +c: Nat, st: TSet) -> TSet:
+  match left_i st:
+    case 0n st2:
+      st2
+    case 1n+q st2:
+      tile_imgs(q, Nat.add(i, 1n), fwd, b, t, c, tile_rows(t, fwd, t, c, i, st2))
+
+def tile_fin(-r: Nat, -c2: Nat, st: TSet) -> TA.Mat<r, c2>:
+  match st:
+    case TSet{s, o}:
+      TA.Mat{o}
+
+def tile_fwd(+b: Nat, +t: Nat, +c: Nat, m: TA.Mat<b, c>) -> TA.Mat<Nat.mul(b, t), c>:
+  match m:
+    case TA.Mat{x}:
+      tile_fin(Nat.mul(b, t), c, tile_imgs(b, 0n, True{}, b, t, c, TSet{x, zeros_a(Nat.mul(Nat.mul(b, t), c))}))
+
+def tile_bwd(+b: Nat, +t: Nat, +c: Nat, m: TA.Mat<Nat.mul(b, t), c>) -> TA.Mat<b, c>:
+  match m:
+    case TA.Mat{dy}:
+      tile_fin(b, c, tile_imgs(b, 0n, False{}, b, t, c, TSet{dy, zeros_a(Nat.mul(b, c))}))
+
+# b images (rows) of c numbers, each row broadcast over t tokens: Mat<b, c> to Mat<b*t, c>
+def Tile(+b: Nat, +t: Nat, +c: Nat) -> Layer<Unit, TA.Mat<b, c>, TA.Mat<Nat.mul(b, t), c>, Unit>:
+  Layer{p => x => Fwd{p, tile_fwd(b, t, c, x), Unit{}}, p => s => dy => g => Bwd{p, tile_bwd(b, t, c, dy), g}, op => p => g => st => no_step(Unit, op, p, g, st), u => Unit{}, p => PL{p, Nil{}}, p => xs => off => PA{p, xs, off}, p => xs => off => PA{p, xs, off}, u => 0}
+
 # ---- Residual: y = x + f(x), for any layer f from n x c to n x c ----
 
 # over any X with a copy (dup), an addition (add) and a layer that adds a pair (join): Seq(Fork(Id, f), join). Residual
