@@ -2457,3 +2457,13 @@ runs it after the merge, and `docs/limitations.md` says so.
 - Two of the RoPE2d mutants survived at first. `reference/rope2d_check.py` ignored the binary `make mutate` passes it
   and always ran `.scratch/rope2d_probe`, the unmutated build. With the binary taken from the command line, as
   `tile_check.py` does, both are caught: 186 mutants, 183 caught and 3 surviving by design.
+
+## Gradient accumulation on devel, with Tile and RoPE2d (2026-11-11, #36)
+
+- devel (Tile, RoPE2d and their device twins) merged into `grad-accum`. The conflicts were the lists that both sides
+  extend: the Makefile's demos and checks (both sides' entries kept), `make gpu` (23 cases, then the accumulation
+  lines), the README's law count (devel's 42) and `docs/limitations.md` (both sides' bullets).
+- 198 mutants in all: devel's 186 and the twelve of accumulation. The chart is redrawn.
+- Gates (Bend 2.0.40, busy machine, bits and pass/fail only): `make check` green; `make gpu` green, all 23 cases 0 with
+  `exp_cr`, accumulation on the device k = 1 0 ulps, `lin` 0, `mlp` 320, `attn` 320, and `0 0 0 0 0 0` with `exp_cr`;
+  `make mutate`: 198 mutants, 198 as expected (58 min).
