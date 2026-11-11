@@ -151,6 +151,12 @@ Numbers marked "busy machine" were taken with other jobs running and are a first
 - `Tile` (a per-image row broadcast) is in `main.bend` and `gpu.bend`, not in `fast.bend`. On the GPU both passes give
   `main.bend`'s bits (`demo/gpu_layers_test.bend`, cases 19 and 20), and the CPU lane's numbers are
   `reference/tile_check.py`'s.
+- adaLN (#19) has no layer: `demo/adaln_probe.bend` composes it from `Tile`, `LayerNorm`, `Fork`, `Both`, `Mul2` and
+  `Add2`. Two pieces it needs are written in the probe or worked around, not in the package: `Rewire`, a layer without
+  parameters that regroups a pair's parts (a `Fork` and a `Both` cannot), and a column split, so `g`, `m` and `sh` come
+  from three `Linear` layers instead of one `Linear` of width `3c` cut in three. DiT's `1 + scale` is written as `m`,
+  with the 1 folded into its `Linear`'s bias. The CPU lane only: `fast.bend` has no `Tile`, and the probe was not run
+  through `gpu.bend`'s layers.
 - `Conv2dNB` (`Conv2d` without the bias, #39) is in `main.bend` and `gpu.bend`, as `Conv2d` is. On the GPU both passes
   give `main.bend`'s bits (`demo/gpu_layers_test.bend`, case 23), and the CPU lane's numbers are
   `reference/conv2dnb_check.py`'s.

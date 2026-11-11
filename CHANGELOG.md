@@ -127,6 +127,14 @@ Three more in the same file, proved the same way, **44 laws in all** (with `dtyp
   `1024x64`, 20 passes, 0.02 s before and 0.02 s after (median of three). Still not in this change: the device twin (no CUDA
   toolkit here).
 
+- **adaLN by composition** (#19): no new layer. `demo/adaln_probe.bend` builds a DiT block conditioned per image from
+  the layers there are: `Tile` broadcasts the per-image gate, multiplier and shift over their tokens, `LayerNorm`,
+  `Mul2` and `Add2` modulate, and `Fork(Id, f)`, `Mul2` and `Add2` make the gated residual; the three per-image rows
+  come from three `Linear` layers of `silu(cond)`. `reference/adaln_check.py` (`make check-adaln`) compares the gated
+  residual, the modulation and the whole block with PyTorch, y and every gradient (390 numbers, the worst 0.38 of the
+  tolerance), and checks that the modulation with a multiplier of 1 and a shift of 0 gives `LayerNorm`'s numbers. The
+  probe writes one helper of its own, `Rewire`, a layer without parameters that regroups a pair's parts.
+
 ### GPU lane
 
 - `Tile` and `RoPE2d` in `torch/gpu.bend`: both passes give `main.bend`'s bits on the RTX 4050 and on 1 and 16 CPU

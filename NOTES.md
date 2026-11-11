@@ -2578,3 +2578,24 @@ runs it after the merge, and `docs/limitations.md` says so.
   The conflicts were the lists and the counts: `triangle_probe` and `check-triangle` join the Makefile's lists, the
   CHANGELOG's laws section counts 39, 41 and 44 in the order the laws landed, and the mutants figure was drawn again by
   `docs/media/mutants.mjs`: 44 laws, 212 mutants, 209 caught, the same three surviving by design.
+
+## adaLN as a composition (2026-11-11, #19)
+
+- #19 asked for a per-image modulation of a per-token state (DiT's adaLN). With `Tile` in (#34), the rest is a
+  composition, as I said on the issue, and no layer is added to `torch/`. `demo/adaln_probe.bend` builds, over 2 images
+  of 3 tokens, width 4: the gated residual `h + Tile(g)·f(h)` (`Both(Tile, Fork(Id, f))`, then `Mul2` and `Add2`); the
+  modulation `Tile(sh) + Tile(m)·LayerNorm(h)` (`Both(Tile, Both(Tile, LayerNorm))`, then `Mul2` and `Add2`); and the
+  whole block, with `g`, `m` and `sh` from three `Linear(3, 4)` of `silu(cond)` and `f` a `Linear(4, 4)`.
+- `reference/adaln_check.py` (`make check-adaln`): y, the gradients of `h`, `cond`, `g`, `m`, `sh` and every parameter's
+  against PyTorch, 390 numbers, 235 bit-identical, the worst 0.381 of the tolerance. The modulation with `m = 1`,
+  `sh = 0` gives `LayerNorm`'s numbers, forward, `dh` and both parameter gradients. A probe built with the gradients of
+  `m` and `sh` swapped fails at 478,614 times the tolerance, so the check sees a misrouted gradient.
+- What the composition needed that the package does not have: a layer that only regroups a pair's parts (`Rewire` in
+  the probe: forward a function, backward its inverse, no parameters). `Fork` copies one input and `Both` maps a pair
+  part by part, but `Add2(h, Mul2(G, f(h)))` takes three values out of two pairs, so a regrouping is unavoidable.
+  Also missing: a column split, so the three per-image rows come from three `Linear` layers rather than one of width
+  `3c` cut in three, which is the same weights split by rows. `m` is DiT's `1 + scale`, with the 1 in its bias.
+- Left: whether `Rewire` belongs in `torch/main.bend` (it has nothing to prove and nothing to step), and the GPU lane (the
+  probe uses `main.bend`'s layers; `gpu.bend` has `Tile`, `Mul2`, `Add2`, `SiLU` and `Linear`, but no `LayerNorm`).
+- Gates (Bend 2.0.40, busy machine, pass/fail only): `make laws check` green (8 min 7 s); `scripts/affected.py
+  self-check` passes. No file in `torch/` changed, so no mutants.
