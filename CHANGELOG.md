@@ -12,6 +12,8 @@ gradient accumulation, attention that sums only what a position can see, and ada
 Nine new laws, 44 in all. Every output of 2.0.2 is the same (`bench/bits.txt`), with one change of behavior in
 attention: an infinity or a NaN at a position a row cannot see no longer reaches that row (below).
 
+- **Checks on Bend 2.0.40**: laws, check, bits, corpus, gpu, smol, smol-gpu, bits-smol, reader, check-js, mutate-smol
+  and mutate (212 mutants), and every mutant in CI.
 - **Moving from 2.0.2**: the import lines, `2.0.2.0` to `2.1.0.0` in all four packages; nothing else changes for a
   program that does not call the new layers and functions, and checkpoints read as before.
 
