@@ -3545,6 +3545,29 @@ def Conv2d(+n: Nat, +c: Nat, +co: Nat, +k: Nat, +hs: Nat, +ws: Nat, +p: Nat, +s1
     prm => xs => off => lin_store(ckk(c, k), co, prm, xs, off),
     u => U32.from_nat(Nat.mul(co, Nat.add(1n, ckk(c, k))))}
 
+# Conv2d without bias: the same im2col and col2im around LinearNB's three pieces. P is the weight
+# alone, so the parameter count drops by co; the forward, backward and optimizer step are
+# LinearNB's over LinearNB's P, and only the input gradient goes through col2im.
+def convnb_b2(+n: Nat, +c: Nat, +co: Nat, +k: Nat, +hs: Nat, +ws: Nat, +p: Nat, +s1: Nat, b: Bwd<TA.Mat<co, ckk(c, k)>, TA.Mat<Nat.mul(n, cohw(k, hs, ws, p, s1)), ckk(c, k)>>) -> Bwd<TA.Mat<co, ckk(c, k)>, TA.Mat<Nat.mul(n, chw(k, hs, ws, p)), c>>:
+  match b:
+    case Bwd{prm, dx, gg}:
+      Bwd{prm, col2im(n, cimg(k, hs, p), cimg(k, ws, p), c, k, p, Nat.add(1n, s1), dx), gg}
+
+def Conv2dNB(+n: Nat, +c: Nat, +co: Nat, +k: Nat, +hs: Nat, +ws: Nat, +p: Nat, +s1: Nat, +par: Nat) -> Layer<TA.Mat<co, ckk(c, k)>, TA.Mat<Nat.mul(n, chw(k, hs, ws, p)), c>, TA.Mat<Nat.mul(n, cohw(k, hs, ws, p, s1)), co>, TA.Mat<Nat.mul(n, cohw(k, hs, ws, p, s1)), ckk(c, k)>>:
+  Layer{
+    prm => x => lnb_f2(Nat.mul(n, cohw(k, hs, ws, p, s1)), ckk(c, k), co,
+      TA.Mat.matmul_nt(Nat.mul(n, cohw(k, hs, ws, p, s1)), ckk(c, k), co, par,
+        im2col(n, cimg(k, hs, p), cimg(k, ws, p), c, k, p, Nat.add(1n, s1), x), prm)),
+    prm => st => dy => gg => convnb_b2(n, c, co, k, hs, ws, p, s1,
+      lnb_b2(Nat.mul(n, cohw(k, hs, ws, p, s1)), ckk(c, k), co, par, st, gg,
+        TA.Mat.matmul_precise(Nat.mul(n, cohw(k, hs, ws, p, s1)), co, ckk(c, k), par, dy, prm))),
+    op => prm => gg => st => mat_step(co, ckk(c, k), op, prm, gg, st),
+    u => TA.Mat.zeros(co, ckk(c, k)),
+    prm => Mat.dump(co, ckk(c, k), prm),
+    prm => xs => off => Mat.restore(co, ckk(c, k), prm, xs, off),
+    prm => xs => off => Mat.store(co, ckk(c, k), prm, xs, off),
+    u => U32.from_nat(Nat.mul(co, ckk(c, k)))}
+
 def hit(b: Bool) -> F32:
   match b:
     case True{}:
