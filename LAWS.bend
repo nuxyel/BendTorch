@@ -542,3 +542,35 @@ law conv_roundtrip:
   for +w: Nat
   for +c: Nat
   {T.p_src(ch, b, iy, ix, h, w, c, 1n, 0n, 1n) == U32.from_nat(Nat.add(Nat.mul(Nat.add(Nat.mul(Nat.add(Nat.mul(b, h), iy), w), ix), c), ch)) : U32}
+
+# LAW (mp_count): with a surplus h - k = q·s + r and r < s (s = 1 + r + a), the MaxPool output count
+# (h - k)/s + 1 is q + 1: q whole windows fit and the next start is past the surplus.
+law mp_count:
+  for +q: Nat
+  for +r: Nat
+  for +a: Nat
+  for +s: Nat
+  for +sr: {s == Nat.add(1n, Nat.add(r, a)) : Nat}
+  {Nat.add(Nat.div(Nat.add(Nat.mul(q, s), r), s), 1n) == Nat.add(q, 1n) : Nat}
+
+# LAW (mp_scatter): the backward's write for output (row, col) at window offset (ky, kx) is the cell
+# the forward read there — the image's base plus that window's plane index, not another output's
+# cell. ky < k and kx < k (written as k = 1 + ky + a) keep the offset inside the kernel.
+law mp_scatter:
+  for +c: Nat
+  for +h: Nat
+  for +w: Nat
+  for +ch: Nat
+  for +image: Nat
+  for +row: Nat
+  for +col: Nat
+  for +ky: Nat
+  for +kx: Nat
+  for +k: Nat
+  for +a: Nat
+  for +b: Nat
+  for +ky_lt: {k == Nat.add(1n, Nat.add(ky, a)) : Nat}
+  for +kx_lt: {k == Nat.add(1n, Nat.add(kx, b)) : Nat}
+  {T.mp_flat(c, h, w, ch, image, Nat.add(row, ky), Nat.add(col, kx)) ==
+   Nat.add(Nat.add(Nat.mul(Nat.mul(Nat.mul(image, h), w), c), ch),
+     Nat.mul(Nat.add(Nat.mul(Nat.add(row, ky), w), Nat.add(col, kx)), c)) : Nat}

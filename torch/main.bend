@@ -3773,9 +3773,13 @@ def mp_base(+c: Nat, +h: Nat, +w: Nat, +ohw: Nat, +t: Nat) -> Nat:
   +image = mp_image(ohw, cell)
   Nat.add(Nat.mul(Nat.mul(Nat.mul(image, h), w), c), mp_ch(c, t))
 
+# the flat cell of (image, channel, row, col): the forward's window entry
+def mp_flat(+c: Nat, +h: Nat, +w: Nat, +ch: Nat, +image: Nat, +row: Nat, +col: Nat) -> Nat:
+  Nat.add(Nat.mul(Nat.add(Nat.mul(image, Nat.mul(h, w)), Nat.add(Nat.mul(row, w), col)), c), ch)
+
 def mp_first(+c: Nat, +h: Nat, +w: Nat, +ohw: Nat, +ow: Nat, +k: Nat, +s1: Nat, +t: Nat) -> Nat:
-  Nat.add(mp_base(c, h, w, ohw, t),
-    Nat.mul(Nat.add(Nat.mul(mp_row(c, ohw, ow, s1, t), w), mp_col(c, ohw, ow, s1, t)), c))
+  mp_flat(c, h, w, mp_ch(c, t), mp_image(ohw, mp_cell(c, t)),
+    mp_row(c, ohw, ow, s1, t), mp_col(c, ohw, ow, s1, t))
 
 type MPM is Type:
   MPM{d: Array<F32>, v: F32, i: Nat}
