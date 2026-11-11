@@ -2486,6 +2486,134 @@ def RoPE(+n: Nat, +w: Nat, +t: Nat, +h: Nat, +half: Nat, +base: F32, -e: {w == N
   Layer{p => x => Fwd{p, rope_go(n, w, True{}, t, h, half, base, x), Unit{}}, p => s => dy => g => Bwd{p, rope_go(n, w, False{}, t, h, half, base, dy), g}, op => p => g => st => no_step(Unit, op, p, g, st), u => Unit{}, p => PL{p, Nil{}}, p => xs => off => PA{p, xs, off}, p => xs => off => PA{p, xs, off}, u => 0}
 
 # =====================================================================================================
+# 2D rotary positions (BendTorch#18): a head's 2*half_y + 2*half_x numbers split into a y half and an x half, so an
+# image's two axes rotate by their own frequencies. Row r of b*th*tw gives y = (r mod (th*tw))/tw and x = r mod tw.
+# The pairs are walked in two runs over disjoint dimensions (never a comparison), each with its own table: the y run
+# needs one angle per (y, c) and the x run one per (x, c). The address and table arithmetic the runs compute is the
+# model in torch/spec.bend, and the laws rope2_partition / rope2_is_rope speak about it.
+# =====================================================================================================
+
+# the numbers in one head: 2*half_y for the y axis, then 2*half_x for the x axis
+def rope2_ht(+hy: Nat, +hx: Nat) -> Nat:
+  Nat.add(Nat.mul(hy, 2n), Nat.mul(hx, 2n))
+
+# row r's place on the th x tw grid: position = r mod (th*tw), y = position / tw, x = position mod tw
+def rope2_yy(+nt: Nat, +tw: Nat, +r: Nat) -> Nat:
+  Nat.div(Nat.mod(r, nt), tw)
+
+def rope2_xx(+nt: Nat, +tw: Nat, +r: Nat) -> Nat:
+  Nat.mod(Nat.mod(r, nt), tw)
+
+# the y pair at j of head `head` in row r: (addr, addr + half_y), inside the head's first 2*half_y numbers
+def rope2_yaddr(+w: Nat, +hy: Nat, +hx: Nat, +r: Nat, +head: Nat, +j: Nat) -> Nat:
+  Nat.add(Nat.add(Nat.mul(r, w), Nat.mul(head, rope2_ht(hy, hx))), j)
+
+# the x pair at j: last 2*half_x numbers of the head, so the address starts 2*half_y further in
+def rope2_xaddr(+w: Nat, +hy: Nat, +hx: Nat, +r: Nat, +head: Nat, +j: Nat) -> Nat:
+  Nat.add(Nat.add(Nat.add(Nat.mul(r, w), Nat.mul(head, rope2_ht(hy, hx))), Nat.mul(hy, 2n)), j)
+
+# the table entries: the row's y (the y table has one angle per (y, c)) and x (one per (x, c)) times the half, plus j
+def rope2_yentry(+nt: Nat, +tw: Nat, +hy: Nat, +r: Nat, +j: Nat) -> Nat:
+  Nat.add(Nat.mul(rope2_yy(nt, tw, r), hy), j)
+
+def rope2_xentry(+nt: Nat, +tw: Nat, +hx: Nat, +r: Nat, +j: Nat) -> Nat:
+  Nat.add(Nat.mul(rope2_xx(nt, tw, r), hx), j)
+
+# the y table: th positions of half_y angles each (rope_ang with half = half_y), and the x table: tw positions of
+# half_x. A walk with nothing to do gets a one-word table and is skipped, so the empty case never reads it.
+def rope2_tabN(+size: Nat, +half: Nat, +base: F32) -> CS:
+  match size:
+    case 0n:
+      CS{zeros_a(1n), zeros_a(1n)}
+    case 1n+c:
+      rope_tab(c, 0, U32.from_nat(half), base, CS{zeros_a(size), zeros_a(size)})
+
+# pair e of the y run: row e/(h*hy), head (e mod h*hy)/hy, j = e mod hy. The head's y part is its first 2*hy numbers,
+# so the pair is (base + j, base + j + hy) and the table entry is the row's y times hy plus j.
+def rope2_yone(+e: Nat, +fwd: Bool, +h: Nat, +hy: Nat, +hx: Nat, +w: Nat, +nt: Nat, +tw: Nat, st: RS3) -> RS3:
+  match st:
+    case RS3{x, cs, sn}:
+      +hh = Nat.mul(h, hy)
+      +r = Nat.div(e, hh)
+      +head = Nat.div(Nat.mod(e, hh), hy)
+      +j = Nat.mod(e, hy)
+      +i1 = U32.from_nat(rope2_yaddr(w, hy, hx, r, head, j))
+      +i2 = U32.from_nat(rope2_yaddr(w, hy, hx, r, head, Nat.add(j, hy)))
+      +k = U32.from_nat(rope2_yentry(nt, tw, hy, r, j))
+      rope_p2(fwd, i1, i2, k, cs, sn, Array.get(F32, x, i1))
+
+# pair e of the x run: row e/(h*hx), head (e mod h*hx)/hx, j = e mod hx. The x part is the head's last 2*hx numbers,
+# so the pair is (base + 2*hy + j, base + 2*hy + j + hx) and the table entry is the row's x times hx plus j.
+def rope2_xone(+e: Nat, +fwd: Bool, +h: Nat, +hy: Nat, +hx: Nat, +w: Nat, +nt: Nat, +tw: Nat, st: RS3) -> RS3:
+  match st:
+    case RS3{x, cs, sn}:
+      +hh = Nat.mul(h, hx)
+      +r = Nat.div(e, hh)
+      +head = Nat.div(Nat.mod(e, hh), hx)
+      +j = Nat.mod(e, hx)
+      +i1 = U32.from_nat(rope2_xaddr(w, hy, hx, r, head, j))
+      +i2 = U32.from_nat(rope2_xaddr(w, hy, hx, r, head, Nat.add(j, hx)))
+      +k = U32.from_nat(rope2_xentry(nt, tw, hx, r, j))
+      rope_p2(fwd, i1, i2, k, cs, sn, Array.get(F32, x, i1))
+
+# pairs e.., left more after e
+def rope2_ye(+left: Nat, +e: Nat, +fwd: Bool, +h: Nat, +hy: Nat, +hx: Nat, +w: Nat, +nt: Nat, +tw: Nat, st: RS3) -> RS3:
+  match left:
+    case 0n:
+      rope2_yone(e, fwd, h, hy, hx, w, nt, tw, st)
+    case 1n+q:
+      rope2_ye(q, Nat.add(e, 1n), fwd, h, hy, hx, w, nt, tw, rope2_yone(e, fwd, h, hy, hx, w, nt, tw, st))
+
+def rope2_xe(+left: Nat, +e: Nat, +fwd: Bool, +h: Nat, +hy: Nat, +hx: Nat, +w: Nat, +nt: Nat, +tw: Nat, st: RS3) -> RS3:
+  match left:
+    case 0n:
+      rope2_xone(e, fwd, h, hy, hx, w, nt, tw, st)
+    case 1n+q:
+      rope2_xe(q, Nat.add(e, 1n), fwd, h, hy, hx, w, nt, tw, rope2_xone(e, fwd, h, hy, hx, w, nt, tw, st))
+
+# count pairs: none means the run is skipped (half_x = 0 makes the x run empty; half_y = 0 the y run)
+def rope2_run(+count: Nat, +fwd: Bool, +h: Nat, +hy: Nat, +hx: Nat, +w: Nat, +nt: Nat, +tw: Nat, st: RS3, y: Bool) -> RS3:
+  match count:
+    case 0n:
+      st
+    case 1n+c:
+      match y:
+        case True{}:
+          rope2_ye(c, 0n, fwd, h, hy, hx, w, nt, tw, st)
+        case False{}:
+          rope2_xe(c, 0n, fwd, h, hy, hx, w, nt, tw, st)
+
+def rope2_fin(-n: Nat, -w: Nat, st: RS3) -> TA.Mat<n, w>:
+  match st:
+    case RS3{x, cs, sn}:
+      TA.Mat{x}
+
+# the x run after the y run: the array is the y run's, the tables are each run's own
+def rope2_two(+n: Nat, +w: Nat, +countx: Nat, +fwd: Bool, +h: Nat, +hy: Nat, +hx: Nat, +nt: Nat, +tw: Nat, xcs: Array<F32>, xsn: Array<F32>, st: RS3) -> TA.Mat<n, w>:
+  match st:
+    case RS3{x, ycs, ysn}:
+      rope2_fin(n, w, rope2_run(countx, fwd, h, hy, hx, w, nt, tw, RS3{x, xcs, xsn}, False{}))
+
+def rope2_go2(+n: Nat, +w: Nat, +fwd: Bool, +th: Nat, +tw: Nat, +h: Nat, +hy: Nat, +hx: Nat, x: Array<F32>, yt: CS, xt: CS) -> TA.Mat<n, w>:
+  match yt xt:
+    case CS{ycs, ysn} CS{xcs, xsn}:
+      +nt = Nat.mul(th, tw)
+      rope2_two(n, w, Nat.mul(n, Nat.mul(h, hx)), fwd, h, hy, hx, nt, tw, xcs, xsn,
+        rope2_run(Nat.mul(n, Nat.mul(h, hy)), fwd, h, hy, hx, w, nt, tw, RS3{x, ycs, ysn}, True{}))
+
+# the two tables are the y one, th*hy angles (one per (y, c)), and the x one, tw*hx (one per (x, c)); both are
+# built on the host so the angles use the host's cos and sin, as RoPE's table does
+def rope2_go(+n: Nat, +w: Nat, +fwd: Bool, +th: Nat, +tw: Nat, +h: Nat, +hy: Nat, +hx: Nat, +base: F32, m: TA.Mat<n, w>) -> TA.Mat<n, w>:
+  match m:
+    case TA.Mat{x}:
+      rope2_go2(n, w, fwd, th, tw, h, hy, hx, x, rope2_tabN(Nat.mul(th, hy), hy, base), rope2_tabN(Nat.mul(tw, hx), hx, base))
+
+# n rows (b images of th*tw tokens), w = h heads of 2*half_y + 2*half_x numbers each; RoPE is the tw = 1, half_x = 0 case
+def RoPE2d(+n: Nat, +w: Nat, +th: Nat, +tw: Nat, +h: Nat, +half_y: Nat, +half_x: Nat, +base: F32,
+  -e: {w == Nat.mul(h, Nat.add(Nat.mul(half_y, 2n), Nat.mul(half_x, 2n))) : Nat}) -> Layer<Unit, TA.Mat<n, w>, TA.Mat<n, w>, Unit>:
+  Layer{p => x => Fwd{p, rope2_go(n, w, True{}, th, tw, h, half_y, half_x, base, x), Unit{}}, p => s => dy => g => Bwd{p, rope2_go(n, w, False{}, th, tw, h, half_y, half_x, base, dy), g}, op => p => g => st => no_step(Unit, op, p, g, st), u => Unit{}, p => PL{p, Nil{}}, p => xs => off => PA{p, xs, off}, p => xs => off => PA{p, xs, off}, u => 0}
+
+# =====================================================================================================
 # Causal attention with grouped-query heads: queries n x (h*hd), keys and values n x (kv*hd), h = kv*g; query head
 # i reads key/value head i / g. Rows are b sequences of t positions; position p sees positions 0..p of its sequence.
 #   S = (Q·Kᵀ) * scale, P = softmax(S) over the visible positions, O = P·V

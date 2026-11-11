@@ -35,6 +35,16 @@ Two more in the same file, proved the same way, **39 laws in all** (with `dtype.
 - `tile_sum`: every one of the `t` rows of image `i` reads (forward) and adds into (backward) the same cell of image
   row `i`, column `k`, which is what makes the backward a **sum** of the `t` rows rather than the last of them.
 
+Three more in the same file, proved the same way, **42 laws in all** (with `dtype.bend`'s `unpair_pair`), all by
+@adeerkhan (#33):
+
+- `rope2_partition`: a head's `2·half_y + 2·half_x` numbers are tiled by `RoPE2d`'s two runs with no gap and no
+  overlap, each pair once — the y run starts at `0` and the x run one `half_y` past it, at `j = half_y`.
+- `rope2_is_rope`: at `tw = 1` and `half_x = 0` the y run **is** `RoPE`: the same pair `(c, c + half)` of head `head`
+  in row `r`, at the same address `r·w + head·(half+half) + c`.
+- `rope2_is_rope_tab`: the same for the table entry: at `tw = 1`, `(r mod (th·1))/1 · half + j` is `RoPE`'s
+  `(r mod th)·half + j`.
+
 ### New
 
 - **`Tile`**: a per-image row broadcast, for adaLN-conditioned blocks (BendTorch#19). Row `i` of a `b x c` input
@@ -45,6 +55,20 @@ Two more in the same file, proved the same way, **39 laws in all** (with `dtype.
   then `div_rest`) and `tile_sum` (all `t` rows read and add into the same cell, so the backward is a sum). Tested
   against PyTorch `repeat_interleave` and its autograd: `0.000e+00` on both, with a last-row backward off by
   `2.000e+00`. Not in this change: the device lane (no CUDA toolkit here).
+
+- **`RoPE2d`**: 2D rotary positions, for an image transformer (BendTorch#18). A head's `2*half_y` numbers rotate
+  by the row's `y` and its `2*half_x` by its `x`, so rows `(0,1)` and `(1,0)` of a 2x2 grid rotate by different
+  angles at the same distance — the case one 1D rotation cannot express. `RoPE` itself is untouched. The pairs are
+  walked in two runs over disjoint dimensions rather than one run with a per-pair choice, which also removes a
+  `F32.pow` per pair (`Bool.pick` evaluates both branches). Tested against a hand-built 2D rotation
+  (`reference/rope2d_check.py`): `1.192e-07` forward and `1.192e-07` backward, tolerance `1e-6`. Three laws:
+  `rope2_partition` (the two runs tile the head: no gap, no overlap, each pair once) and `rope2_is_rope` /
+  `rope2_is_rope_tab` (at `tw = 1`, `half_x = 0` the y run is `RoPE`, address and entry). Stated over the addressing
+  defs in `main.bend` (`rope2_ht`, `rope2_yy`, `rope2_xx`, `rope2_yaddr`, `rope2_xaddr`, `rope2_yentry`,
+  `rope2_xentry`), which the layer's own `U32` code calls through `U32.from_nat`: no comparison, no pick, no `U32`
+  arithmetic left in the addressing, so the laws are about the code and not a copy of it. That move is free:
+  `1024x64`, 20 passes, 0.02 s before and 0.02 s after (median of three). Still not in this change: the device twin (no CUDA
+  toolkit here).
 
 ## 2.0.2 (2026-11-07)
 
