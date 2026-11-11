@@ -86,6 +86,14 @@ cost at run time.
 | Training | `Train.step`: forward, loss, backward and one optimizer step for any layer under any loss, under the configuration the state carries (`Train.new`'s, or `Train.with_cfg`'s; one of another family, or that `OptCfg.ok` rejects, is refused); `Train.accumulate` and `Train.flush`: k micro-batches into one gradient, then one step (`LossOut.div` divides each loss by k); `Train.save` and `load.bend`'s `train`: checkpoints of the parameters and the optimizer state (a resumed run gives the same bits) |
 | General tensors (`tensor.bend`) | `Tensor<s>`, the shape `s` a list of sizes in the type, any rank (tested 0 to 4); `add`, `sub`, `mul`, `div` with PyTorch's broadcasting and their gradients (`grad2`, `sum_to`); `sum_axis`, `sum_axis_keep`, `mean_axis`, `sum_all`, `mean_all`; `reshape` (with a proof that the count does not change), `flatten`; `permute` (with `transpose_p`, the permutation that swaps two axes); `narrow` (with a proof that the window fits); `cat`; `bmm` (`[b, n, k] · [b, k, m]`), each with its backward function. `of_mat` and `to_mat` turn a `Mat<r, c>` into a `Tensor<[r, c]>` and back without a copy |
 
+adaLN (a DiT block conditioned per image, #19) needs no layer of its own: with `g`, `m` (DiT's `1 + scale`) and `sh`
+per image, `Tile` broadcasts each over its tokens, `LayerNorm` then `Mul2` and `Add2` give the modulated input, and
+`Fork(Id, f)`, `Mul2` and `Add2` give the gated residual `h + g·f(h)`. With `m = 1` and `sh = 0` the modulation is
+`LayerNorm`, to the bit. `demo/adaln_probe.bend` builds the whole block this way, the three per-image rows from three
+`Linear` layers of `silu(cond)`, and `reference/adaln_check.py` checks it against PyTorch. Two pieces are not in the
+package: a layer that only regroups a pair's parts (`Rewire` in the probe, a few lines), and a column split, so the three
+rows come from three `Linear` layers rather than one `Linear` of width `3c` cut in three (the same weights, split by rows).
+
 `erf(x)` is written in the package with F32 additions, multiplications and comparisons only (Base has no `erf`), so it
 gives the same bits in C and JavaScript: a polynomial in x² below 0.84375, a correction polynomial around one of six
 centres up to 3.92, and 1 from there on. Over all 2^32 inputs it is at most 0.93 ulp from float64's erf (the correctly
