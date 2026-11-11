@@ -2486,3 +2486,87 @@ runs it after the merge, and `docs/limitations.md` says so.
   the input gradient through a zero weight; on the CPU the weight gradient from a zero patch matrix, on the device the
   weight gradient from a zero starting gradient (the CPU probe starts from zero, so only the device test sees that
   one). 204 mutants in all, 201 caught and 3 surviving by design.
+
+
+## Attention sums only the triangle (2026-11-08, #28)
+
+- **What.** The causal path's `O = P·V` and `dQ = G·K` (`pmul`) and `dK += Gᵀ·Q`, `dV += Pᵀ·dO` (`pacc`) summed every
+  key and every row, the masked half included, where `P` and `G` are 0 (laws `causal`, `causal_grad`). Now row `i`
+  sums keys `0..i` (`trow0`, `tmul`) and key `j`'s row sums rows `j..t-1` (`tcol0`, `tacc`), the loops carrying the
+  row as a Nat. `head_f2c` and `hb2c`..`hb4c` are the causal path's callers; `FullAttention` keeps `head_f2` and
+  `hb2`..`hb4`, with `pmul` and `pacc`. `gpu.bend`'s attention already summed only the triangle (`pv_val`, `kv_val`).
+- **Bits.** Each sum starts at +0.0 and the terms left out were 0·x, ±0.0 for a finite x, so on finite numbers nothing
+  changes. `make check-triangle` (`demo/triangle_probe.bend`, `reference/triangle_check.py`) runs the four products
+  both ways on the P and G the causal path builds, at four shapes (3 query heads over 2 key/value heads at t = 7, the
+  ViT block's head at t = 16, t = 1, SmolLM2-135M's at t = 128, dK and dV added into sums that are not zero): 0 cells
+  differ of 84, 21, 1,024, 4, 73,728 and 8,192 per product; a control with numbers past the diagonal differs in 105 of
+  112. `bench/bits.txt` unchanged.
+- **The one change, on specials.** `test_ops`' IEEE edge cases found 11 cells where PyTorch gives NaN and BendTorch now
+  a number: y's row 4 (v[5, 3] = -inf, a position row 4 cannot see), dQ's rows 0-1 (k[2, 1] = inf) and rows 4-6
+  (k[7, 4] = NaN), PyTorch's 0 · inf of a masked position. The accepted case of 2026-10-18 (dQ's row 4 through dS)
+  now covers them: the reference there is PyTorch's own with those three made finite, every other cell PyTorch's.
+  `docs/limitations.md` says so.
+- **Laws.** `causal_pv`: the count `trow0` hands on, the length of each of row `i`'s dots, is `i + 1`. `causal_kv`: key
+  `j`'s, with `r` keys after it, is `1 + r`. Each proof follows the row's loop, which passes the length on
+  (`cnt_trow`, `cnt_tcol`). That a dot of length `k` sums `k` products is read from `sdot`. 39 laws in all.
+- **Counted** (Cachegrind, one thread, Bend 2.0.40, the core alone minus a program that only fills and hashes its
+  inputs):
+
+  | core | devel | triangle | |
+  |---|---:|---:|---:|
+  | ViT block (t = 16, one head of 64), forward | 25.05 M | 19.04 M | -24.0% |
+  | ViT block, forward and backward | 87.28 M | 64.77 M | -25.8% |
+  | SmolLM2-135M (t = 128, 9 heads over 3), forward | 315.43 M | 219.43 M | -30.4% |
+  | SmolLM2-135M, forward and backward | 1,144.70 M | 755.64 M | -34.0% |
+  | FullAttention, ViT / SmolLM2-135M forward | 30.80 / 425.97 M | the same | |
+
+  The prototypes had projected -29% and -34% at SmolLM2's shape and -7% and -8% at the ViT block's, counting only the
+  products left out. The ViT block gains more than that. The new loops also skip `pmul`'s `U32.div`/`U32.mod` of each
+  cell's index, but I did not count how much of the difference that is.
+- **Timed** (idle machine, the core alone 200 passes at the ViT shape and 20 at SmolLM2's on fresh inputs, minus the
+  fill-only program, 11 alternated rounds, one thread pinned to CPU 3 and 16 threads): ViT 1.201 to 0.872 ms a pass on
+  one thread and 0.768 to 0.737 on 16 (ranges 0.727-0.794 and 0.701-0.762, within noise); SmolLM2-135M 13.58 to 9.31 ms
+  on one thread and 5.45 to 4.09 on 16. The README's speed table (whole programs, 2026-11-07) predates this.
+- **Mutants**, each checked to build and to move a number or break a law: row `i` stopping one key early (the law and
+  the numbers), dK's and dV's rows summed from one row late, and from row 0 again. 178 in all.
+- **Gates** (Bend 2.0.40): `make laws check bits gpu smol bits-smol` (the device bounds unchanged: SiLU 4 ulps,
+  cross-entropy 4, attention 176,128, small 7,680, full 172,032, full small 8,192; every case 0 with `exp_cr`), the four
+  new mutants caught.
+
+## fast.bend's Attention: the forward pass's units in blocks over shared arrays (2026-11-08, #28)
+
+- **Why.** On 16 threads the attention core barely used them: at the ViT block's shape it ran 0.77 ms a pass on 16
+  threads against 1.20 on one (idle machine, 2026-11-08). `main.bend`'s forward pass copies each unit's rows
+  and columns of Q, K and V out (`fslices`), runs the units in a tree of parallel lets, and copies their outputs back
+  into O (`blocks_in`), the copies on one thread before and after the tree.
+- **What.** `fast.bend`'s `Attention` now has its own forward pass, `attn_fwd`: tensor-fork's `par4` shares Q, K, V
+  and a zeroed O between 2^d blocks of units (d enough for one unit a block), and each query head of a unit runs
+  `main.bend`'s own `probs`, `trow0` and `tmul` at the unit's offsets in the shared arrays, writing its columns of its
+  sequence's rows of O in place. Units write disjoint cells and every sum is `main.bend`'s in its order. The stash is
+  the same `AttnS{q, k, v}`, and the backward pass is `main.bend`'s: it needs Q, K, V, dO, dQ, dK and dV, seven arrays,
+  and `par4` shares four. `FAST_DEFS` gains `attn_fwd` and `Attention`.
+- **Bits.** `demo/fast_test.bend` runs `T.Attention` and `F.Attention` forward and backward (y, dQ, dK, dV; the
+  backward reads each forward pass's stash) on 3 sequences of 5 with 3 query heads over each of 2 key/value heads (6
+  units in 8 blocks, two empty) and on 16 sequences of 16 with one head of 64: 0 words differ, on 1 and 16 threads and
+  in JavaScript; it prints 21 zeros now. `smol.bend` and `smol_block.bend` take `F.Attention`: `bench/bits.txt` and
+  `make bits-smol` unchanged.
+- **Timed** (idle machine, the core alone as in the entry above: 200 passes at the ViT shape, 20 at SmolLM2-135M's,
+  minus the fill-only program, 11 alternated rounds, one thread pinned to CPU 3 and 16), ms a pass:
+
+  | | devel | `main.bend` with the triangle | `fast.bend` |
+  |---|---:|---:|---:|
+  | ViT block, one thread | 1.216 | 0.886 | 0.543 |
+  | ViT block, 16 threads | 0.772 (0.753-0.820) | 0.732 (0.676-0.795) | 0.266 (0.212-0.305) |
+  | SmolLM2-135M, one thread | 13.68 | 9.32 | 9.12 |
+  | SmolLM2-135M, 16 threads | 5.49 (5.03-5.89) | 4.15 (3.92-4.30) | 3.37 (3.28-3.54) |
+
+  At the ViT shape the forward pass in blocks takes 39% off the one-thread time and 64% off the 16-thread time; at
+  SmolLM2's, with 6 units of t = 128 where the arithmetic dominates, 2% and 19%.
+  Every run gave one output. Not timed: a whole training step (the backward pass is `main.bend`'s, so a step gains
+  less than the forward does).
+- **Mutants**, each checked to build and to move `fast_test`'s numbers: a unit's query heads starting at its key/value
+  head's columns, every unit on the first sequence's rows, sequence and key/value head swapped in the unit's number,
+  and a block running one unit fewer. 182 in all; `fast_test`'s gate expects 21 zeros.
+- **Gates** (Bend 2.0.40): `make laws check bits check-js smol bits-smol`, the four new mutants caught.
+- **Left**: the backward pass over shared arrays (seven arrays: packing the reads would copy them, which is what this
+  removes from the forward pass).

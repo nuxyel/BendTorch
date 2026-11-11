@@ -47,7 +47,10 @@ Numbers marked "busy machine" were taken with other jobs running and are a first
   field disagreed; a change of kind shows up only as NaN at the next step (#27). Adam/AdamW checkpoints written
   before 2026-10-18 cannot be resumed.
 - Edge cases accepted for now, to be compared later:
-  - attention gives 0 where PyTorch gives NaN at a position that cannot see a -inf in V (PyTorch's 0 · inf);
+  - attention gives a number where PyTorch gives NaN at a position that cannot see an infinity or a NaN in V or K:
+    PyTorch multiplies the masked probability (or gradient) 0 by it. Since 2026-11-08 the causal products sum only the
+    positions a row can see (#28), so this holds for the output and dQ too, not only for dQ through the softmax's
+    backward pass; on finite numbers nothing changed, bit for bit;
   - RMSNorm's dX and LayerNorm's output and dX stay finite where the squares overflow F32, where PyTorch gives NaN.
 - Cross-entropy is log-softmax as PyTorch computes it since 2026-10-18; before, it took log(max(p, 1e-12)) and a row's
   loss stopped at 27.63 where PyTorch's kept growing (the gradient was right).

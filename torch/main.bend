@@ -2851,6 +2851,66 @@ def pacc(left: Nat, +idx: U32, +c: U32, +t: Nat, +bs: U32, +bc: U32, o: Array<F3
     case 1n+n D2{a, b, +s}:
       pacc(n, (idx + 1 : U32), c, t, bs, bc, acc_set(idx, s, Array.get(F32, o, idx)), dot0(t, U32.div((idx + 1 : U32), c), (bc + U32.mod((idx + 1 : U32), c) : U32), U32.from_nat(t), bs, a, b))
 
+# ---- the causal path's products over the triangle only (BendTorch #28). pmul and pacc sum every key and every row;
+# in Attention, P and G are zero past the diagonal (the laws causal and causal_grad), so in its P·V and G·K row i needs
+# keys 0..i only, and in its Gᵀ·Q and Pᵀ·dO the row of key j needs rows j..t-1 only. The terms left out are 0·x, and
+# each sum starts at +0.0, so on finite inputs these give pmul's and pacc's bits (check-triangle); FullAttention keeps
+# pmul and pacc. Rows are Nats here, so that the count laws causal_pv and causal_kv can be stated. ----
+
+type PN is Type:
+  PN{a: Array<F32>, b: Array<F32>, o: Array<F32>, n: Nat}
+
+def pn_n(r: PN) -> Nat:
+  match r:
+    case PN{a, b, o, n}:
+      n
+
+# o[orow + d] = a[ia]·b[bc + d] + a[ia + 1]·b[bs + bc + d] + ... (k products) for d from d on, left more after r: one
+# row of P·V (or G·K), each sum left to right from +0.0; k is handed on as the row's count
+def trow(left: Nat, +d: U32, +k: Nat, +ia: U32, +bs: U32, +bc: U32, +orow: U32, o: Array<F32>, r: D2) -> PN:
+  match left r:
+    case 0n D2{a, b, +s}:
+      PN{a, b, Array.set(F32, o, (orow + d : U32), s), k}
+    case 1n+n D2{a, b, +s}:
+      trow(n, (d + 1 : U32), k, ia, bs, bc, orow, Array.set(F32, o, (orow + d : U32), s), dot0(k, ia, (bc + (d + 1 : U32) : U32), 1, bs, a, b))
+
+# row i of the causal P·V (a is P, t x t; b is V, rows bs apart, the head's columns from bc): its c cells
+# o[i·ow + oc + d] each sum keys 0..i, i + 1 products (the law causal_pv)
+def trow0(+i: Nat, +c: Nat, +t: Nat, +bs: U32, +bc: U32, +ow: U32, +oc: U32, a: Array<F32>, b: Array<F32>, o: Array<F32>) -> PN:
+  trow(Nat.sub(c, 1n), 0, 1n+i, (U32.from_nat(i) * U32.from_nat(t) : U32), bs, bc, ((U32.from_nat(i) * ow : U32) + oc : U32), o, dot0(1n+i, (U32.from_nat(i) * U32.from_nat(t) : U32), bc, 1, bs, a, b))
+
+# rows i.. of the causal P·V: r is row i, left rows more after it
+def tmul(left: Nat, +i: Nat, +c: Nat, +t: Nat, +bs: U32, +bc: U32, +ow: U32, +oc: U32, r: PN) -> PO:
+  match left r:
+    case 0n PN{a, b, o, n}:
+      PO{a, b, o}
+    case 1n+m PN{a, b, o, n}:
+      tmul(m, 1n+i, c, t, bs, bc, ow, oc, trow0(1n+i, c, t, bs, bc, ow, oc, a, b, o))
+
+# o[orow + d] += a[ia]·b[ib0 + d] + a[ia + sa]·b[ib0 + bs + d] + ... (k products, down a's column) for d from d on,
+# left more after r: one row of dK += Gᵀ·Q (or dV += Pᵀ·dO), each sum left to right from +0.0, then added into the
+# group's running sum; k is handed on as the row's count
+def tcol(left: Nat, +d: U32, +k: Nat, +ia: U32, +sa: U32, +ib0: U32, +bs: U32, +orow: U32, o: Array<F32>, r: D2) -> PN:
+  match left r:
+    case 0n D2{a, b, +s}:
+      PN{a, b, acc_set((orow + d : U32), s, Array.get(F32, o, (orow + d : U32))), k}
+    case 1n+n D2{a, b, +s}:
+      tcol(n, (d + 1 : U32), k, ia, sa, ib0, bs, orow, acc_set((orow + d : U32), s, Array.get(F32, o, (orow + d : U32))), dot0(k, ia, (ib0 + (d + 1 : U32) : U32), sa, bs, a, b))
+
+# key j's row of the causal dK += Gᵀ·Q (a is G, t x t; b is Q, rows bs apart, the head's columns from bc), with r keys
+# after it (t = 1 + j + r): its c cells o[j·c + d] each sum rows j..t-1 of a's column j, 1 + r products (the law
+# causal_kv)
+def tcol0(+j: Nat, +r: Nat, +c: Nat, +t: Nat, +bs: U32, +bc: U32, a: Array<F32>, b: Array<F32>, o: Array<F32>) -> PN:
+  tcol(Nat.sub(c, 1n), 0, 1n+r, ((U32.from_nat(j) * U32.from_nat(t) : U32) + U32.from_nat(j) : U32), U32.from_nat(t), ((U32.from_nat(j) * bs : U32) + bc : U32), bs, (U32.from_nat(j) * U32.from_nat(c) : U32), o, dot0(1n+r, ((U32.from_nat(j) * U32.from_nat(t) : U32) + U32.from_nat(j) : U32), ((U32.from_nat(j) * bs : U32) + bc : U32), U32.from_nat(t), bs, a, b))
+
+# keys j.. of the causal dK (or dV): s is key j's row, r keys more after it
+def tacc(r: Nat, +j: Nat, +c: Nat, +t: Nat, +bs: U32, +bc: U32, s: PN) -> PO:
+  match r s:
+    case 0n PN{a, b, o, n}:
+      PO{a, b, o}
+    case 1n++q PN{a, b, o, n}:
+      tacc(q, 1n+j, c, t, bs, bc, tcol0(1n+j, q, c, t, bs, bc, a, b, o))
+
 # rows r0.. (t of them, c wide) of src into a new array, src handed back
 def rows_out(+t: Nat, +c: Nat, +r0: Nat, src: Array<F32>) -> A2:
   copy_n(Nat.sub(Nat.mul(t, c), 1n), U32.from_nat(Nat.mul(r0, c)), 0, zeros_a(Nat.mul(t, c)), Array.get(F32, src, U32.from_nat(Nat.mul(r0, c))))
@@ -2924,12 +2984,18 @@ def head_f2(+t: Nat, +hd: Nat, +w: Nat, +kvw: Nat, +hc: U32, +kc: U32, v: Array<
     case QK{q, k, p}:
       fs_fin(q, k, pmul(Nat.sub(Nat.mul(t, hd), 1n), 0, U32.from_nat(hd), t, U32.from_nat(kvw), kc, U32.from_nat(w), hc, o, dot0(t, 0, kc, 1, U32.from_nat(kvw), p, v)))
 
+# head_f2 for the causal P: O = P·V over the triangle only (tmul)
+def head_f2c(+t: Nat, +hd: Nat, +w: Nat, +kvw: Nat, +hc: U32, +kc: U32, v: Array<F32>, o: Array<F32>, r: QK) -> FS:
+  match r:
+    case QK{q, k, p}:
+      fs_fin(q, k, tmul(Nat.sub(t, 1n), 0n, hd, t, U32.from_nat(kvw), kc, U32.from_nat(w), hc, trow0(0n, hd, t, U32.from_nat(kvw), kc, U32.from_nat(w), hc, p, v, o)))
+
 # one head's forward pass at the columns hc (its queries) and kc (its key/value head) that head_cols gives; it has no
 # head index, so it reads no other columns
 def head_fwd(+dm: Dm, +cols: HC, s: FS) -> FS:
   match dm cols s:
     case Dm{+t, +g, +hd, +w, +kvw, +sc} HC{+hc, +kc} FS{q, k, v, o}:
-      head_f2(t, hd, w, kvw, hc, kc, v, o, probs(t, hd, sc, U32.from_nat(w), hc, U32.from_nat(kvw), kc, q, k))
+      head_f2c(t, hd, w, kvw, hc, kc, v, o, probs(t, hd, sc, U32.from_nat(w), hc, U32.from_nat(kvw), kc, q, k))
 
 def fheads(left: Nat, +hi: Nat, +dm: Dm, s: FS) -> FS:
   match left:
@@ -3032,11 +3098,27 @@ def hb2(+t: Nat, +hd: Nat, +w: Nat, +kvw: Nat, +hc: U32, +kc: U32, q: Array<F32>
     case GW{d, v, p, g}:
       hb3(t, hd, w, hc, q, d, v, p, dka, dva, pmul(Nat.sub(Nat.mul(t, hd), 1n), 0, U32.from_nat(hd), t, U32.from_nat(kvw), kc, U32.from_nat(w), hc, dq, dot0(t, 0, kc, 1, U32.from_nat(kvw), g, k)))
 
+# the causal path's hb4, hb3 and hb2: the same three products over the triangle only (tacc, tmul)
+def hb4c(+t: Nat, +hd: Nat, +w: Nat, +hc: U32, k: Array<F32>, d: Array<F32>, v: Array<F32>, p: Array<F32>, dq: Array<F32>, dva: Array<F32>, r: PO) -> BS:
+  match r:
+    case PO{g, q, dka}:
+      hb5(q, k, v, dq, dka, tacc(Nat.sub(t, 1n), 0n, hd, t, U32.from_nat(w), hc, tcol0(0n, Nat.sub(t, 1n), hd, t, U32.from_nat(w), hc, p, d, dva)))
+
+def hb3c(+t: Nat, +hd: Nat, +w: Nat, +hc: U32, q: Array<F32>, d: Array<F32>, v: Array<F32>, p: Array<F32>, dka: Array<F32>, dva: Array<F32>, r: PO) -> BS:
+  match r:
+    case PO{g, k, dq}:
+      hb4c(t, hd, w, hc, k, d, v, p, dq, dva, tacc(Nat.sub(t, 1n), 0n, hd, t, U32.from_nat(w), hc, tcol0(0n, Nat.sub(t, 1n), hd, t, U32.from_nat(w), hc, g, q, dka)))
+
+def hb2c(+t: Nat, +hd: Nat, +w: Nat, +kvw: Nat, +hc: U32, +kc: U32, q: Array<F32>, k: Array<F32>, dq: Array<F32>, dka: Array<F32>, dva: Array<F32>, r: GW) -> BS:
+  match r:
+    case GW{d, v, p, g}:
+      hb3c(t, hd, w, hc, q, d, v, p, dka, dva, tmul(Nat.sub(t, 1n), 0n, hd, t, U32.from_nat(kvw), kc, U32.from_nat(w), hc, trow0(0n, hd, t, U32.from_nat(kvw), kc, U32.from_nat(w), hc, g, k, dq)))
+
 # P again, then G
 def hb1(+t: Nat, +hd: Nat, +w: Nat, +kvw: Nat, +sc: F32, +hc: U32, +kc: U32, v: Array<F32>, d: Array<F32>, dq: Array<F32>, dka: Array<F32>, dva: Array<F32>, r: QK) -> BS:
   match r:
     case QK{q, k, p}:
-      hb2(t, hd, w, kvw, hc, kc, q, k, dq, dka, dva, grows(Nat.sub(t, 1n), 0n, t, hd, sc, U32.from_nat(w), hc, U32.from_nat(kvw), kc, grow(0n, t, hd, sc, U32.from_nat(w), hc, U32.from_nat(kvw), kc, d, v, p, zeros_a(Nat.mul(t, t)))))
+      hb2c(t, hd, w, kvw, hc, kc, q, k, dq, dka, dva, grows(Nat.sub(t, 1n), 0n, t, hd, sc, U32.from_nat(w), hc, U32.from_nat(kvw), kc, grow(0n, t, hd, sc, U32.from_nat(w), hc, U32.from_nat(kvw), kc, d, v, p, zeros_a(Nat.mul(t, t)))))
 
 # one head's backward pass at head_cols' columns (no head index, as head_fwd)
 def head_bwd(+dm: Dm, +cols: HC, s: BS) -> BS:
@@ -3368,7 +3450,8 @@ def attn_bwd(+n: Nat, +w: Nat, +kvw: Nat, +dm: AttnDims, s: AttnS, dy: TA.Mat<n,
       ab2(n, w, kvw, b, kv, dm_of(dm), bslices(b, 0n, t, w, kvw, kv, g, hd, BL{q, k, v, d, Nil{}}))
 
 # ---- the backward of the full-visible forward. G's row i also needs every key, so fgrow takes t - 1 dots where grow
-# takes i; the rest (gfix, pmul, pacc, the group sum, the tree) is the causal path's own code.
+# takes i; gfix, the group sum and the tree are the causal path's code, and its products are pmul and pacc over every
+# key and row (the causal path sums only the triangle: tmul, tacc).
 def fgrow(+i: Nat, +m: Nat, +hd: Nat, +sc: F32, +ds: U32, +dc: U32, +vs: U32, +vc: U32, d: Array<F32>, v: Array<F32>, p: Array<F32>, g: Array<F32>) -> GR:
   gr2(sc, (U32.from_nat(i) * U32.from_nat(1n+m) : U32), p, g, drow(m, hd, ((U32.from_nat(i) * ds : U32) + dc : U32), vc, vs, Nil{}, dot0(hd, ((U32.from_nat(i) * ds : U32) + dc : U32), vc, 1, 1, d, v)))
 

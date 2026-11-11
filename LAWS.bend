@@ -186,6 +186,39 @@ law causal_grad:
   for g: Array<F32>
   {T.gr_n(T.grow(i, t, hd, sc, ds, dc, vs, vc, d, v, p, g)) == 1n+i : Nat}
 
+# LAW (causal_pv): in T.Attention's P·V, and in its backward pass's dQ = G·K, every cell of row i is a dot of exactly
+# i + 1 products, keys 0..i. T.trow0 gives each of the row's dots that length (a dot of length k sums k products,
+# T.sdot) and hands it on as the row's count; this law says the count is i + 1. The keys after i, where P and G are 0
+# (laws causal, causal_grad), are not read: summing them added only 0·x.
+law causal_pv:
+  for +i: Nat
+  for +c: Nat
+  for +t: Nat
+  for +bs: U32
+  for +bc: U32
+  for +ow: U32
+  for +oc: U32
+  for a: Array<F32>
+  for b: Array<F32>
+  for o: Array<F32>
+  {T.pn_n(T.trow0(i, c, t, bs, bc, ow, oc, a, b, o)) == 1n+i : Nat}
+
+# LAW (causal_kv): in T.Attention's backward pass, every cell of key j's row of dK += Gᵀ·Q and of dV += Pᵀ·dO is a dot
+# of exactly 1 + r products, rows j..t-1, where r is the number of keys after j (T.tacc walks the keys with
+# t = 1 + j + r). T.tcol0 gives each dot that length and hands it on; this law says the count is 1 + r, so t - j. The
+# rows before j, where G and P are 0, are not read.
+law causal_kv:
+  for +j: Nat
+  for +r: Nat
+  for +c: Nat
+  for +t: Nat
+  for +bs: U32
+  for +bc: U32
+  for a: Array<F32>
+  for b: Array<F32>
+  for o: Array<F32>
+  {T.pn_n(T.tcol0(j, r, c, t, bs, bc, a, b, o)) == 1n+r : Nat}
+
 # LAW (attn_par_fwd): T.Attention runs its sequences in a tree of parallel lets (T.fpar: the sequences cut in halves,
 # each half cut again, d levels deep, the leaves' outputs appended). Whatever the depth and however the sequences are
 # split between the two halves, the tree gives exactly what T.fleaf gives running them one after another, in order: the

@@ -36,11 +36,33 @@ with a fourth digit (`2.0.0.0`). The engineering log behind each entry, measurem
   `fast.bend`; `gpu.bend`'s Residual dropping its skip connection).
 - **Moving from 2.0.2**: nothing changes for a program that does not call the new functions.
 
+### Attention (#28)
+
+- **Attention sums only what a position can see** (#28). Its forward pass's `O = P·V` and its backward pass's
+  `dQ = G·K`, `dK += Gᵀ·Q` and `dV += Pᵀ·dO` used to sum every key and every row, the masked half included, where `P`
+  and `G` are 0; now row `i` sums keys `0 .. i` and key `j`'s row sums rows `j .. t-1`. On finite numbers the bits are
+  the same (`bench/bits.txt` unchanged, and `make check-triangle` compares the two forms on every cell); counted with
+  Cachegrind on one thread, SmolLM2-135M's attention runs 30% fewer instructions forward and 34% forward and backward,
+  the ViT block's one-head attention (t = 16) 24% and 26%. `FullAttention` is unchanged. One difference: an infinity
+  or a NaN in V or K at a position a row cannot see no longer makes that row's output or dQ NaN, as PyTorch's does
+  (`docs/limitations.md`).
+- **`fast.bend`'s `Attention` runs its forward pass in parallel blocks over shared arrays** (#28): `main.bend`'s units
+  (one sequence's key/value group each) read Q, K and V and write the output where they are, instead of being copied
+  out and back in on one thread. The same bits (`demo/fast_test.bend` compares y, dQ, dK and dV with `main.bend`'s).
+  The core alone at the ViT block's shape (64 sequences of 16, one head of 64), on an idle machine: 0.27 ms a pass on
+  16 threads against 0.73 with `main.bend`'s forward (0.77 before the triangle sums), and 0.54 against 0.89 on one;
+  at SmolLM2-135M's, 3.4 against 4.1 ms on 16 threads and about the same on one. The backward pass is still
+  `main.bend`'s.
+
 ### Laws
 
-Two new laws in `LAWS.bend`, proved in `PROOF.bend` and checked again by `bend PROOF.bend --verdict`. Both by
-@adeerkhan (#32).
+Four new laws in `LAWS.bend`, proved in `PROOF.bend` and checked again by `bend PROOF.bend --verdict`, 39 laws in all
+(with `dtype.bend`'s `unpair_pair`). Two by @adeerkhan (#32), and two for attention's sums:
 
+- `causal_pv`: every number of row `i` of attention's `O = P·V` (and `dQ = G·K`) is a sum of exactly `i + 1` products,
+  the count `trow0` gives each of the row's dots.
+- `causal_kv`: every number of key `j`'s row of `dK` and `dV` is a sum of exactly `1 + r` products when `r` keys come
+  after `j`, so `t - j`, the count `tcol0` gives each dot.
 - `conv_roundtrip_window`: the round trip at **any** stride and padding, per cell. Slot `(ch, ky, kx)` of output
   position `(oy, ox)` is image cell `(oy·s + ky - p, ox·s + kx - p)`, channel `ch`, so the gather and the scatter name
   the same cell for every kernel, stride and padding — the UNet's `k = 3, s = 2, p = 1` among them. The decode does
@@ -56,7 +78,7 @@ Two new laws in `LAWS.bend`, proved in `PROOF.bend` and checked again by `bend P
   for the inner cell is `radix_bound`. #29's numbers at `k = s = 2, 3, 4` were already exact; the law is what makes
   them so for every `k`.
 
-Two more in the same file, proved the same way, **39 laws in all** (with `dtype.bend`'s `unpair_pair`), both by
+Two more in the same file, proved the same way, **41 laws in all** (with `dtype.bend`'s `unpair_pair`), both by
 @adeerkhan (#34):
 
 - `tile_row`: the `t` output rows of image row `i` are all image row `i`, in order — `i·t + j` divided by `t` is `i`
@@ -64,7 +86,7 @@ Two more in the same file, proved the same way, **39 laws in all** (with `dtype.
 - `tile_sum`: every one of the `t` rows of image `i` reads (forward) and adds into (backward) the same cell of image
   row `i`, column `k`, which is what makes the backward a **sum** of the `t` rows rather than the last of them.
 
-Three more in the same file, proved the same way, **42 laws in all** (with `dtype.bend`'s `unpair_pair`), all by
+Three more in the same file, proved the same way, **44 laws in all** (with `dtype.bend`'s `unpair_pair`), all by
 @adeerkhan (#33):
 
 - `rope2_partition`: a head's `2·half_y + 2·half_x` numbers are tiled by `RoPE2d`'s two runs with no gap and no
