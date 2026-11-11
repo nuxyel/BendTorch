@@ -433,7 +433,30 @@ law conv_roundtrip_window:
   for +row_in: {Nat.add(Nat.mul(oy, s), ky) == Nat.add(p, ty) : Nat}
   for +col_in: {Nat.add(Nat.mul(ox, s), kx) == Nat.add(p, tx) : Nat}
   {T.p_src(Nat.add(Nat.mul(Nat.add(Nat.mul(ch, k), ky), k), kx), n, oy, ox, h, w, c, k, p, s) ==
-    U32.from_nat(Nat.add(Nat.mul(Nat.add(Nat.mul(Nat.add(Nat.mul(n, h), ty), w), tx), c), ch)) : U32}
+    U32.from_nat(Nat.add(Nat.mul(Nat.add(Nat.mul(Nat.add(Nat.mul(n, h), ty), w), tx), c), ch)) : U32}# LAW (tile_row): the t output rows of image row i are all image row i, in order. With t = 1 + s, output row i*t + j
+# (j <= s) reads input row i: Nat.div(i*t + j, t) = i. It is the division fact under the whole layer — the forward's
+# broadcast and the backward's sum both address through it — and it is stated over tile_row_of, the def the code calls.
+law tile_row:
+  for +i: Nat
+  for +s: Nat
+  for +j: Nat
+  for +a: Nat
+  for +es: {s == Nat.add(j, a) : Nat}
+  {T.tile_row_of(Nat.add(1n, s), Nat.add(Nat.mul(i, Nat.add(1n, s)), j)) == i : Nat}
+
+# LAW (tile_sum): every one of the t rows of image i reads (forward) and adds into (backward) the same cell of image
+# row i, column k — tile_src(c, t, i*t + j, k) = i*c + k for every j <= s. That is what makes the backward a sum of
+# the t rows rather than the last of them; an implementation that offset the row would break it.
+law tile_sum:
+  for +c: Nat
+  for +i: Nat
+  for +s: Nat
+  for +j: Nat
+  for +a: Nat
+  for +k: Nat
+  for +es: {s == Nat.add(j, a) : Nat}
+  {T.tile_src(c, Nat.add(1n, s), Nat.add(Nat.mul(i, Nat.add(1n, s)), j), k) ==
+     Nat.add(Nat.mul(i, c), k) : Nat}
 
 # LAW (conv_roundtrip): with a 1 x 1 kernel, no padding and a stride of 1, a patch is one cell: im2col reads the image
 # cell at the patch's own coordinates, (b, oy, ox, ch), and col2im writes that number back into it (its scatter is p_src
