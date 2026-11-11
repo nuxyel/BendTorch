@@ -2363,3 +2363,16 @@ runs it after the merge, and `docs/limitations.md` says so.
   check`, and `make gpu`: SiLU 4 ulps, cross-entropy 4, attention 176,128, small 7,680, full 172,032, full small 8,192,
   GELUErf's dx 113, every other case 0, RoPE2d's two included; all 23 cases 0 with `exp_cr`; MNIST, the tiny Llama and
   the SmolLM2-sized block on the GPU against PyTorch, and the GPU builds' outputs are `bench/bits.txt`'s.
+
+## Tile and RoPE2d together on devel, and their CPU mutants (2026-11-11)
+
+- #34 (Tile) and #33 (RoPE2d) merged into devel. The two device twins, written on 2026-11-07 over each PR's head, both
+  used cases 19 and 20 of `demo/gpu_layers_test.bend`; on devel Tile keeps 19 and 20 and RoPE2d takes 21 and 22, so
+  the Makefile, `scripts/gpu_expcr.sh` and `scripts/mutate.py` expect 23 cases.
+- Six CPU mutants, none of which the PRs had: Tile's backward keeping the last row instead of the sum, its last row
+  reading the next image's row (the law `tile_row` fails), every row of a tile written to its first row; RoPE2d's x
+  taken as its position divided by `tw`, the x run starting where the y run does (the law `rope2_partition` fails),
+  the y run's table entry taking the row's x.
+- Two of the RoPE2d mutants survived at first. `reference/rope2d_check.py` ignored the binary `make mutate` passes it
+  and always ran `.scratch/rope2d_probe`, the unmutated build. With the binary taken from the command line, as
+  `tile_check.py` does, both are caught: 186 mutants, 183 caught and 3 surviving by design.
