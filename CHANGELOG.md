@@ -76,6 +76,12 @@ Three more in the same file, proved the same way, **42 laws in all** (with `dtyp
 
 ### New
 
+- **`Conv2dNB`**: `Conv2d` without the bias, for the image reference's no-bias convolutions (BendTorch#39). The same
+  `im2col` and `col2im` around `LinearNB`'s forward, backward and optimizer step; `P` is the `co x c*k*k` weight
+  alone, so the parameter count drops by `co`. Tested against `F.conv2d(..., bias=None)` and its autograd on the
+  three shapes `reference/conv2d_check.py` uses: y, dX and dW are **0.000e+00** on all three
+  (`reference/conv2dnb_check.py`). Not in this change: the device lane (the `gpu.bend` twin comes after the merge).
+
 - **`Tile`**: a per-image row broadcast, for adaLN-conditioned blocks (BendTorch#19). Row `i` of a `b x c` input
   becomes rows `i·t .. i·t+t-1` of a `(b·t) x c` output, and the backward sums each image's `t` rows back into its
   row, so `x * (1 + scale)` with a per-image scale is `Tile` then `Mul2` with the tiling on the device. The addressing
