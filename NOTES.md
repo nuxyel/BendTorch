@@ -2467,3 +2467,22 @@ runs it after the merge, and `docs/limitations.md` says so.
 - Gates (Bend 2.0.40, busy machine, bits and pass/fail only): `make check` green; `make gpu` green, all 23 cases 0 with
   `exp_cr`, accumulation on the device k = 1 0 ulps, `lin` 0, `mlp` 320, `attn` 320, and `0 0 0 0 0 0` with `exp_cr`;
   `make mutate`: 198 mutants, 198 as expected (58 min).
+
+## Conv2dNB (#40), and its device twin (2026-11-11)
+
+- #40 (@adeerkhan) adds `Conv2dNB`, `Conv2d` without the bias for the image reference's convolutions (#39):
+  `main.bend`'s `im2col` and `col2im` around `LinearNB`'s forward, backward and optimizer step, the parameters the
+  `co x c·k·k` weight alone. `reference/conv2dnb_check.py` against `F.conv2d(..., bias=None)` and its autograd, on
+  `conv2d_check.py`'s three shapes: y, dX and dW 0.000e+00. Merged into devel; the only conflict was the Makefile's
+  demo and check lists.
+- `torch/gpu.bend`'s `Conv2dNB`, `main.bend`'s types and name: the device `im2col`, the device `LinearNB`'s products
+  (`TG.matmul_nt`, `TG.matmul_precise`, `matmul_tn_acc` for the weight gradient) and the device `col2im`.
+  `convnb_b2` and `Conv2dNB` reach tensor-gpu and are in `GPU_DEFS`.
+- `demo/gpu_layers_test.bend` case 23: y, dX and the weight gradient (added into one that is not zero) at `Conv2d`'s
+  four shapes (a small odd one, a realistic one and the two strided ones). 0 ulps with `+RTS --gpu off -RTS` and on
+  the RTX 4050, so `make gpu` bounds it at 0. The Makefile, `scripts/gpu_expcr.sh` and `scripts/mutate.py` expect 24
+  cases.
+- Six mutants, each first checked to type-check and then caught: on each lane, the forward pass with a zero weight and
+  the input gradient through a zero weight; on the CPU the weight gradient from a zero patch matrix, on the device the
+  weight gradient from a zero starting gradient (the CPU probe starts from zero, so only the device test sees that
+  one). 204 mutants in all, 201 caught and 3 surviving by design.
