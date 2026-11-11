@@ -42,6 +42,8 @@ ST = numeric("safetensors_test", "test_safetensors.py")
 CFG = numeric("cfg_test", "test_cfg.py")
 CONV = numeric("conv2d_probe", "conv2d_check.py")
 I2C = numeric("im2col_probe", "im2col_check.py")
+TILE = numeric("tile_probe", "tile_check.py")
+ROPE2 = numeric("rope2d_probe", "rope2d_check.py")
 
 
 ST135 = Path(os.environ.get("LLAMA_BEND", "../llama.bend")) / "data/smollm2-135m/hf/model.safetensors"
@@ -451,6 +453,20 @@ MUTANTS = [
     ("col2im: the scatter starts one gathered cell late", "torch/main.bend",
      "        Array.get(F32, d, U32.from_nat(0n)),\n        Array.new(F32, TA.cap_depth(size), 0.0))}",
      "        Array.get(F32, d, U32.from_nat(1n)),\n        Array.new(F32, TA.cap_depth(size), 0.0))}", I2C, "caught"),
+    ("tile: the backward keeps the tile's last row instead of the sum", "torch/main.bend",
+     "    case Tuple{a, +old}:\n      Array.set(F32, a, src, (old + v : F32))\n\n# dx[src]",
+     "    case Tuple{a, +old}:\n      Array.set(F32, a, src, v)\n\n# dx[src]", TILE, "caught"),
+    ("tile: the last row of each image reads the next image's row", "torch/main.bend",
+     "def tile_row_of(+t: Nat, +r: Nat) -> Nat:\n  Nat.div(r, t)",
+     "def tile_row_of(+t: Nat, +r: Nat) -> Nat:\n  Nat.div(Nat.add(r, 1n), t)", laws, "caught"),
+    ("tile: every row of a tile is written to the tile's first row", "torch/main.bend",
+     "  Nat.add(Nat.mul(Nat.add(Nat.mul(i, t), j), c), k)", "  Nat.add(Nat.mul(Nat.add(Nat.mul(i, t), 0n), c), k)", TILE, "caught"),
+    ("rope2d: the row's x is its place divided by tw, as y is", "torch/main.bend",
+     "  Nat.mod(Nat.mod(r, nt), tw)", "  Nat.div(Nat.mod(r, nt), tw)", ROPE2, "caught"),
+    ("rope2d: the x run starts where the y run does", "torch/main.bend",
+     "Nat.mul(head, rope2_ht(hy, hx))), Nat.mul(hy, 2n)), j)", "Nat.mul(head, rope2_ht(hy, hx))), Nat.mul(hy, 0n)), j)", laws, "caught"),
+    ("rope2d: the y run's table entry takes the row's x", "torch/main.bend",
+     "  Nat.add(Nat.mul(rope2_yy(nt, tw, r), hy), j)", "  Nat.add(Nat.mul(rope2_xx(nt, tw, r), hy), j)", ROPE2, "caught"),
     ("gpu im2col: the device gather reads the padding cells", "torch/gpu.bend",
      "      i2c_put(e, Bool.and(ok1, Bool.and(ok2, U32.is_lt(ix, w))), (src + ch : U32), CIC{d, o})",
      "      i2c_put(e, U32.is_lt(pos, (n * per : U32)), (src + ch : U32), CIC{d, o})", GPUL, "caught"),
