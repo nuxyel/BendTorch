@@ -5,7 +5,15 @@ the packages are or in how they are used, MINOR for a new capability, PATCH for 
 four BendHub packages (`bendtorch`, `bendtorch-fast`, `bendtorch-gpu`, `bendtorch-load`) carry the release's number
 with a fourth digit (`2.0.0.0`). The engineering log behind each entry, measurement by measurement, is `NOTES.md`.
 
-## Unreleased
+## 2.1.0 (2026-11-11)
+
+A minor release: three layers for image models (`Conv2dNB`, `Tile`, `RoPE2d`, each on the CPU and the GPU lane),
+gradient accumulation, attention that sums only what a position can see, and adaLN built from the layers there are.
+Nine new laws, 44 in all. Every output of 2.0.2 is the same (`bench/bits.txt`), with one change of behavior in
+attention: an infinity or a NaN at a position a row cannot see no longer reaches that row (below).
+
+- **Moving from 2.0.2**: the import lines, `2.0.2.0` to `2.1.0.0` in all four packages; nothing else changes for a
+  program that does not call the new layers and functions, and checkpoints read as before.
 
 ### Gradient accumulation (#36)
 
@@ -34,8 +42,6 @@ with a fourth digit (`2.0.0.0`). The engineering log behind each entry, measurem
   four over the lanes (a `Fork` whose second layer starts its backward pass from a zero gradient, which only an
   accumulated step can see; the GroupNorm step trading the gain's and the bias's gradients in `gpu.bend` and in
   `fast.bend`; `gpu.bend`'s Residual dropping its skip connection).
-- **Moving from 2.0.2**: nothing changes for a program that does not call the new functions.
-
 ### Attention (#28)
 
 - **Attention sums only what a position can see** (#28). Its forward pass's `O = P·V` and its backward pass's
@@ -111,7 +117,7 @@ Three more in the same file, proved the same way, **44 laws in all** (with `dtyp
   row → cells). Two laws: `tile_row` (the `t` rows of image `i` are image row `i` — a division fact, `div_blocks`
   then `div_rest`) and `tile_sum` (all `t` rows read and add into the same cell, so the backward is a sum). Tested
   against PyTorch `repeat_interleave` and its autograd: `0.000e+00` on both, with a last-row backward off by
-  `2.000e+00`. Not in this change: the device lane (no CUDA toolkit here).
+  `2.000e+00`.
 
 - **`RoPE2d`**: 2D rotary positions, for an image transformer (BendTorch#18). A head's `2*half_y` numbers rotate
   by the row's `y` and its `2*half_x` by its `x`, so rows `(0,1)` and `(1,0)` of a 2x2 grid rotate by different
@@ -124,8 +130,7 @@ Three more in the same file, proved the same way, **44 laws in all** (with `dtyp
   defs in `main.bend` (`rope2_ht`, `rope2_yy`, `rope2_xx`, `rope2_yaddr`, `rope2_xaddr`, `rope2_yentry`,
   `rope2_xentry`), which the layer's own `U32` code calls through `U32.from_nat`: no comparison, no pick, no `U32`
   arithmetic left in the addressing, so the laws are about the code and not a copy of it. That move is free:
-  `1024x64`, 20 passes, 0.02 s before and 0.02 s after (median of three). Still not in this change: the device twin (no CUDA
-  toolkit here).
+  `1024x64`, 20 passes, 0.02 s before and 0.02 s after (median of three).
 
 - **adaLN by composition** (#19): no new layer. `demo/adaln_probe.bend` builds a DiT block conditioned per image from
   the layers there are: `Tile` broadcasts the per-image gate, multiplier and shift over their tokens, `LayerNorm`,
