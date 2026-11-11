@@ -35,10 +35,13 @@ def rot(a, b, ang):
 
 
 def main():
-    binary = os.path.join(ROOT, ".scratch", "rope2d_probe")
-    if not os.path.exists(binary) or os.path.getmtime(binary) < os.path.getmtime(
-            os.path.join(ROOT, "demo", "rope2d_probe.bend")):
-        subprocess.run([BEND, "demo/rope2d_probe.bend", "-o", binary], cwd=ROOT, check=True)
+    if len(sys.argv) > 1:
+        binary = os.path.abspath(sys.argv[1])
+    else:
+        binary = os.path.join(ROOT, ".scratch", "rope2d_probe")
+        if not os.path.exists(binary) or os.path.getmtime(binary) < os.path.getmtime(
+                os.path.join(ROOT, "demo", "rope2d_probe.bend")):
+            subprocess.run([BEND, "demo/rope2d_probe.bend", "-o", binary], cwd=ROOT, check=True)
     out = subprocess.run([binary], cwd=ROOT, capture_output=True, text=True)
     if out.returncode != 0:
         raise SystemExit(out.stdout + out.stderr)
