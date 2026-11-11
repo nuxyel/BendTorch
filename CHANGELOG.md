@@ -142,7 +142,8 @@ Three more in the same file, proved the same way, **44 laws in all** (with `dtyp
   row and its destination row; `RoPE2d`'s x position, the x run's offset and the y run's table entry).
 - Six mutants of `Conv2dNB`, three on each lane: the forward pass with a zero weight, the input gradient through a
   zero weight, and the weight gradient from zero patches (CPU) or from a zero starting gradient (device).
-- 204 mutants in all, with gradient accumulation's twelve: 201 caught, 3 surviving by design.
+- Eight mutants of attention's sums and of `fast.bend`'s Attention (#28).
+- 212 mutants in all: 209 caught, 3 surviving by design.
 - `reference/rope2d_check.py` takes the probe from the command line, as `tile_check.py` does. It always read
   `.scratch/rope2d_probe` before, so `make mutate` tested a mutant of `RoPE2d`'s CPU code against the unmutated binary.
 
