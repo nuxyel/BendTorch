@@ -148,6 +148,9 @@ Numbers marked "busy machine" were taken with other jobs running and are a first
 - `Tile` (a per-image row broadcast) is in `main.bend` and `gpu.bend`, not in `fast.bend`. On the GPU both passes give
   `main.bend`'s bits (`demo/gpu_layers_test.bend`, cases 19 and 20), and the CPU lane's numbers are
   `reference/tile_check.py`'s.
+- `Conv2dNB` (`Conv2d` without the bias, #39) is in `main.bend` and `gpu.bend`, as `Conv2d` is. On the GPU both passes
+  give `main.bend`'s bits (`demo/gpu_layers_test.bend`, case 23), and the CPU lane's numbers are
+  `reference/conv2dnb_check.py`'s.
 - Gradient accumulation (`Train.accumulate`, `Train.flush`, #36) relies on every backward pass adding into the
   gradient it receives, the layer protocol. It is tested against PyTorch on a 7-6-3 MLP (`reference/test_accum.py`),
   and over the three lanes on five small models (`demo/accum_lanes.bend`: LinearFirst, Linear, LinearNB, RMSNorm,
