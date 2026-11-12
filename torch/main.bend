@@ -3729,6 +3729,270 @@ def Conv2dNB(+n: Nat, +c: Nat, +co: Nat, +k: Nat, +hs: Nat, +ws: Nat, +p: Nat, +
     prm => xs => off => Mat.store(co, ckk(c, k), prm, xs, off),
     u => U32.from_nat(Nat.mul(co, ckk(c, k)))}
 
+# ---- MaxPool2d ----
+#
+# The state is the input itself: the backward recomputes each window's arg-max from it with the
+# same scan, so no index is stored and ties follow the same first-in-row-major rule both ways.
+# t (0 .. n*ohw*c-1) is one output cell: (image, oy, ox, channel), output row-major.
+
+def mp_oh(+h: Nat, +k: Nat, +s: Nat) -> Nat:
+  Nat.add(Nat.div(Nat.sub(h, k), s), 1n)
+
+def mp_ow(+w: Nat, +k: Nat, +s: Nat) -> Nat:
+  Nat.add(Nat.div(Nat.sub(w, k), s), 1n)
+
+def mp_ohw(+h: Nat, +w: Nat, +k: Nat, +s: Nat) -> Nat:
+  Nat.mul(mp_oh(h, k, s), mp_ow(w, k, s))
+
+def mp_cell(+c: Nat, +t: Nat) -> Nat:
+  Nat.div(t, c)
+
+def mp_ch(+c: Nat, +t: Nat) -> Nat:
+  Nat.mod(t, c)
+
+def mp_o(+ohw: Nat, +cell: Nat) -> Nat:
+  Nat.mod(cell, ohw)
+
+def mp_image(+ohw: Nat, +cell: Nat) -> Nat:
+  Nat.div(cell, ohw)
+
+def mp_oy(+ow: Nat, +o: Nat) -> Nat:
+  Nat.div(o, ow)
+
+def mp_ox(+ow: Nat, +o: Nat) -> Nat:
+  Nat.mod(o, ow)
+
+def mp_row(+c: Nat, +ohw: Nat, +ow: Nat, +s1: Nat, +t: Nat) -> Nat:
+  Nat.mul(mp_oy(ow, mp_o(ohw, mp_cell(c, t))), s1)
+
+def mp_col(+c: Nat, +ohw: Nat, +ow: Nat, +s1: Nat, +t: Nat) -> Nat:
+  Nat.mul(mp_ox(ow, mp_o(ohw, mp_cell(c, t))), s1)
+
+def mp_base(+c: Nat, +h: Nat, +w: Nat, +ohw: Nat, +t: Nat) -> Nat:
+  +cell = mp_cell(c, t)
+  +image = mp_image(ohw, cell)
+  Nat.add(Nat.mul(Nat.mul(Nat.mul(image, h), w), c), mp_ch(c, t))
+
+# the flat cell of (image, channel, row, col): the forward's window entry
+def mp_flat(+c: Nat, +h: Nat, +w: Nat, +ch: Nat, +image: Nat, +row: Nat, +col: Nat) -> Nat:
+  Nat.add(Nat.mul(Nat.add(Nat.mul(image, Nat.mul(h, w)), Nat.add(Nat.mul(row, w), col)), c), ch)
+
+def mp_first(+c: Nat, +h: Nat, +w: Nat, +ohw: Nat, +ow: Nat, +k: Nat, +s1: Nat, +t: Nat) -> Nat:
+  mp_flat(c, h, w, mp_ch(c, t), mp_image(ohw, mp_cell(c, t)),
+    mp_row(c, ohw, ow, s1, t), mp_col(c, ohw, ow, s1, t))
+
+type MPM is Type:
+  MPM{d: Array<F32>, v: F32, i: Nat}
+
+# the window's maximum and the plane index (row*w + col) of the first cell that reached it
+def mp_win(+left: Nat, +row: Nat, +col: Nat, +w: Nat, +k: Nat, +base: Nat, +c: Nat,
+    +ky: Nat, +kx: Nat, +best: F32, +bi: Nat, r: Array<F32> & F32) -> MPM:
+  match left r:
+    case 0n Tuple{d, v}:
+      MPM{d, best, bi}
+    case 1n Tuple{d, +v}:
+      +idx = Nat.add(Nat.mul(Nat.add(row, ky), w), Nat.add(col, kx))
+      +gt = F32.is_gt(v, best)
+      MPM{d, Bool.pick(F32, gt, v, best), Bool.pick(Nat, gt, idx, bi)}
+    case 1n+q Tuple{d, +v}:
+      +idx = Nat.add(Nat.mul(Nat.add(row, ky), w), Nat.add(col, kx))
+      +gt = F32.is_gt(v, best)
+      +nb = Bool.pick(F32, gt, v, best)
+      +ni = Bool.pick(Nat, gt, idx, bi)
+      +kx2 = Nat.add(kx, 1n)
+      +wrap = Nat.is_eq(kx2, k)
+      +ky2 = Bool.pick(Nat, wrap, Nat.add(ky, 1n), ky)
+      +kx3 = Bool.pick(Nat, wrap, 0n, kx2)
+      +nidx = Nat.add(Nat.mul(Nat.add(row, ky2), w), Nat.add(col, kx3))
+      mp_win(q, row, col, w, k, base, c, ky2, kx3, nb, ni,
+        Array.get(F32, d, U32.from_nat(Nat.add(base, Nat.mul(nidx, c)))))
+
+type MPF is Type:
+  MPF{d: Array<F32>, ys: List<&2, F32>}
+
+# the loop carries the scan's result in `m`, so the computed MPM is matched as a parameter
+def mp_f_go(+fuel: Nat, +left: Nat, +t: Nat, +c: Nat, +h: Nat, +w: Nat, +k: Nat, +s1: Nat,
+    +ohw: Nat, +ow: Nat, first: Bool, m: MPM, +ys: List<&2, F32>) -> MPF:
+  match fuel:
+    case 0n:
+      match m:
+        case MPM{d, v, i}:
+          MPF{d, ys}
+    case 1n+f:
+      match left:
+        case 0n:
+          match m:
+            case MPM{d, v, i}:
+              MPF{d, ys}
+        case 1n:
+          match first:
+            case True{}:
+              match m:
+                case MPM{d, v, i}:
+                  +row = mp_row(c, ohw, ow, s1, t)
+                  +col = mp_col(c, ohw, ow, s1, t)
+                  +base = mp_base(c, h, w, ohw, t)
+                  mp_f_go(f, 1n, t, c, h, w, k, s1, ohw, ow, False{},
+                    mp_win(Nat.mul(k, k), row, col, w, k, base, c, 0n, 0n, (0.0 - 1.0e38 : F32), 0n,
+                      Array.get(F32, d, U32.from_nat(mp_first(c, h, w, ohw, ow, k, s1, t)))), ys)
+            case False{}:
+              match m:
+                case MPM{d2, best, plane}:
+                  MPF{d2, Con{best, ys}}
+        case 2n+q:
+          match first:
+            case True{}:
+              match m:
+                case MPM{d, v, i}:
+                  +row = mp_row(c, ohw, ow, s1, t)
+                  +col = mp_col(c, ohw, ow, s1, t)
+                  +base = mp_base(c, h, w, ohw, t)
+                  mp_f_go(f, 2n+q, t, c, h, w, k, s1, ohw, ow, False{},
+                    mp_win(Nat.mul(k, k), row, col, w, k, base, c, 0n, 0n, (0.0 - 1.0e38 : F32), 0n,
+                      Array.get(F32, d, U32.from_nat(mp_first(c, h, w, ohw, ow, k, s1, t)))), ys)
+            case False{}:
+              match m:
+                case MPM{d2, best, plane}:
+                  +t2 = Nat.add(t, 1n)
+                  +row2 = mp_row(c, ohw, ow, s1, t2)
+                  +col2 = mp_col(c, ohw, ow, s1, t2)
+                  +base2 = mp_base(c, h, w, ohw, t2)
+                  mp_f_go(f, 1n+q, t2, c, h, w, k, s1, ohw, ow, False{},
+                    mp_win(Nat.mul(k, k), row2, col2, w, k, base2, c, 0n, 0n, (0.0 - 1.0e38 : F32), 0n,
+                      Array.get(F32, d2, U32.from_nat(mp_first(c, h, w, ohw, ow, k, s1, t2)))),
+                    Con{best, ys})
+
+def mp_fwd_done(+n: Nat, +c: Nat, +h: Nat, +w: Nat, +ohw: Nat, m: MPF) -> Fwd<Unit, TA.Mat<Nat.mul(n, ohw), c>, TA.Mat<Nat.mul(n, Nat.mul(h, w)), c>>:
+  match m:
+    case MPF{dx, ys}:
+      Fwd{Unit{}, TA.Mat.from_list(Nat.mul(n, ohw), c, List.reverse(&2, F32, ys)), TA.Mat{dx}}
+
+def mp_fwd(+n: Nat, +c: Nat, +h: Nat, +w: Nat, +k: Nat, +s1: Nat,
+    x: TA.Mat<Nat.mul(n, Nat.mul(h, w)), c>) -> Fwd<Unit, TA.Mat<Nat.mul(n, mp_ohw(h, w, k, s1)), c>, TA.Mat<Nat.mul(n, Nat.mul(h, w)), c>>:
+  match x:
+    case TA.Mat{d}:
+      +ohw = mp_ohw(h, w, k, s1)
+      +ow = mp_ow(w, k, s1)
+      mp_fwd_done(n, c, h, w, ohw,
+        mp_f_go(Nat.add(Nat.mul(Nat.mul(Nat.mul(n, ohw), c), 2n), 1n),
+          Nat.mul(Nat.mul(n, ohw), c), 0n, c, h, w, k, s1, ohw, ow, True{},
+          MPM{d, 0.0, 0n}, Nil{}))
+
+def mp_add(r: Array<F32> & F32, +i: U32, +v: F32) -> Array<F32>:
+  match r:
+    case Tuple{a, +old}:
+      Array.set(F32, a, i, (old + v : F32))
+
+type MPB is Type:
+  MPB{dx: Array<F32>, dy: Array<F32>}
+
+def dy_of(r: Array<F32> & F32) -> Array<F32>:
+  match r:
+    case Tuple{a, v}:
+      a
+
+def dv_of(r: Array<F32> & F32) -> F32:
+  match r:
+    case Tuple{a, +v}:
+      v
+
+def dx_of(r: Array<F32> & F32) -> Array<F32>:
+  match r:
+    case Tuple{a, v}:
+      a
+
+def mp_b_go(+fuel: Nat, +left: Nat, +t: Nat, +c: Nat, +h: Nat, +w: Nat, +k: Nat, +s1: Nat,
+    +ohw: Nat, +ow: Nat, first: Bool, m: MPM, ry: Array<F32> & F32, dxa: Array<F32>) -> MPB:
+  match fuel:
+    case 0n:
+      match m:
+        case MPM{d, v, i}:
+          MPB{d, dy_of(ry)}
+    case 1n+f:
+      match left:
+        case 0n:
+          match m:
+            case MPM{d, v, i}:
+              MPB{d, dy_of(ry)}
+        case 1n:
+          match first:
+            case True{}:
+              match m:
+                case MPM{d, v, i}:
+                  +row = mp_row(c, ohw, ow, s1, t)
+                  +col = mp_col(c, ohw, ow, s1, t)
+                  +base = mp_base(c, h, w, ohw, t)
+                  mp_b_go(f, 1n, t, c, h, w, k, s1, ohw, ow, False{},
+                    mp_win(Nat.mul(k, k), row, col, w, k, base, c, 0n, 0n, (0.0 - 1.0e38 : F32), 0n,
+                      Array.get(F32, d, U32.from_nat(mp_first(c, h, w, ohw, ow, k, s1, t)))),
+                    ry, dxa)
+            case False{}:
+              match m:
+                case MPM{d2, best, plane}:
+                  match ry:
+                    case Tuple{dyd, +wv}:
+                      +base = mp_base(c, h, w, ohw, t)
+                      +flat = Nat.add(base, Nat.mul(plane, c))
+                      MPB{mp_add(Array.get(F32, dxa, U32.from_nat(flat)), U32.from_nat(flat), wv), dyd}
+        case 2n+q:
+          match first:
+            case True{}:
+              match m:
+                case MPM{d, v, i}:
+                  +row = mp_row(c, ohw, ow, s1, t)
+                  +col = mp_col(c, ohw, ow, s1, t)
+                  +base = mp_base(c, h, w, ohw, t)
+                  mp_b_go(f, 2n+q, t, c, h, w, k, s1, ohw, ow, False{},
+                    mp_win(Nat.mul(k, k), row, col, w, k, base, c, 0n, 0n, (0.0 - 1.0e38 : F32), 0n,
+                      Array.get(F32, d, U32.from_nat(mp_first(c, h, w, ohw, ow, k, s1, t)))),
+                    ry, dxa)
+            case False{}:
+              match m:
+                case MPM{d2, best, plane}:
+                  match ry:
+                    case Tuple{dyd, +wv}:
+                      +base = mp_base(c, h, w, ohw, t)
+                      +flat = Nat.add(base, Nat.mul(plane, c))
+                      dx3 = mp_add(Array.get(F32, dxa, U32.from_nat(flat)), U32.from_nat(flat), wv)
+                      +t2 = Nat.add(t, 1n)
+                      +row2 = mp_row(c, ohw, ow, s1, t2)
+                      +col2 = mp_col(c, ohw, ow, s1, t2)
+                      +base2 = mp_base(c, h, w, ohw, t2)
+                      mp_b_go(f, 1n+q, t2, c, h, w, k, s1, ohw, ow, False{},
+                        mp_win(Nat.mul(k, k), row2, col2, w, k, base2, c, 0n, 0n, (0.0 - 1.0e38 : F32), 0n,
+                          Array.get(F32, d2, U32.from_nat(mp_first(c, h, w, ohw, ow, k, s1, t2)))),
+                        Array.get(F32, dyd, U32.from_nat(t2)), dx3)
+
+def mp_bwd_done(+n: Nat, +c: Nat, +h: Nat, +w: Nat, m: MPB) -> Bwd<Unit, TA.Mat<Nat.mul(n, Nat.mul(h, w)), c>>:
+  match m:
+    case MPB{dx, dy}:
+      Bwd{Unit{}, TA.Mat{dx}, Unit{}}
+
+def mp_bwd(+n: Nat, +c: Nat, +h: Nat, +w: Nat, +k: Nat, +s1: Nat,
+    s: TA.Mat<Nat.mul(n, Nat.mul(h, w)), c>,
+    dy: TA.Mat<Nat.mul(n, mp_ohw(h, w, k, s1)), c>) -> Bwd<Unit, TA.Mat<Nat.mul(n, Nat.mul(h, w)), c>>:
+  match s dy:
+    case TA.Mat{sx} TA.Mat{dyd}:
+      +ohw = mp_ohw(h, w, k, s1)
+      +ow = mp_ow(w, k, s1)
+      +size = Nat.mul(Nat.mul(n, Nat.mul(h, w)), c)
+      mp_bwd_done(n, c, h, w,
+        mp_b_go(Nat.add(Nat.mul(Nat.mul(Nat.mul(n, ohw), c), 2n), 1n),
+          Nat.mul(Nat.mul(n, ohw), c), 0n, c, h, w, k, s1, ohw, ow, True{},
+          MPM{sx, 0.0, 0n}, Array.get(F32, dyd, U32.from_nat(0n)),
+          Array.new(F32, TA.cap_depth(size), 0.0)))
+
+def MaxPool2d(+n: Nat, +c: Nat, +h: Nat, +w: Nat, +k: Nat, +s1: Nat) -> Layer<Unit, TA.Mat<Nat.mul(n, Nat.mul(h, w)), c>, TA.Mat<Nat.mul(n, mp_ohw(h, w, k, s1)), c>, TA.Mat<Nat.mul(n, Nat.mul(h, w)), c>>:
+  Layer{
+    u => x => mp_fwd(n, c, h, w, k, s1, x),
+    u => s => dy => g => mp_bwd(n, c, h, w, k, s1, s, dy),
+    op => p => g => st => no_step(Unit, op, p, g, st),
+    u => Unit{},
+    p => PL{Unit{}, Nil{}},
+    p => xs => off => PA{Unit{}, xs, off},
+    p => xs => off => PA{Unit{}, xs, off},
+    u => 0}
+
 def hit(b: Bool) -> F32:
   match b:
     case True{}:

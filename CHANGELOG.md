@@ -64,8 +64,17 @@ attention: an infinity or a NaN at a position a row cannot see no longer reaches
 
 ### Laws
 
-Four new laws in `LAWS.bend`, proved in `PROOF.bend` and checked again by `bend PROOF.bend --verdict`, 39 laws in all
-(with `dtype.bend`'s `unpair_pair`). Two by @adeerkhan (#32), and two for attention's sums:
+Six new laws in `LAWS.bend`, proved in `PROOF.bend` and checked again by `bend PROOF.bend --verdict`,
+**46 laws in all** (with `dtype.bend`'s `unpair_pair`): two for attention's sums, two for `MaxPool2d` (#39),
+and two by @adeerkhan (#32).
+
+- `mp_count`: with a surplus `h - k = q·s + r` and `r < s` (written `s = 1 + r + a`), the output count
+  `(h - k)/s + 1` is `q + 1` — `div_blocks` for the `q` whole windows, `div_rest` for the `r` left over.
+- `mp_scatter`: the backward's write for output `(row, col)` at window offset `(ky, kx)` is the cell the
+  forward's window entry reads — `(image·h·w + plane)·c + ch` is the image base plus `plane·c` — so the
+  scatter lands on that output's window, with `ky < k` and `kx < k` the bounds inside the kernel. The proof
+  is distributivity and regrouping.
+
 
 - `causal_pv`: every number of row `i` of attention's `O = P·V` (and `dQ = G·K`) is a sum of exactly `i + 1` products,
   the count `trow0` gives each of the row's dots.
@@ -105,6 +114,13 @@ Three more in the same file, proved the same way, **44 laws in all** (with `dtyp
   `(r mod th)·half + j`.
 
 ### New
+
+- **`MaxPool2d`**: general `(n, c, h, w, k, s)` max pooling, no padding (BendTorch#39). Ties keep the first
+  cell in row-major order and overlapping windows (`s < k`) add their gradients into the same input cell. The
+  probe and check cover tiling, overlap, two images and an explicit tie; `y` and `dX` are **0.000e+00** against
+  `F.max_pool2d(..., return_indices=True)` and its autograd (`reference/maxpool_check.py`). The state is the
+  input, so the backward recomputes the arg-max with the same rule; two laws (`mp_count`, `mp_scatter`) are
+  below. Not in this change: the device lane (the `gpu.bend` twin comes after the merge).
 
 - **`Conv2dNB`**: `Conv2d` without the bias, for the image reference's no-bias convolutions (BendTorch#39). The same
   `im2col` and `col2im` around `LinearNB`'s forward, backward and optimizer step; `P` is the `co x c*k*k` weight
