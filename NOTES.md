@@ -2609,3 +2609,13 @@ runs it after the merge, and `docs/limitations.md` says so.
 - `make package CORE=bendtorch VERSION=2.1.0.0` failed first: `scripts/package.sh` still wanted 19 zeros from
   `fast_test`, which prints 21 since the triangle branch's Attention case (the branch had updated the Makefile,
   `check_js.sh` and `mutate.py`, not the package script). Fixed; every package test green.
+
+## v2.1.0 on BendHub (2026-11-11)
+
+- Release PR #41, its full CI run green (1h23m), merged as f91e3b2, tagged v2.1.0.
+- Gates on Bend 2.0.40 before the PR (above); `make package CORE=bendtorch VERSION=2.1.0.0`, every package test green.
+- Published from `build/packages/` at the tag's content: `bendtorch@2.1.0.0` `0x82db62d229f00333d556466609c8ab27`,
+  `bendtorch-fast@2.1.0.0` `0x15711843f1bd3875f6915c12fd7c38bb`, `bendtorch-gpu@2.1.0.0`
+  `0xc222e83b37d53779b42f2125d79e6c55`, `bendtorch-load@2.1.0.0` `0x558ff3ef0e2c670a7a9a529b0d91fc45`. Each published on
+  the first try.
+- GitHub release v2.1.0.
