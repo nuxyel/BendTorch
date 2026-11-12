@@ -4,12 +4,13 @@
 # output (forward y, backward dX and the gradient; for the optimizer, the weights, the zeroed gradient and the moments):
 #   SiLU, Mul2, Mat.sum2 and Mat.dup, RMSNorm, RoPE, Attention, SGD, momentum, AdamW, MSE (loss and gradient),
 #   Embedding (rows and gradient), CrossEntropy (loss and gradient), attention at small and odd sizes, GroupNorm,
-#   FullAttention at SmolLM2's sizes and at small sizes, Conv2d at a small odd shape and at a realistic one
-# With `+RTS --gpu off -RTS` or without CUDA every case is 0 (the same bits). On the GPU, SiLU, attention, full attention
-# and cross-entropy take CUDA's float exp, whose last bit can differ from the host's: 1 ulp is accepted for an
-# exponential (my decision, 2026-10-18), and the differences that follow from it downstream are what this test shows;
-# every other case is 0.
-#   gpu_layers_test        every case, one line          gpu_layers_test <k>   case k alone (0..16, in the order above)
+#   FullAttention at SmolLM2's sizes and at small sizes, Conv2d at a small odd shape and at a realistic one, GELUErf's y
+#   and its dx (inputs in [-6, 6), every piece of erf), Tile's y and its dx, RoPE2d's y and its dx, Conv2dNB
+# With `+RTS --gpu off -RTS` or without CUDA every case is 0 (the same bits). On the GPU, SiLU, attention, full attention,
+# cross-entropy and GELUErf's gradient take CUDA's float exp, whose last bit can differ from the host's: 1 ulp is accepted
+# for an exponential (my decision, 2026-10-18), and the differences that follow from it downstream are what this test
+# shows; every other case is 0.
+#   gpu_layers_test        every case, one line          gpu_layers_test <k>   case k alone (0..23, in the order above)
 import Base
 import ../torch/main.bend as T
 import ../torch/gpu.bend as G
@@ -30,6 +31,15 @@ def arr(+cnt: Nat, +seed: U32) -> Array<F32>:
 
 def mat(+r: Nat, +c: Nat, +seed: U32) -> TA.Mat<r, c>:
   TA.Mat{arr(Nat.mul(r, c), seed)}
+
+# the same values times 6, in [-6, 6): GELUErf's erf(x / sqrt 2) then reaches all of its pieces, 1 included
+def fillw(k: Nat, +i: U32, +seed: U32, a: Array<F32>) -> Array<F32>:
+  match k:
+    case 0n: a
+    case 1n+p: fillw(p, (i + 1 : U32), seed, Array.set(F32, a, i, (val(i, seed) * 6.0 : F32)))
+
+def matw(+r: Nat, +c: Nat, +seed: U32) -> TA.Mat<r, c>:
+  TA.Mat{fillw(Nat.mul(r, c), 0, seed, Array.new(F32, TA.cap_depth(Nat.mul(r, c)), 0.0))}
 
 def bits(x: F32) -> U32:
   match x:
@@ -89,6 +99,42 @@ def c_m(+n: Nat, +c: Nat, a: RR<Unit, TA.Mat<n, c>, TA.Mat<n, c>>, b: RR<Unit, T
 def silu() -> U32:
   c_m(512n, 1536n, run(~Unit, ~TA.Mat<512n, 1536n>, ~TA.Mat<512n, 1536n>, ~TA.Mat<512n, 1536n>, ~T.SiLU(512n, 1536n), Unit{}, mat(512n, 1536n, 1), mat(512n, 1536n, 2), Unit{}), run(~Unit, ~TA.Mat<512n, 1536n>, ~TA.Mat<512n, 1536n>, ~TA.Mat<512n, 1536n>, ~G.SiLU(512n, 1536n), Unit{}, mat(512n, 1536n, 1), mat(512n, 1536n, 2), Unit{}))
 
+# GELUErf at SiLU's size: y alone (erf is F32 additions, multiplications and comparisons, no exp, so on the device too
+# it must be 0) and dx alone (its pdf takes F32.exp)
+def c_y(+n: Nat, +c: Nat, a: RR<Unit, TA.Mat<n, c>, TA.Mat<n, c>>, b: RR<Unit, TA.Mat<n, c>, TA.Mat<n, c>>) -> U32:
+  match a b:
+    case RR{y1, d1, g1} RR{y2, d2, g2}: dm(n, c, y1, y2)
+
+def c_dx(+n: Nat, +c: Nat, a: RR<Unit, TA.Mat<n, c>, TA.Mat<n, c>>, b: RR<Unit, TA.Mat<n, c>, TA.Mat<n, c>>) -> U32:
+  match a b:
+    case RR{y1, d1, g1} RR{y2, d2, g2}: dm(n, c, d1, d2)
+
+def gelue_y() -> U32:
+  c_y(512n, 1536n, run(~Unit, ~TA.Mat<512n, 1536n>, ~TA.Mat<512n, 1536n>, ~TA.Mat<512n, 1536n>, ~T.GELUErf(512n, 1536n), Unit{}, matw(512n, 1536n, 121), mat(512n, 1536n, 122), Unit{}), run(~Unit, ~TA.Mat<512n, 1536n>, ~TA.Mat<512n, 1536n>, ~TA.Mat<512n, 1536n>, ~G.GELUErf(512n, 1536n), Unit{}, matw(512n, 1536n, 121), mat(512n, 1536n, 122), Unit{}))
+
+def gelue_dx() -> U32:
+  c_dx(512n, 1536n, run(~Unit, ~TA.Mat<512n, 1536n>, ~TA.Mat<512n, 1536n>, ~TA.Mat<512n, 1536n>, ~T.GELUErf(512n, 1536n), Unit{}, matw(512n, 1536n, 121), mat(512n, 1536n, 122), Unit{}), run(~Unit, ~TA.Mat<512n, 1536n>, ~TA.Mat<512n, 1536n>, ~TA.Mat<512n, 1536n>, ~G.GELUErf(512n, 1536n), Unit{}, matw(512n, 1536n, 121), mat(512n, 1536n, 122), Unit{}))
+
+# Tile, y and dx apart: 8 images of 64 tokens at SmolLM2's width (512 x 576 out), and 3 images of 5 tokens of 7 numbers
+# (105 cells, so the leaves' last shares of cells are short)
+def c_ty(+b: Nat, +m: Nat, +c: Nat, a: RR<Unit, TA.Mat<b, c>, TA.Mat<m, c>>, z: RR<Unit, TA.Mat<b, c>, TA.Mat<m, c>>) -> U32:
+  match a z:
+    case RR{y1, d1, g1} RR{y2, d2, g2}: dm(m, c, y1, y2)
+
+def c_tdx(+b: Nat, +m: Nat, +c: Nat, a: RR<Unit, TA.Mat<b, c>, TA.Mat<m, c>>, z: RR<Unit, TA.Mat<b, c>, TA.Mat<m, c>>) -> U32:
+  match a z:
+    case RR{y1, d1, g1} RR{y2, d2, g2}: dm(b, c, d1, d2)
+
+def tile_y() -> U32:
+  u32_max(
+    c_ty(8n, 512n, 576n, run(~Unit, ~TA.Mat<8n, 576n>, ~TA.Mat<512n, 576n>, ~Unit, ~T.Tile(8n, 64n, 576n), Unit{}, mat(8n, 576n, 211), mat(512n, 576n, 212), Unit{}), run(~Unit, ~TA.Mat<8n, 576n>, ~TA.Mat<512n, 576n>, ~Unit, ~G.Tile(8n, 64n, 576n), Unit{}, mat(8n, 576n, 211), mat(512n, 576n, 212), Unit{})),
+    c_ty(3n, 15n, 7n, run(~Unit, ~TA.Mat<3n, 7n>, ~TA.Mat<15n, 7n>, ~Unit, ~T.Tile(3n, 5n, 7n), Unit{}, mat(3n, 7n, 213), mat(15n, 7n, 214), Unit{}), run(~Unit, ~TA.Mat<3n, 7n>, ~TA.Mat<15n, 7n>, ~Unit, ~G.Tile(3n, 5n, 7n), Unit{}, mat(3n, 7n, 213), mat(15n, 7n, 214), Unit{})))
+
+def tile_dx() -> U32:
+  u32_max(
+    c_tdx(8n, 512n, 576n, run(~Unit, ~TA.Mat<8n, 576n>, ~TA.Mat<512n, 576n>, ~Unit, ~T.Tile(8n, 64n, 576n), Unit{}, mat(8n, 576n, 211), mat(512n, 576n, 212), Unit{}), run(~Unit, ~TA.Mat<8n, 576n>, ~TA.Mat<512n, 576n>, ~Unit, ~G.Tile(8n, 64n, 576n), Unit{}, mat(8n, 576n, 211), mat(512n, 576n, 212), Unit{})),
+    c_tdx(3n, 15n, 7n, run(~Unit, ~TA.Mat<3n, 7n>, ~TA.Mat<15n, 7n>, ~Unit, ~T.Tile(3n, 5n, 7n), Unit{}, mat(3n, 7n, 213), mat(15n, 7n, 214), Unit{}), run(~Unit, ~TA.Mat<3n, 7n>, ~TA.Mat<15n, 7n>, ~Unit, ~G.Tile(3n, 5n, 7n), Unit{}, mat(3n, 7n, 213), mat(15n, 7n, 214), Unit{})))
+
 def c_mul(+n: Nat, +c: Nat, a: RR<Unit, T.Two<TA.Mat<n, c>, TA.Mat<n, c>>, TA.Mat<n, c>>, b: RR<Unit, T.Two<TA.Mat<n, c>, TA.Mat<n, c>>, TA.Mat<n, c>>) -> U32:
   match a b:
     case RR{y1, T.Two{a1, b1}, g1} RR{y2, T.Two{a2, b2}, g2}: max3(dm(n, c, y1, y2), dm(n, c, a1, a2), dm(n, c, b1, b2))
@@ -126,6 +172,19 @@ def c_rope(+n: Nat, +w: Nat, a: RR<Unit, TA.Mat<n, w>, TA.Mat<n, w>>, b: RR<Unit
 
 def rope() -> U32:
   c_rope(512n, 576n, run(~Unit, ~TA.Mat<512n, 576n>, ~TA.Mat<512n, 576n>, ~Unit, ~T.RoPE(512n, 576n, 64n, 9n, 32n, 100000.0, {==}), Unit{}, mat(512n, 576n, 41), mat(512n, 576n, 42), Unit{}), run(~Unit, ~TA.Mat<512n, 576n>, ~TA.Mat<512n, 576n>, ~Unit, ~G.RoPE(512n, 576n, 64n, 9n, 32n, 100000.0, {==}), Unit{}, mat(512n, 576n, 41), mat(512n, 576n, 42), Unit{}))
+
+# ---- RoPE2d, y and dx apart: 8 images of 8 x 8 tokens at SmolLM2's width (9 heads of 64: 16 y pairs and 16 x pairs),
+# and 3 images of 3 x 5 tokens, 2 heads of 3 y pairs and 2 x pairs (90 pairs, so the leaves' last shares are short) ----
+
+def rope2_y() -> U32:
+  u32_max(
+    c_y(512n, 576n, run(~Unit, ~TA.Mat<512n, 576n>, ~TA.Mat<512n, 576n>, ~Unit, ~T.RoPE2d(512n, 576n, 8n, 8n, 9n, 16n, 16n, 10000.0, {==}), Unit{}, mat(512n, 576n, 221), mat(512n, 576n, 222), Unit{}), run(~Unit, ~TA.Mat<512n, 576n>, ~TA.Mat<512n, 576n>, ~Unit, ~G.RoPE2d(512n, 576n, 8n, 8n, 9n, 16n, 16n, 10000.0, {==}), Unit{}, mat(512n, 576n, 221), mat(512n, 576n, 222), Unit{})),
+    c_y(45n, 20n, run(~Unit, ~TA.Mat<45n, 20n>, ~TA.Mat<45n, 20n>, ~Unit, ~T.RoPE2d(45n, 20n, 3n, 5n, 2n, 3n, 2n, 10000.0, {==}), Unit{}, mat(45n, 20n, 223), mat(45n, 20n, 224), Unit{}), run(~Unit, ~TA.Mat<45n, 20n>, ~TA.Mat<45n, 20n>, ~Unit, ~G.RoPE2d(45n, 20n, 3n, 5n, 2n, 3n, 2n, 10000.0, {==}), Unit{}, mat(45n, 20n, 223), mat(45n, 20n, 224), Unit{})))
+
+def rope2_dx() -> U32:
+  u32_max(
+    c_dx(512n, 576n, run(~Unit, ~TA.Mat<512n, 576n>, ~TA.Mat<512n, 576n>, ~Unit, ~T.RoPE2d(512n, 576n, 8n, 8n, 9n, 16n, 16n, 10000.0, {==}), Unit{}, mat(512n, 576n, 221), mat(512n, 576n, 222), Unit{}), run(~Unit, ~TA.Mat<512n, 576n>, ~TA.Mat<512n, 576n>, ~Unit, ~G.RoPE2d(512n, 576n, 8n, 8n, 9n, 16n, 16n, 10000.0, {==}), Unit{}, mat(512n, 576n, 221), mat(512n, 576n, 222), Unit{})),
+    c_dx(45n, 20n, run(~Unit, ~TA.Mat<45n, 20n>, ~TA.Mat<45n, 20n>, ~Unit, ~T.RoPE2d(45n, 20n, 3n, 5n, 2n, 3n, 2n, 10000.0, {==}), Unit{}, mat(45n, 20n, 223), mat(45n, 20n, 224), Unit{}), run(~Unit, ~TA.Mat<45n, 20n>, ~TA.Mat<45n, 20n>, ~Unit, ~G.RoPE2d(45n, 20n, 3n, 5n, 2n, 3n, 2n, 10000.0, {==}), Unit{}, mat(45n, 20n, 223), mat(45n, 20n, 224), Unit{})))
 
 # ---- attention: y, dQ, dK and dV; and, apart, smaller sizes: odd t (P's lower triangle is dealt in pairs of rows, the
 # middle row of an odd t alone), t = 1 and 2, one group, one head a group ----
@@ -297,6 +356,20 @@ def conv_stride() -> U32:
 def conv2d() -> U32:
   u32_max(conv_small(), u32_max(conv_big(), conv_stride()))
 
+# ---- Conv2dNB (Conv2d without the bias): y, dX and the weight's gradient, at Conv2d's small odd shape, its realistic
+# one and its two strided ones; the parameter is the co x c·k·k weight alone ----
+
+def c_convnb(+n: Nat, +c: Nat, +co: Nat, +k: Nat, +hs: Nat, +ws: Nat, +p: Nat, +s1: Nat, a: RR<TA.Mat<co, T.ckk(c, k)>, TA.Mat<Nat.mul(n, T.chw(k, hs, ws, p)), c>, TA.Mat<Nat.mul(n, T.cohw(k, hs, ws, p, s1)), co>>, b: RR<TA.Mat<co, T.ckk(c, k)>, TA.Mat<Nat.mul(n, T.chw(k, hs, ws, p)), c>, TA.Mat<Nat.mul(n, T.cohw(k, hs, ws, p, s1)), co>>) -> U32:
+  match a b:
+    case RR{y1, d1, g1} RR{y2, d2, g2}: max3(dm(Nat.mul(n, T.cohw(k, hs, ws, p, s1)), co, y1, y2), dm(Nat.mul(n, T.chw(k, hs, ws, p)), c, d1, d2), dm(co, T.ckk(c, k), g1, g2))
+
+def convnb() -> U32:
+  max4(
+    c_convnb(2n, 3n, 2n, 3n, 4n, 2n, 1n, 0n, run(~TA.Mat<2n, 27n>, ~TA.Mat<30n, 3n>, ~TA.Mat<30n, 2n>, ~TA.Mat<30n, 27n>, ~T.Conv2dNB(2n, 3n, 2n, 3n, 4n, 2n, 1n, 0n, 0n), mat(2n, 27n, 211), mat(30n, 3n, 212), mat(30n, 2n, 213), mat(2n, 27n, 214)), run(~TA.Mat<2n, 27n>, ~TA.Mat<30n, 3n>, ~TA.Mat<30n, 2n>, ~TA.Mat<30n, 27n>, ~G.Conv2dNB(2n, 3n, 2n, 3n, 4n, 2n, 1n, 0n, 0n), mat(2n, 27n, 211), mat(30n, 3n, 212), mat(30n, 2n, 213), mat(2n, 27n, 214))),
+    c_convnb(2n, 3n, 16n, 3n, 31n, 31n, 1n, 0n, run(~TA.Mat<16n, 27n>, ~TA.Mat<2048n, 3n>, ~TA.Mat<2048n, 16n>, ~TA.Mat<2048n, 27n>, ~T.Conv2dNB(2n, 3n, 16n, 3n, 31n, 31n, 1n, 0n, 0n), mat(16n, 27n, 221), mat(2048n, 3n, 222), mat(2048n, 16n, 223), mat(16n, 27n, 224)), run(~TA.Mat<16n, 27n>, ~TA.Mat<2048n, 3n>, ~TA.Mat<2048n, 16n>, ~TA.Mat<2048n, 27n>, ~G.Conv2dNB(2n, 3n, 16n, 3n, 31n, 31n, 1n, 0n, 0n), mat(16n, 27n, 221), mat(2048n, 3n, 222), mat(2048n, 16n, 223), mat(16n, 27n, 224))),
+    c_convnb(2n, 3n, 2n, 3n, 6n, 4n, 1n, 1n, run(~TA.Mat<2n, 27n>, ~TA.Mat<70n, 3n>, ~TA.Mat<24n, 2n>, ~TA.Mat<24n, 27n>, ~T.Conv2dNB(2n, 3n, 2n, 3n, 6n, 4n, 1n, 1n, 0n), mat(2n, 27n, 231), mat(70n, 3n, 232), mat(24n, 2n, 233), mat(2n, 27n, 234)), run(~TA.Mat<2n, 27n>, ~TA.Mat<70n, 3n>, ~TA.Mat<24n, 2n>, ~TA.Mat<24n, 27n>, ~G.Conv2dNB(2n, 3n, 2n, 3n, 6n, 4n, 1n, 1n, 0n), mat(2n, 27n, 231), mat(70n, 3n, 232), mat(24n, 2n, 233), mat(2n, 27n, 234))),
+    c_convnb(2n, 3n, 2n, 3n, 6n, 5n, 1n, 1n, run(~TA.Mat<2n, 27n>, ~TA.Mat<84n, 3n>, ~TA.Mat<24n, 2n>, ~TA.Mat<24n, 27n>, ~T.Conv2dNB(2n, 3n, 2n, 3n, 6n, 5n, 1n, 1n, 0n), mat(2n, 27n, 241), mat(84n, 3n, 242), mat(24n, 2n, 243), mat(2n, 27n, 244)), run(~TA.Mat<2n, 27n>, ~TA.Mat<84n, 3n>, ~TA.Mat<24n, 2n>, ~TA.Mat<24n, 27n>, ~G.Conv2dNB(2n, 3n, 2n, 3n, 6n, 5n, 1n, 1n, 0n), mat(2n, 27n, 241), mat(84n, 3n, 242), mat(24n, 2n, 243), mat(2n, 27n, 244))))
+
 # ---- GroupNorm: y, dx and the gain's and bias's gradients (added into gradients that are not zero); 8 images of 64
 # pixels in 8 groups of 16 channels, and 3 images of 5 pixels in 3 groups of 2 ----
 
@@ -315,17 +388,52 @@ def gn() -> U32:
 
 # every case, on one line
 def all_cases() -> IO(Unit):
-  IO.print(U32.show(silu()) ++ " " ++ U32.show(mul2()) ++ " " ++ U32.show(sumdup()) ++ " " ++ U32.show(rms()) ++ " " ++ U32.show(rope()) ++ " " ++ U32.show(attn()) ++ " " ++ U32.show(step(T.SGD{0.01}, 0n)) ++ " " ++ U32.show(step(T.Momentum{0.01, 0.9}, 1n)) ++ " " ++ U32.show(step(T.Opt.at(T.CAdamW{0.001, 0.9, 0.999, 0.00000001, 0.01, 0.1, 0.001}, 0.1, 0.001), 2n)) ++ " " ++ U32.show(mse()) ++ " " ++ U32.show(emb()) ++ " " ++ U32.show(ce()) ++ " " ++ U32.show(attn_small()) ++ " " ++ U32.show(gn()) ++ " " ++ U32.show(attnf()) ++ " " ++ U32.show(attnf_small()) ++ " " ++ U32.show(conv2d()))
+  IO.print(U32.show(silu()) ++ " " ++ U32.show(mul2()) ++ " " ++ U32.show(sumdup()) ++ " " ++ U32.show(rms()) ++ " " ++ U32.show(rope()) ++ " " ++ U32.show(attn()) ++ " " ++ U32.show(step(T.SGD{0.01}, 0n)) ++ " " ++ U32.show(step(T.Momentum{0.01, 0.9}, 1n)) ++ " " ++ U32.show(step(T.Opt.at(T.CAdamW{0.001, 0.9, 0.999, 0.00000001, 0.01, 0.1, 0.001}, 0.1, 0.001), 2n)) ++ " " ++ U32.show(mse()) ++ " " ++ U32.show(emb()) ++ " " ++ U32.show(ce()) ++ " " ++ U32.show(attn_small()) ++ " " ++ U32.show(gn()) ++ " " ++ U32.show(attnf()) ++ " " ++ U32.show(attnf_small()) ++ " " ++ U32.show(conv2d()) ++ " " ++ U32.show(gelue_y()) ++ " " ++ U32.show(gelue_dx()) ++ " " ++ U32.show(tile_y()) ++ " " ++ U32.show(tile_dx()) ++ " " ++ U32.show(rope2_y()) ++ " " ++ U32.show(rope2_dx()) ++ " " ++ U32.show(convnb()))
 
 # case k alone (0 = SiLU .. 11 = CrossEntropy, 12 = attention at small sizes, 13 = GroupNorm, 14 = full attention at
-# SmolLM2's sizes, 15 = full attention at small sizes, 16 = Conv2d). In the line above, a case's bangs can follow host work in the same
+# SmolLM2's sizes, 15 = full attention at small sizes, 16 = Conv2d, 17 = GELUErf's y, 18 = its dx, 19 = Tile's y, 20 = its dx, 21 = RoPE2d's y, 22 = its dx, 23 = Conv2dNB). In the line above, a case's bangs can follow host work in the same
 # evaluation and then run on the CPU threads: under nsys, the whole line made 15 bangs on the device, and cross-entropy
 # read 0 ulps there against 4 alone. So make gpu runs each case as its own program (nsys: every case's bangs on the
 # device, 2026-10-21).
+def one_23(k: Nat) -> U32:
+  match k:
+    case 0n: convnb()
+    case 1n+q: 4294967295
+
+def one_22(k: Nat) -> U32:
+  match k:
+    case 0n: rope2_dx()
+    case 1n+q: one_23(q)
+
+def one_21(k: Nat) -> U32:
+  match k:
+    case 0n: rope2_y()
+    case 1n+q: one_22(q)
+
+def one_20(k: Nat) -> U32:
+  match k:
+    case 0n: tile_dx()
+    case 1n+q: one_21(q)
+
+def one_19(k: Nat) -> U32:
+  match k:
+    case 0n: tile_y()
+    case 1n+q: one_20(q)
+
+def one_18(k: Nat) -> U32:
+  match k:
+    case 0n: gelue_dx()
+    case 1n+q: one_19(q)
+
+def one_17(k: Nat) -> U32:
+  match k:
+    case 0n: gelue_y()
+    case 1n+q: one_18(q)
+
 def one_16(k: Nat) -> U32:
   match k:
     case 0n: conv2d()
-    case 1n+q: 4294967295
+    case 1n+q: one_17(q)
 
 def one_15(k: Nat) -> U32:
   match k:

@@ -9,9 +9,10 @@
 # the CPU threads otherwise:
 # - LinearF, LinearFirstF and LinearNBF: their three products (x·Wᵀ, dY·W, dYᵀ·X added into dW) from tensor-gpu, and
 #   their optimizer step.
-# - SiLU, Mul2, Add2, Residual, Mat.dup and Mat.sum2: their element-wise loops.
-# - RMSNorm, RoPE and Attention (main.bend's names; fast.bend's are main.bend's, on the CPU).
+# - SiLU, GELUErf, Mul2, Add2, Residual, Mat.dup and Mat.sum2: their element-wise loops.
+# - RMSNorm, RoPE, RoPE2d and Attention (main.bend's names; fast.bend's are main.bend's, on the CPU).
 # - im2col, col2im and Conv2d: the gather and its scatter as cell bangs, then the linear layer's three products.
+# - Tile: its broadcast and the sum of its rows as cell bangs.
 # - MSE, CrossEntropy and Embedding (its rows, its gradient and its step), so that a training step's work, the loss
 #   included, stays on the device; the host reads back a few numbers a row for the loss.
 # The names are fast.bend's, so a program switches by its import line alone (the Makefile builds the GPU demos so).
@@ -19,8 +20,8 @@
 # Each bang is one of tensor-gpu's run1..run4 (outputs in place) or run1_new..run4_new (outputs made on the device):
 # a tree of leaves, every node sharing the arrays. The code of a leaf is below, in plain Bend, and computes each number
 # with main.bend's own expression or row code (rmsf_row, ssq, rmsb_dot, rope_one, dot0, psmc, g_set2, adam_m..), so the bits
-# are main.bend's, except where an exponential is taken on the device (SiLU, attention's softmax, cross-entropy): CUDA
-# takes the float overload of exp there and its last bit can differ from the host's (the known
+# are main.bend's, except where an exponential is taken on the device (SiLU, GELUErf's gradient, attention's softmax,
+# cross-entropy): CUDA takes the float overload of exp there and its last bit can differ from the host's (the known
 # limit of bendlang/bend#1305); 1 ulp is accepted there, my decision of 2026-10-18 (tests: demo/gpu_test.bend
 # and demo/gpu_layers_test.bend). Sizes, depths and capacities are
 # computed on the host and passed in. The arrays stay on the device from one bang to the next as long as the host only
@@ -111,6 +112,13 @@ def lf_silu(+t: U32, +l: U32, +e: EN, x1: Array<F32>, x2: Array<F32>, x3: Array<
 def lf_silud(+t: U32, +l: U32, +e: EN, x1: Array<F32>, x2: Array<F32>, x3: Array<F32>, x4: Array<F32>, o: Array<F32>) -> Array<F32>:
   ewi(~T.silu_d, t, l, e, o, x1)
 
+# GELUErf: main.bend's gelu_erf_v(x), and gelu_erf_d(dy, x) with o = dy written in place, x1 = x
+def lf_gelue(+t: U32, +l: U32, +e: EN, x1: Array<F32>, x2: Array<F32>, x3: Array<F32>, x4: Array<F32>, o: Array<F32>) -> Array<F32>:
+  ew1(~T.gelu_erf_v, t, l, e, x1, o)
+
+def lf_gelued(+t: U32, +l: U32, +e: EN, x1: Array<F32>, x2: Array<F32>, x3: Array<F32>, x4: Array<F32>, o: Array<F32>) -> Array<F32>:
+  ewi(~T.gelu_erf_d, t, l, e, o, x1)
+
 # o = a, written in place, x1 = b: a + b
 def lf_add(+t: U32, +l: U32, +e: EN, x1: Array<F32>, x2: Array<F32>, x3: Array<F32>, x4: Array<F32>, o: Array<F32>) -> Array<F32>:
   ewi(~T.f32_add, t, l, e, o, x1)
@@ -168,6 +176,19 @@ def silu_b(+n: Nat, +c: Nat, s: TA.Mat<n, c>, dy: TA.Mat<n, c>) -> T.Bwd<Unit, T
 # SiLU: y = silu(x), the input saved; dx = silu'(x) * dy
 def SiLU(+n: Nat, +c: Nat) -> T.Layer<Unit, TA.Mat<n, c>, TA.Mat<n, c>, TA.Mat<n, c>>:
   T.Layer{p => x => silu_f(n, c, x), p => s => dy => g => silu_b(n, c, s, dy), op => p => g => st => T.no_step(Unit, op, p, g, st), u => Unit{}, p => T.PL{p, Nil{}}, p => xs => off => T.PA{p, xs, off}, p => xs => off => T.PA{p, xs, off}, u => 0}
+
+def gelue_f(+n: Nat, +c: Nat, x: TA.Mat<n, c>) -> T.Fwd<Unit, TA.Mat<n, c>, TA.Mat<n, c>>:
+  match x:
+    case TA.Mat{a}: silu_f2(n, c, TG.run1_new(~EN, ~lf_gelue, TG.depth(Nat.mul(n, c)), en(Nat.mul(n, c)), a, nn(Unit{}), nn(Unit{}), nn(Unit{}), TA.cap_depth(Nat.mul(n, c))))
+
+def gelue_b(+n: Nat, +c: Nat, s: TA.Mat<n, c>, dy: TA.Mat<n, c>) -> T.Bwd<Unit, TA.Mat<n, c>>:
+  match s dy:
+    case TA.Mat{x} TA.Mat{d}: T.Bwd{Unit{}, TA.Mat{r1_a(TG.run1(~EN, ~lf_gelued, TG.depth(Nat.mul(n, c)), en(Nat.mul(n, c)), x, nn(Unit{}), nn(Unit{}), nn(Unit{}), d))}, Unit{}}
+
+# GELUErf, the exact GELU: y = gelu(x) with main.bend's erf in plain F32 arithmetic, the input saved; dx = gelu'(x) * dy,
+# whose pdf takes F32.exp (CUDA's float exp on the device, as SiLU)
+def GELUErf(+n: Nat, +c: Nat) -> T.Layer<Unit, TA.Mat<n, c>, TA.Mat<n, c>, TA.Mat<n, c>>:
+  T.Layer{p => x => gelue_f(n, c, x), p => s => dy => g => gelue_b(n, c, s, dy), op => p => g => st => T.no_step(Unit, op, p, g, st), u => Unit{}, p => T.PL{p, Nil{}}, p => xs => off => T.PA{p, xs, off}, p => xs => off => T.PA{p, xs, off}, u => 0}
 
 def mul2_f2(-n: Nat, -c: Nat, q: TG.R1) -> T.Fwd<Unit, TA.Mat<n, c>, T.Two<TA.Mat<n, c>, TA.Mat<n, c>>>:
   match q:
@@ -598,6 +619,91 @@ def rope_go(+n: Nat, +w: Nat, +fwd: Bool, +t: Nat, +h: Nat, +half: Nat, +base: F
 # RoPE on n = b·t rows of h heads of 2·half (main.bend's RoPE)
 def RoPE(+n: Nat, +w: Nat, +t: Nat, +h: Nat, +half: Nat, +base: F32, -e: {w == Nat.mul(h, Nat.add(half, half)) : Nat}) -> T.Layer<Unit, TA.Mat<n, w>, TA.Mat<n, w>, Unit>:
   T.Layer{p => x => T.Fwd{p, rope_go(n, w, True{}, t, h, half, base, x), Unit{}}, p => s => dy => g => T.Bwd{p, rope_go(n, w, False{}, t, h, half, base, dy), g}, op => p => g => st => T.no_step(Unit, op, p, g, st), u => Unit{}, p => T.PL{p, Nil{}}, p => xs => off => T.PA{p, xs, off}, p => xs => off => T.PA{p, xs, off}, u => 0}
+
+# ---- RoPE2d (main.bend's RoPE2d): the two tables on the host (main.bend's rope2_tabN, so the host's cos and sin, as
+# RoPE's), then one bang over the pairs of both runs: pair e < n·h·half_y is the y run's pair e, rotated with the y
+# table, and pair e >= n·h·half_y is the x run's pair e - n·h·half_y, with the x table, each by main.bend's rope_p2 at
+# the addresses and table entries main.bend's rope2_yone and rope2_xone compute. The runs touch disjoint numbers, so one
+# bang does both, and every number is main.bend's.
+
+type ER2 is Data:
+  ER2{n: U32, ny: U32, fwd: Bool, h: U32, hy: U32, hx: U32, w: U32, nt: U32, tw: U32}
+
+def er2(+n: Nat, +fwd: Bool, +th: Nat, +tw: Nat, +h: Nat, +hy: Nat, +hx: Nat, +w: Nat) -> ER2:
+  ER2{U32.from_nat(Nat.mul(n, Nat.mul(h, Nat.add(hy, hx)))), U32.from_nat(Nat.mul(n, Nat.mul(h, hy))), fwd, U32.from_nat(h), U32.from_nat(hy), U32.from_nat(hx), U32.from_nat(w), U32.from_nat(Nat.mul(th, tw)), U32.from_nat(tw)}
+
+# the matrix rotated in place, and the y and x tables
+type RS5 is Type:
+  RS5{x: Array<F32>, yc: Array<F32>, ys: Array<F32>, xc: Array<F32>, xs: Array<F32>}
+
+def r2_by(r: T.RS3, xc: Array<F32>, xs: Array<F32>) -> RS5:
+  match r:
+    case T.RS3{x, c, s}: RS5{x, c, s, xc, xs}
+
+def r2_bx(r: T.RS3, yc: Array<F32>, ys: Array<F32>) -> RS5:
+  match r:
+    case T.RS3{x, c, s}: RS5{x, yc, ys, c, s}
+
+# the y run's pair e: row e / (h·hy), head (e mod h·hy) / hy, j = e mod hy; the pair (base + j, base + j + hy), the
+# table entry the row's y = (r mod nt) / tw times hy, plus j
+def r2_y(+e: U32, +fwd: Bool, +h: U32, +hy: U32, +hx: U32, +w: U32, +nt: U32, +tw: U32, s: RS5) -> RS5:
+  match s:
+    case RS5{x, yc, ys, xc, xs}:
+      +hh = (h * hy : U32)
+      +r = U32.div(e, hh)
+      +j = U32.mod(e, hy)
+      +i1 = (((r * w : U32) + (U32.div(U32.mod(e, hh), hy) * ((hy + hy : U32) + (hx + hx : U32) : U32) : U32) : U32) + j : U32)
+      +k = ((U32.div(U32.mod(r, nt), tw) * hy : U32) + j : U32)
+      r2_by(T.rope_p2(fwd, i1, (i1 + hy : U32), k, yc, ys, Array.get(F32, x, i1)), xc, xs)
+
+# the x run's pair e: row e / (h·hx), head (e mod h·hx) / hx, j = e mod hx; the head's last 2·hx numbers, so the pair
+# is (base + 2·hy + j, base + 2·hy + j + hx), and the table entry the row's x = (r mod nt) mod tw times hx, plus j
+def r2_x(+e: U32, +fwd: Bool, +h: U32, +hy: U32, +hx: U32, +w: U32, +nt: U32, +tw: U32, s: RS5) -> RS5:
+  match s:
+    case RS5{x, yc, ys, xc, xs}:
+      +hh = (h * hx : U32)
+      +r = U32.div(e, hh)
+      +j = U32.mod(e, hx)
+      +i1 = ((((r * w : U32) + (U32.div(U32.mod(e, hh), hx) * ((hy + hy : U32) + (hx + hx : U32) : U32) : U32) : U32) + (hy + hy : U32) : U32) + j : U32)
+      +k = ((U32.mod(U32.mod(r, nt), tw) * hx : U32) + j : U32)
+      r2_bx(T.rope_p2(fwd, i1, (i1 + hx : U32), k, xc, xs, Array.get(F32, x, i1)), yc, ys)
+
+def r2_pick(isy: Bool, +e: U32, +ny: U32, +fwd: Bool, +h: U32, +hy: U32, +hx: U32, +w: U32, +nt: U32, +tw: U32, s: RS5) -> RS5:
+  match isy:
+    case True{}: r2_y(e, fwd, h, hy, hx, w, nt, tw, s)
+    case False{}: r2_x((e - ny : U32), fwd, h, hy, hx, w, nt, tw, s)
+
+def r2_loop(k: Nat, +e: U32, +l: U32, +g: ER2, s: RS5) -> RS5:
+  match k g:
+    case 0n _: s
+    case 1n+q ER2{+n, +ny, +fwd, +h, +hy, +hx, +w, +nt, +tw}:
+      r2_loop(q, (e + l : U32), l, g, r2_pick(U32.is_lt(e, ny), e, ny, fwd, h, hy, hx, w, nt, tw, s))
+
+def rs5_x(s: RS5) -> Array<F32>:
+  match s:
+    case RS5{x, yc, ys, xc, xs}: x
+
+def er2_n(+g: ER2) -> U32:
+  match g:
+    case ER2{+n, +ny, +fwd, +h, +hy, +hx, +w, +nt, +tw}: n
+
+# x1, x2 = the y table's cos and sin, x3, x4 = the x table's; x rotated in place
+def lf_r2(+t: U32, +l: U32, +g: ER2, x1: Array<F32>, x2: Array<F32>, x3: Array<F32>, x4: Array<F32>, x: Array<F32>) -> Array<F32>:
+  rs5_x(r2_loop(TG.share(t, er2_n(g), l), t, l, g, RS5{x, x1, x2, x3, x4}))
+
+def rope2_go2(+n: Nat, +w: Nat, +fwd: Bool, +th: Nat, +tw: Nat, +h: Nat, +hy: Nat, +hx: Nat, x: Array<F32>, yt: T.CS, xt: T.CS) -> TA.Mat<n, w>:
+  match yt xt:
+    case T.CS{yc, ys} T.CS{xc, xs}:
+      TA.Mat{r1_a(TG.run1(~ER2, ~lf_r2, TG.depth(Nat.mul(n, Nat.mul(h, Nat.add(hy, hx)))), er2(n, fwd, th, tw, h, hy, hx, w), yc, ys, xc, xs, x))}
+
+def rope2_go(+n: Nat, +w: Nat, +fwd: Bool, +th: Nat, +tw: Nat, +h: Nat, +hy: Nat, +hx: Nat, +base: F32, m: TA.Mat<n, w>) -> TA.Mat<n, w>:
+  match m:
+    case TA.Mat{x}: rope2_go2(n, w, fwd, th, tw, h, hy, hx, x, T.rope2_tabN(Nat.mul(th, hy), hy, base), T.rope2_tabN(Nat.mul(tw, hx), hx, base))
+
+# RoPE2d on n = b·th·tw rows of h heads of 2·half_y + 2·half_x (main.bend's RoPE2d)
+def RoPE2d(+n: Nat, +w: Nat, +th: Nat, +tw: Nat, +h: Nat, +half_y: Nat, +half_x: Nat, +base: F32,
+  -e: {w == Nat.mul(h, Nat.add(Nat.mul(half_y, 2n), Nat.mul(half_x, 2n))) : Nat}) -> T.Layer<Unit, TA.Mat<n, w>, TA.Mat<n, w>, Unit>:
+  T.Layer{p => x => T.Fwd{p, rope2_go(n, w, True{}, th, tw, h, half_y, half_x, base, x), Unit{}}, p => s => dy => g => T.Bwd{p, rope2_go(n, w, False{}, th, tw, h, half_y, half_x, base, dy), g}, op => p => g => st => T.no_step(Unit, op, p, g, st), u => Unit{}, p => T.PL{p, Nil{}}, p => xs => off => T.PA{p, xs, off}, p => xs => off => T.PA{p, xs, off}, u => 0}
 
 type S4 is Type:
   S4{a: Array<F32>, b: Array<F32>, c: Array<F32>, d: Array<F32>}
@@ -1801,6 +1907,90 @@ def Conv2d(+n: Nat, +c: Nat, +co: Nat, +k: Nat, +hs: Nat, +ws: Nat, +p: Nat, +s1
     prm => xs => off => T.lin_load(T.ckk(c, k), co, prm, xs, off),
     prm => xs => off => T.lin_store(T.ckk(c, k), co, prm, xs, off),
     u => U32.from_nat(Nat.mul(co, Nat.add(1n, T.ckk(c, k))))}
+
+def convnb_b2(+n: Nat, +c: Nat, +co: Nat, +k: Nat, +hs: Nat, +ws: Nat, +p: Nat, +s1: Nat, b: T.Bwd<TA.Mat<co, T.ckk(c, k)>, TA.Mat<Nat.mul(n, T.cohw(k, hs, ws, p, s1)), T.ckk(c, k)>>) -> T.Bwd<TA.Mat<co, T.ckk(c, k)>, TA.Mat<Nat.mul(n, T.chw(k, hs, ws, p)), c>>:
+  match b:
+    case T.Bwd{prm, dx, gg}:
+      T.Bwd{prm, col2im(n, T.cimg(k, hs, p), T.cimg(k, ws, p), c, k, p, Nat.add(1n, s1), dx), gg}
+
+# Conv2dNB (main.bend's Conv2d without the bias): device im2col, then the device LinearNB's products; the backward is
+# the device LinearNB's, then device col2im. The parameters are the co x c·k·k weight alone, so mat_step and
+# main.bend's Mat dump, restore and store serve it as they serve LinearNB.
+def Conv2dNB(+n: Nat, +c: Nat, +co: Nat, +k: Nat, +hs: Nat, +ws: Nat, +p: Nat, +s1: Nat, +par: Nat) -> T.Layer<TA.Mat<co, T.ckk(c, k)>, TA.Mat<Nat.mul(n, T.chw(k, hs, ws, p)), c>, TA.Mat<Nat.mul(n, T.cohw(k, hs, ws, p, s1)), co>, TA.Mat<Nat.mul(n, T.cohw(k, hs, ws, p, s1)), T.ckk(c, k)>>:
+  T.Layer{
+    prm => x => T.lnb_f2(Nat.mul(n, T.cohw(k, hs, ws, p, s1)), T.ckk(c, k), co, TG.matmul_nt(Nat.mul(n, T.cohw(k, hs, ws, p, s1)), T.ckk(c, k), co, 0n, im2col(n, T.cimg(k, hs, p), T.cimg(k, ws, p), c, k, p, Nat.add(1n, s1), x), prm)),
+    prm => st => dy => gg => convnb_b2(n, c, co, k, hs, ws, p, s1, lnb_b2(Nat.mul(n, T.cohw(k, hs, ws, p, s1)), T.ckk(c, k), co, st, gg, TG.matmul_precise(Nat.mul(n, T.cohw(k, hs, ws, p, s1)), co, T.ckk(c, k), 0n, dy, prm))),
+    op => prm => gg => st => mat_step(co, T.ckk(c, k), op, prm, gg, st),
+    u => TA.Mat.zeros(co, T.ckk(c, k)),
+    prm => T.Mat.dump(co, T.ckk(c, k), prm),
+    prm => xs => off => T.Mat.restore(co, T.ckk(c, k), prm, xs, off),
+    prm => xs => off => T.Mat.store(co, T.ckk(c, k), prm, xs, off),
+    u => U32.from_nat(Nat.mul(co, T.ckk(c, k)))}
+
+# ---- Tile on the device (main.bend's Tile): the forward pass a cell bang over the b·t·c output cells, each copying the
+# input cell main.bend's tile_src names, (r / t)·c + k for output row r and column k; the backward a cell bang over the
+# b·c input cells, each summing the t rows of dy that read it, i·t .. i·t + t - 1 at its column, from 0.0 in increasing
+# row, which is the order main.bend's tile_cells adds them into its zeros. Both passes give main.bend's bits.
+
+type ETI is Data:
+  ETI{n: U32, t: U32, c: U32}
+
+def eti(+n: Nat, +t: Nat, +c: Nat) -> ETI:
+  ETI{U32.from_nat(n), U32.from_nat(t), U32.from_nat(c)}
+
+# output cell e of row r = e / c, column k = e mod c: the input cell (r / t)·c + k
+def tif_cell(+e: U32, +t: U32, +c: U32, s: CIC) -> CIC:
+  match s:
+    case CIC{d, o}:
+      i2c_set(e, Array.get(F32, d, ((U32.div(U32.div(e, c), t) * c : U32) + U32.mod(e, c) : U32)), o)
+
+def tif_loop(k: Nat, +e: U32, +l: U32, +t: U32, +c: U32, s: CIC) -> CIC:
+  match k:
+    case 0n: s
+    case 1n+q: tif_loop(q, (e + l : U32), l, t, c, tif_cell(e, t, c, s))
+
+def lf_tif(+t: U32, +l: U32, +g: ETI, x1: Array<F32>, x2: Array<F32>, x3: Array<F32>, x4: Array<F32>, o: Array<F32>) -> Array<F32>:
+  match g:
+    case ETI{+n, +tt, +c}: cic_o(tif_loop(TG.share(t, n, l), t, l, tt, c, CIC{x1, o}))
+
+# the tile's rows of dy at one column, j stepping by c, added into the running sum in increasing row
+def tib_rows(k: Nat, +j: U32, +c: U32, s: GIS) -> GIS:
+  match k s:
+    case 0n s2: s2
+    case 1n+q GIS{dy, dx, +acc}: tib_rows(q, (j + c : U32), c, gi_put(acc, Array.get(F32, dy, j), dx))
+
+# input cell e of image i = e / c, column k = e mod c: the sum of dy's rows i·t .. i·t + t - 1 at column k
+def tib_cell(+e: U32, +t: U32, +c: U32, s: CIC) -> CIC:
+  match s:
+    case CIC{d, o}:
+      gis_set(e, tib_rows(U32.to_nat(t), (((U32.div(e, c) * t : U32) * c : U32) + U32.mod(e, c) : U32), c, GIS{d, o, 0.0}))
+
+def tib_loop(k: Nat, +e: U32, +l: U32, +t: U32, +c: U32, s: CIC) -> CIC:
+  match k:
+    case 0n: s
+    case 1n+q: tib_loop(q, (e + l : U32), l, t, c, tib_cell(e, t, c, s))
+
+def lf_tib(+t: U32, +l: U32, +g: ETI, x1: Array<F32>, x2: Array<F32>, x3: Array<F32>, x4: Array<F32>, o: Array<F32>) -> Array<F32>:
+  match g:
+    case ETI{+n, +tt, +c}: cic_o(tib_loop(TG.share(t, n, l), t, l, tt, c, CIC{x1, o}))
+
+def tile_fin(-r: Nat, -c: Nat, q: TG.R1) -> TA.Mat<r, c>:
+  match q:
+    case TG.R1{x1, x2, x3, x4, a}: TA.Mat{a}
+
+def tile_fwd(+b: Nat, +t: Nat, +c: Nat, m: TA.Mat<b, c>) -> TA.Mat<Nat.mul(b, t), c>:
+  match m:
+    case TA.Mat{x}:
+      tile_fin(Nat.mul(b, t), c, TG.run1_new(~ETI, ~lf_tif, TG.depth(Nat.mul(Nat.mul(b, t), c)), eti(Nat.mul(Nat.mul(b, t), c), t, c), x, nn(Unit{}), nn(Unit{}), nn(Unit{}), TA.cap_depth(Nat.mul(Nat.mul(b, t), c))))
+
+def tile_bwd(+b: Nat, +t: Nat, +c: Nat, m: TA.Mat<Nat.mul(b, t), c>) -> TA.Mat<b, c>:
+  match m:
+    case TA.Mat{dy}:
+      tile_fin(b, c, TG.run1_new(~ETI, ~lf_tib, TG.depth(Nat.mul(b, c)), eti(Nat.mul(b, c), t, c), dy, nn(Unit{}), nn(Unit{}), nn(Unit{}), TA.cap_depth(Nat.mul(b, c))))
+
+# b images (rows) of c numbers, each row broadcast over t tokens: Mat<b, c> to Mat<b·t, c> (main.bend's Tile)
+def Tile(+b: Nat, +t: Nat, +c: Nat) -> T.Layer<Unit, TA.Mat<b, c>, TA.Mat<Nat.mul(b, t), c>, Unit>:
+  T.Layer{p => x => T.Fwd{p, tile_fwd(b, t, c, x), Unit{}}, p => s => dy => g => T.Bwd{p, tile_bwd(b, t, c, dy), g}, op => p => g => st => T.no_step(Unit, op, p, g, st), u => Unit{}, p => T.PL{p, Nil{}}, p => xs => off => T.PA{p, xs, off}, p => xs => off => T.PA{p, xs, off}, u => 0}
 
 # ---- main.bend's names for the same layers (#13) ----
 #

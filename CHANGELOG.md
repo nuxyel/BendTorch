@@ -5,6 +5,163 @@ the packages are or in how they are used, MINOR for a new capability, PATCH for 
 four BendHub packages (`bendtorch`, `bendtorch-fast`, `bendtorch-gpu`, `bendtorch-load`) carry the release's number
 with a fourth digit (`2.0.0.0`). The engineering log behind each entry, measurement by measurement, is `NOTES.md`.
 
+## 2.1.0 (2026-11-11)
+
+A minor release: three layers for image models (`Conv2dNB`, `Tile`, `RoPE2d`, each on the CPU and the GPU lane),
+gradient accumulation, attention that sums only what a position can see, and adaLN built from the layers there are.
+Nine new laws, 44 in all. Every output of 2.0.2 is the same (`bench/bits.txt`), with one change of behavior in
+attention: an infinity or a NaN at a position a row cannot see no longer reaches that row (below).
+
+- **Checks on Bend 2.0.40**: laws, check, bits, corpus, gpu, smol, smol-gpu, bits-smol, reader, check-js, mutate-smol
+  and mutate (212 mutants), and every mutant in CI.
+- **Moving from 2.0.2**: the import lines, `2.0.2.0` to `2.1.0.0` in all four packages; nothing else changes for a
+  program that does not call the new layers and functions, and checkpoints read as before.
+
+### Gradient accumulation (#36)
+
+- **`Train.accumulate` and `Train.flush`**: one optimizer step over k micro-batches, for an effective batch larger than
+  the batch a program's types allow (a 64x64 image example cannot type more than two images, bendlang/bend#1071).
+  `Train.accumulate` runs the forward pass, the loss and the backward pass into the state's gradient and stops there;
+  `Train.flush` runs one optimizer step on the summed gradient, under the state's configuration, and zeroes it. Adam's t
+  advances once a flush, as in PyTorch. `LossOut.div(n, c, k, r)` divides a micro-batch's loss and its gradient by k,
+  PyTorch's `loss / k`, so the k gradients add up to the gradient of the mean over all k·B rows. `Train.accumulate_at`
+  and `Train.flush_at` are the owned forms, as `Train.step_at`. Asked for by @adeerkhan.
+- **Tests**: `demo/accum_test.bend` with `reference/test_accum.py` (`make check-accum`). With k = 1 the two calls give
+  `Train.step`'s bits, in both forms. Four micro-batches of 5 rows a step against PyTorch's accumulated step, 3 steps of
+  SGD, momentum, Adam, AdamW and AdamW with BF16 moments, 8 seeds: 6,578 numbers, 3,494 of them bit-identical, the worst
+  0.04 of the tolerance. Against one step on the 20 rows at once, the same up to the order of the sums: the worst 0.02 of
+  the tolerance, 1.2e-7 at most on a parameter. The owned forms and `fast.bend`'s linear layers give the same bits.
+- **Over the parallel and device lanes**: `demo/accum_lanes.bend` with `reference/accum_lanes.py` (`make
+  check-accum-lanes`, and in `make gpu`). Five small models (LinearFirst, RMSNorm and LinearNB; a SwiGLU block; an
+  attention block with RoPE; GroupNorm, SiLU and Linear; Embedding and LinearNB under cross-entropy), each trained two
+  AdamW steps four ways from one source whose layers come from `main.bend`, `fast.bend` or `gpu.bend`: four
+  micro-batches a step, one step on their rows at once, k = 1, and `Train.step`. On the CPU threads both lanes give
+  `main.bend`'s bits on 1 and 16 threads; k = 4 is the one big step within 0.03 of the tolerance. On the RTX 4050 the
+  linear stack is exact, k = 1 is `Train.step` to the bit, and the other four differ by 80 to 468 ulps after two steps,
+  all of it CUDA's float `exp` (with `exp_cr` every number is `main.bend`'s).
+- **Mutants**: eight more (the 1/k left out of the gradient or the loss, a micro-batch starting from a zero gradient in
+  either form, a step or an advance of t at every micro-batch, a flush that leaves t where it was, in either form), and
+  four over the lanes (a `Fork` whose second layer starts its backward pass from a zero gradient, which only an
+  accumulated step can see; the GroupNorm step trading the gain's and the bias's gradients in `gpu.bend` and in
+  `fast.bend`; `gpu.bend`'s Residual dropping its skip connection).
+### Attention (#28)
+
+- **Attention sums only what a position can see** (#28). Its forward pass's `O = P·V` and its backward pass's
+  `dQ = G·K`, `dK += Gᵀ·Q` and `dV += Pᵀ·dO` used to sum every key and every row, the masked half included, where `P`
+  and `G` are 0; now row `i` sums keys `0 .. i` and key `j`'s row sums rows `j .. t-1`. On finite numbers the bits are
+  the same (`bench/bits.txt` unchanged, and `make check-triangle` compares the two forms on every cell); counted with
+  Cachegrind on one thread, SmolLM2-135M's attention runs 30% fewer instructions forward and 34% forward and backward,
+  the ViT block's one-head attention (t = 16) 24% and 26%. `FullAttention` is unchanged. One difference: an infinity
+  or a NaN in V or K at a position a row cannot see no longer makes that row's output or dQ NaN, as PyTorch's does
+  (`docs/limitations.md`).
+- **`fast.bend`'s `Attention` runs its forward pass in parallel blocks over shared arrays** (#28): `main.bend`'s units
+  (one sequence's key/value group each) read Q, K and V and write the output where they are, instead of being copied
+  out and back in on one thread. The same bits (`demo/fast_test.bend` compares y, dQ, dK and dV with `main.bend`'s).
+  The core alone at the ViT block's shape (64 sequences of 16, one head of 64), on an idle machine: 0.27 ms a pass on
+  16 threads against 0.73 with `main.bend`'s forward (0.77 before the triangle sums), and 0.54 against 0.89 on one;
+  at SmolLM2-135M's, 3.4 against 4.1 ms on 16 threads and about the same on one. The backward pass is still
+  `main.bend`'s.
+
+### Laws
+
+Four new laws in `LAWS.bend`, proved in `PROOF.bend` and checked again by `bend PROOF.bend --verdict`, 39 laws in all
+(with `dtype.bend`'s `unpair_pair`). Two by @adeerkhan (#32), and two for attention's sums:
+
+- `causal_pv`: every number of row `i` of attention's `O = P·V` (and `dQ = G·K`) is a sum of exactly `i + 1` products,
+  the count `trow0` gives each of the row's dots.
+- `causal_kv`: every number of key `j`'s row of `dK` and `dV` is a sum of exactly `1 + r` products when `r` keys come
+  after `j`, so `t - j`, the count `tcol0` gives each dot.
+- `conv_roundtrip_window`: the round trip at **any** stride and padding, per cell. Slot `(ch, ky, kx)` of output
+  position `(oy, ox)` is image cell `(oy·s + ky - p, ox·s + kx - p)`, channel `ch`, so the gather and the scatter name
+  the same cell for every kernel, stride and padding — the UNet's `k = 3, s = 2, p = 1` among them. The decode does
+  not care about `s` or `p`, so this is one subtraction lemma (`(p + t) - p = t`) away from `conv_roundtrip_ks`, which
+  is now proved as its instance (`s = k`, `p = 0`) rather than by a second proof. The bounds are four hypotheses:
+  `k = 1 + ky + a`, `k = 1 + kx + b`, and the window being inside the image, `oy·s + ky = p + ty`, `ox·s + kx = p + tx`.
+- `conv_roundtrip_ks`: the im2col/col2im round trip at a stride equal to the kernel size. With `s = k` and no
+  padding, slot `(ch, ky, kx)` of output position `(oy, ox)` is image cell `(oy·k + ky, ox·k + kx)` of channel `ch`,
+  so the gather and the scatter name the same cell — `p_src` both times. That needs the mixed-radix decode
+  `i = (p_ch·k + p_ky)·k + p_kx`, which is Bend's unary division twice: the proof of `Nat.divmod.go`'s invariant
+  (`divmod_go_spec`, a `def` beside `divmod_one`) then one block count plus a rest per level. `ky < k` and
+  `kx < k` are `k = 1 + ky + a` and `k = 1 + kx + b`, as `gqa_head` writes one bound; the bound that `k·k` leaves
+  for the inner cell is `radix_bound`. #29's numbers at `k = s = 2, 3, 4` were already exact; the law is what makes
+  them so for every `k`.
+
+Two more in the same file, proved the same way, **41 laws in all** (with `dtype.bend`'s `unpair_pair`), both by
+@adeerkhan (#34):
+
+- `tile_row`: the `t` output rows of image row `i` are all image row `i`, in order — `i·t + j` divided by `t` is `i`
+  for `j ≤ s`, the division fact under the broadcast and under the backward's sum (`div_blocks` then `div_rest`).
+- `tile_sum`: every one of the `t` rows of image `i` reads (forward) and adds into (backward) the same cell of image
+  row `i`, column `k`, which is what makes the backward a **sum** of the `t` rows rather than the last of them.
+
+Three more in the same file, proved the same way, **44 laws in all** (with `dtype.bend`'s `unpair_pair`), all by
+@adeerkhan (#33):
+
+- `rope2_partition`: a head's `2·half_y + 2·half_x` numbers are tiled by `RoPE2d`'s two runs with no gap and no
+  overlap, each pair once — the y run starts at `0` and the x run one `half_y` past it, at `j = half_y`.
+- `rope2_is_rope`: at `tw = 1` and `half_x = 0` the y run **is** `RoPE`: the same pair `(c, c + half)` of head `head`
+  in row `r`, at the same address `r·w + head·(half+half) + c`.
+- `rope2_is_rope_tab`: the same for the table entry: at `tw = 1`, `(r mod (th·1))/1 · half + j` is `RoPE`'s
+  `(r mod th)·half + j`.
+
+### New
+
+- **`Conv2dNB`**: `Conv2d` without the bias, for the image reference's no-bias convolutions (BendTorch#39). The same
+  `im2col` and `col2im` around `LinearNB`'s forward, backward and optimizer step; `P` is the `co x c*k*k` weight
+  alone, so the parameter count drops by `co`. Tested against `F.conv2d(..., bias=None)` and its autograd on the
+  three shapes `reference/conv2d_check.py` uses: y, dX and dW are **0.000e+00** on all three
+  (`reference/conv2dnb_check.py`). By @adeerkhan (#40).
+
+- **`Tile`**: a per-image row broadcast, for adaLN-conditioned blocks (BendTorch#19). Row `i` of a `b x c` input
+  becomes rows `i·t .. i·t+t-1` of a `(b·t) x c` output, and the backward sums each image's `t` rows back into its
+  row, so `x * (1 + scale)` with a per-image scale is `Tile` then `Mul2` with the tiling on the device. The addressing
+  is two `Nat` defs the loop calls through `U32.from_nat` (no division in the hot path: the walk is images → rows →
+  row → cells). Two laws: `tile_row` (the `t` rows of image `i` are image row `i` — a division fact, `div_blocks`
+  then `div_rest`) and `tile_sum` (all `t` rows read and add into the same cell, so the backward is a sum). Tested
+  against PyTorch `repeat_interleave` and its autograd: `0.000e+00` on both, with a last-row backward off by
+  `2.000e+00`.
+
+- **`RoPE2d`**: 2D rotary positions, for an image transformer (BendTorch#18). A head's `2*half_y` numbers rotate
+  by the row's `y` and its `2*half_x` by its `x`, so rows `(0,1)` and `(1,0)` of a 2x2 grid rotate by different
+  angles at the same distance — the case one 1D rotation cannot express. `RoPE` itself is untouched. The pairs are
+  walked in two runs over disjoint dimensions rather than one run with a per-pair choice, which also removes a
+  `F32.pow` per pair (`Bool.pick` evaluates both branches). Tested against a hand-built 2D rotation
+  (`reference/rope2d_check.py`): `1.192e-07` forward and `1.192e-07` backward, tolerance `1e-6`. Three laws:
+  `rope2_partition` (the two runs tile the head: no gap, no overlap, each pair once) and `rope2_is_rope` /
+  `rope2_is_rope_tab` (at `tw = 1`, `half_x = 0` the y run is `RoPE`, address and entry). Stated over the addressing
+  defs in `main.bend` (`rope2_ht`, `rope2_yy`, `rope2_xx`, `rope2_yaddr`, `rope2_xaddr`, `rope2_yentry`,
+  `rope2_xentry`), which the layer's own `U32` code calls through `U32.from_nat`: no comparison, no pick, no `U32`
+  arithmetic left in the addressing, so the laws are about the code and not a copy of it. That move is free:
+  `1024x64`, 20 passes, 0.02 s before and 0.02 s after (median of three).
+
+- **adaLN by composition** (#19): no new layer. `demo/adaln_probe.bend` builds a DiT block conditioned per image from
+  the layers there are: `Tile` broadcasts the per-image gate, multiplier and shift over their tokens, `LayerNorm`,
+  `Mul2` and `Add2` modulate, and `Fork(Id, f)`, `Mul2` and `Add2` make the gated residual; the three per-image rows
+  come from three `Linear` layers of `silu(cond)`. `reference/adaln_check.py` (`make check-adaln`) compares the gated
+  residual, the modulation and the whole block with PyTorch, y and every gradient (390 numbers, the worst 0.38 of the
+  tolerance), and checks that the modulation with a multiplier of 1 and a shift of 0 gives `LayerNorm`'s numbers. The
+  probe writes one helper of its own, `Rewire`, a layer without parameters that regroups a pair's parts.
+
+### GPU lane
+
+- `Tile` and `RoPE2d` in `torch/gpu.bend`: both passes give `main.bend`'s bits on the RTX 4050 and on 1 and 16 CPU
+  threads (`demo/gpu_layers_test.bend`, cases 19 to 22, so `make gpu` runs 23 cases). RoPE2d's angle tables are built
+  on the host, as `RoPE`'s are: CUDA's float `cos` and `sin` round 1 ulp away from the host's on 6 to 20% of a table's
+  entries.
+- `Conv2dNB` in `torch/gpu.bend`: both passes give `main.bend`'s bits on the RTX 4050 and on 1 and 16 CPU threads, at
+  `Conv2d`'s four shapes (`demo/gpu_layers_test.bend`, case 23, so `make gpu` runs 24 cases).
+
+### Tests
+
+- Twelve more mutants: three device mutants each of `Tile` and `RoPE2d`, and six on the CPU (`Tile`'s sum, its source
+  row and its destination row; `RoPE2d`'s x position, the x run's offset and the y run's table entry).
+- Six mutants of `Conv2dNB`, three on each lane: the forward pass with a zero weight, the input gradient through a
+  zero weight, and the weight gradient from zero patches (CPU) or from a zero starting gradient (device).
+- Eight mutants of attention's sums and of `fast.bend`'s Attention (#28).
+- 212 mutants in all: 209 caught, 3 surviving by design.
+- `reference/rope2d_check.py` takes the probe from the command line, as `tile_check.py` does. It always read
+  `.scratch/rope2d_probe` before, so `make mutate` tested a mutant of `RoPE2d`'s CPU code against the unmutated binary.
+
 ## 2.0.2 (2026-11-07)
 
 A patch release: the tensor packages bend-ml published on 2026-11-06, and the speed numbers on Bend 2.0.40. No layer,

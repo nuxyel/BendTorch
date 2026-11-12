@@ -7,7 +7,14 @@
 #   bias), the parameter, gradient and both moments after it; SiLU and Mul2 on 512x1536 and SiLU on 32x64, forward and
 #   backward; Residual(SiLU) on 512x576, forward and backward (its copies and sums); AdamW with packed BF16 moments
 #   (m and v packed, then m packed and v in F32) on a 1537x577 matrix, two steps from new, odd so the last word holds one
-#   moment, in 64 blocks; the Embedding's AdamW step on a 1537x577 table.
+#   moment, in 64 blocks; the Embedding's AdamW step on a 1537x577 table; GroupNorm forward and backward (y, dX, the
+#   gain's and the bias's gradients, added into gradients that are not zero) on 8 images of 256 pixels in 8 groups of 16
+#   channels (16 forward blocks, 8 backward), 4 images of 1024 pixels in 3 groups of 16 (blocks with no work in both
+#   passes) and 3 images of 5 pixels in 3 groups of 2 (one block), and its AdamW step on the gain and the bias;
+#   Attention forward and backward (y, dQ, dK, dV; the forward pass is fast.bend's units in blocks, the backward pass
+#   main.bend's, which reads the forward pass's stash) on 3 sequences of 5 with 3 query heads over each of 2 key/value
+#   heads (6 units in 8 blocks, two of them empty) and on the ViT block's 16 sequences of 16, one head of 64, on
+#   inputs without the specials (one NaN in a row of Q turns the whole row, and its head's gradients, into NaN).
 import Base
 import ../torch/main.bend as T
 import ../torch/fast.bend as F
@@ -25,6 +32,20 @@ def fill(k: Nat, +i: U32, +seed: U32, a: Array<F32>) -> Array<F32>:
 
 def mat(+r: Nat, +c: Nat, +seed: U32) -> TA.Mat<r, c>:
   TA.Mat{fill(Nat.mul(r, c), 0, seed, Array.new(F32, TA.cap_depth(Nat.mul(r, c)), 0.0))}
+
+# values in [-1, 1) without the specials, for GroupNorm: a NaN or an infinity turns a whole block's statistics, and so
+# the whole block, into NaN, which would hide its numbers
+def valn(+i: U32, +seed: U32) -> F32:
+  +h = U32.mod(((i * 2654435761 : U32) + (seed * 40503 : U32) : U32), 1000)
+  ((U32.to_f32(h) / 500.0 : F32) - 1.0 : F32)
+
+def filln(k: Nat, +i: U32, +seed: U32, a: Array<F32>) -> Array<F32>:
+  match k:
+    case 0n: a
+    case 1n+p: filln(p, (i + 1 : U32), seed, Array.set(F32, a, i, valn(i, seed)))
+
+def matn(+r: Nat, +c: Nat, +seed: U32) -> TA.Mat<r, c>:
+  TA.Mat{filln(Nat.mul(r, c), 0, seed, Array.new(F32, TA.cap_depth(Nat.mul(r, c)), 0.0))}
 
 def bits(x: F32) -> U32:
   match x:
@@ -211,11 +232,60 @@ def run_r(~l: T.Layer<RP, TA.Mat<512n, 576n>, TA.Mat<512n, 576n>, RS>, x: TA.Mat
 def residual() -> U32:
   d_u1(512n, 576n, run_r(~T.Residual(~512n, ~576n, ~Unit, ~TA.Mat<512n, 576n>, ~T.SiLU(512n, 576n)), mat(512n, 576n, 91), mat(512n, 576n, 92)), run_r(~F.Residual(~512n, ~576n, ~Unit, ~TA.Mat<512n, 576n>, ~F.SiLU(512n, 576n)), mat(512n, 576n, 91), mat(512n, 576n, 92)))
 
+# ---- GroupNorm ----
+
+def d_gn(+m: Nat, +d: Nat, a: R<T.LN<d>, m, d, d>, b: R<T.LN<d>, m, d, d>) -> U32:
+  match a b:
+    case R{TA.Mat{y1}, TA.Mat{d1}, T.LN{TA.Mat{g1}, TA.Mat{b1}}} R{TA.Mat{y2}, TA.Mat{d2}, T.LN{TA.Mat{g2}, TA.Mat{b2}}}:
+      (((diff(Nat.mul(m, d), y1, y2) + diff(Nat.mul(m, d), d1, d2) : U32) + diff(d, g1, g2) : U32) + diff(d, b1, b2) : U32)
+
+def lnp(+d: Nat, +s: U32) -> T.LN<d>:
+  T.LN{matn(1n, d, s), matn(1n, d, (s + 1 : U32))}
+
+def gn_big() -> U32:
+  d_gn(2048n, 128n, run(~2048n, ~128n, ~128n, ~T.LN<128n>, ~T.GroupNorm(8n, 256n, 8n, 16n, 0.00001), lnp(128n, 101), matn(2048n, 128n, 103), matn(2048n, 128n, 104), lnp(128n, 105)), run(~2048n, ~128n, ~128n, ~T.LN<128n>, ~F.GroupNorm(8n, 256n, 8n, 16n, 0.00001), lnp(128n, 101), matn(2048n, 128n, 103), matn(2048n, 128n, 104), lnp(128n, 105)))
+
+def gn_odd() -> U32:
+  d_gn(4096n, 48n, run(~4096n, ~48n, ~48n, ~T.LN<48n>, ~T.GroupNorm(4n, 1024n, 3n, 16n, 0.00001), lnp(48n, 111), matn(4096n, 48n, 113), matn(4096n, 48n, 114), lnp(48n, 115)), run(~4096n, ~48n, ~48n, ~T.LN<48n>, ~F.GroupNorm(4n, 1024n, 3n, 16n, 0.00001), lnp(48n, 111), matn(4096n, 48n, 113), matn(4096n, 48n, 114), lnp(48n, 115)))
+
+def gn_small() -> U32:
+  d_gn(15n, 6n, run(~15n, ~6n, ~6n, ~T.LN<6n>, ~T.GroupNorm(3n, 5n, 3n, 2n, 0.00001), lnp(6n, 121), matn(15n, 6n, 123), matn(15n, 6n, 124), lnp(6n, 125)), run(~15n, ~6n, ~6n, ~T.LN<6n>, ~F.GroupNorm(3n, 5n, 3n, 2n, 0.00001), lnp(6n, 121), matn(15n, 6n, 123), matn(15n, 6n, 124), lnp(6n, 125)))
+
+def d_lnstate2(+d: Nat, a: T.Two<T.OptState<TA.Mat<1n, d>>, T.OptState<TA.Mat<1n, d>>>, b: T.Two<T.OptState<TA.Mat<1n, d>>, T.OptState<TA.Mat<1n, d>>>) -> U32:
+  match a b:
+    case T.Two{g1, b1} T.Two{g2, b2}: (d_mstate(1n, d, g1, g2) + d_mstate(1n, d, b1, b2) : U32)
+
+def ln_split(+d: Nat, a: T.OptState<T.LN<d>>) -> T.Two<T.OptState<TA.Mat<1n, d>>, T.OptState<TA.Mat<1n, d>>>:
+  T.OptState.split(TA.Mat<1n, d>, TA.Mat<1n, d>, T.OptState.map(T.LN<d>, T.Two<TA.Mat<1n, d>, TA.Mat<1n, d>>, a, x => T.ln_pair(d, x), x => T.ln_pair(d, x)))
+
+def d_lnstep(+d: Nat, a: T.Step<T.LN<d>>, b: T.Step<T.LN<d>>) -> U32:
+  match a b:
+    case T.Step{T.LN{TA.Mat{w1}, TA.Mat{b1}}, T.LN{TA.Mat{gw1}, TA.Mat{gb1}}, s1} T.Step{T.LN{TA.Mat{w2}, TA.Mat{b2}}, T.LN{TA.Mat{gw2}, TA.Mat{gb2}}, s2}:
+      ((((diff(d, w1, w2) + diff(d, b1, b2) : U32) + diff(d, gw1, gw2) : U32) + diff(d, gb1, gb2) : U32) + d_lnstate2(d, ln_split(d, s1), ln_split(d, s2)) : U32)
+
+def gn_step() -> U32:
+  d_lnstep(128n, T.ln_step(128n, adamw(), lnp(128n, 131), lnp(128n, 133), T.TwoMom{lnp(128n, 135), lnp(128n, 137)}), F.ln_step(128n, adamw(), lnp(128n, 131), lnp(128n, 133), T.TwoMom{lnp(128n, 135), lnp(128n, 137)}))
+
+# ---- Attention: y, dQ, dK and dV ----
+
+def d_att(+n: Nat, +w: Nat, +kvw: Nat, a: RU<T.Two<TA.Mat<n, w>, T.Two<TA.Mat<n, kvw>, TA.Mat<n, kvw>>>, n, w>, b: RU<T.Two<TA.Mat<n, w>, T.Two<TA.Mat<n, kvw>, TA.Mat<n, kvw>>>, n, w>) -> U32:
+  match a b:
+    case RU{TA.Mat{y1}, T.Two{TA.Mat{q1}, T.Two{TA.Mat{k1}, TA.Mat{v1}}}} RU{TA.Mat{y2}, T.Two{TA.Mat{q2}, T.Two{TA.Mat{k2}, TA.Mat{v2}}}}:
+      (((diff(Nat.mul(n, w), y1, y2) + diff(Nat.mul(n, w), q1, q2) : U32) + diff(Nat.mul(n, kvw), k1, k2) : U32) + diff(Nat.mul(n, kvw), v1, v2) : U32)
+
+def attn_gqa() -> U32:
+  d_att(15n, 24n, 8n, run_u(~T.Two<TA.Mat<15n, 24n>, T.Two<TA.Mat<15n, 8n>, TA.Mat<15n, 8n>>>, ~15n, ~24n, ~T.AttnS, ~T.Attention(15n, 24n, 8n, 3n, 5n, 2n, 3n, 4n, 0.5, {==}, {==}, {==}), T.Two{matn(15n, 24n, 141), T.Two{matn(15n, 8n, 142), matn(15n, 8n, 143)}}, matn(15n, 24n, 144)), run_u(~T.Two<TA.Mat<15n, 24n>, T.Two<TA.Mat<15n, 8n>, TA.Mat<15n, 8n>>>, ~15n, ~24n, ~T.AttnS, ~F.Attention(15n, 24n, 8n, 3n, 5n, 2n, 3n, 4n, 0.5, {==}, {==}, {==}), T.Two{matn(15n, 24n, 141), T.Two{matn(15n, 8n, 142), matn(15n, 8n, 143)}}, matn(15n, 24n, 144)))
+
+def attn_vit() -> U32:
+  d_att(256n, 64n, 64n, run_u(~T.Two<TA.Mat<256n, 64n>, T.Two<TA.Mat<256n, 64n>, TA.Mat<256n, 64n>>>, ~256n, ~64n, ~T.AttnS, ~T.Attention(256n, 64n, 64n, 16n, 16n, 1n, 1n, 64n, 0.125, {==}, {==}, {==}), T.Two{matn(256n, 64n, 151), T.Two{matn(256n, 64n, 152), matn(256n, 64n, 153)}}, matn(256n, 64n, 154)), run_u(~T.Two<TA.Mat<256n, 64n>, T.Two<TA.Mat<256n, 64n>, TA.Mat<256n, 64n>>>, ~256n, ~64n, ~T.AttnS, ~F.Attention(256n, 64n, 64n, 16n, 16n, 1n, 1n, 64n, 0.125, {==}, {==}, {==}), T.Two{matn(256n, 64n, 151), T.Two{matn(256n, 64n, 152), matn(256n, 64n, 153)}}, matn(256n, 64n, 154)))
+
 def test_main() -> IO(Unit):
   do IO<Unit>:
     IO.print(U32.show(first3()) ++ " " ++ U32.show(first4()) ++ " " ++ U32.show(second()) ++ " " ++ U32.show(big_lin()) ++ " " ++ U32.show(tiny_nb()) ++ " " ++ U32.show(big_nb()))
     IO.print(U32.show(opt_steps()) ++ " " ++ U32.show(lin_adamw()) ++ " " ++ U32.show(silu(~512n, ~1536n, 85)) ++ " " ++ U32.show(mul2()) ++ " " ++ U32.show(silu(~32n, ~64n, 87)) ++ " " ++ U32.show(residual()))
     IO.print(U32.show(packed(True{})) ++ " " ++ U32.show(packed(False{})) ++ " " ++ U32.show(emb_step()))
+    IO.print(U32.show(gn_big()) ++ " " ++ U32.show(gn_odd()) ++ " " ++ U32.show(gn_small()) ++ " " ++ U32.show(gn_step()))
+    IO.print(U32.show(attn_gqa()) ++ " " ++ U32.show(attn_vit()))
 
 # This program takes no arguments. Since Bend 2.0.38 a runtime option goes between +RTS and -RTS, and one written
 # without them arrives here as an argument while the program runs on the default thread count, so a check of 1 and 16

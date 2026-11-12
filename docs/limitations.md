@@ -47,7 +47,10 @@ Numbers marked "busy machine" were taken with other jobs running and are a first
   field disagreed; a change of kind shows up only as NaN at the next step (#27). Adam/AdamW checkpoints written
   before 2026-10-18 cannot be resumed.
 - Edge cases accepted for now, to be compared later:
-  - attention gives 0 where PyTorch gives NaN at a position that cannot see a -inf in V (PyTorch's 0 · inf);
+  - attention gives a number where PyTorch gives NaN at a position that cannot see an infinity or a NaN in V or K:
+    PyTorch multiplies the masked probability (or gradient) 0 by it. Since 2026-11-08 the causal products sum only the
+    positions a row can see (#28), so this holds for the output and dQ too, not only for dQ through the softmax's
+    backward pass; on finite numbers nothing changed, bit for bit;
   - RMSNorm's dX and LayerNorm's output and dX stay finite where the squares overflow F32, where PyTorch gives NaN.
 - Cross-entropy is log-softmax as PyTorch computes it since 2026-10-18; before, it took log(max(p, 1e-12)) and a row's
   loss stopped at 27.63 where PyTorch's kept growing (the gradient was right).
@@ -115,19 +118,62 @@ Numbers marked "busy machine" were taken with other jobs running and are a first
 - Offsets and sizes are 64-bit (two U32s), so files past 4 GiB (1.7B's F32 weights, a 360M AdamW checkpoint) are read;
   the reader takes up to 2^32 - 1 numbers a file.
 
-## Features
+- `RoPE2d` (`main.bend`, BendTorch#18) rotates a head's first `2·half_y` numbers by the row's `y` and its last
+  `2·half_x` by its `x`, so an image's two axes carry their own frequencies: row `r` of `b·th·tw` gives
+  `y = (r mod (th·tw))/tw`, `x = r mod tw`. `RoPE` is untouched. Tested at one shape against a hand-built 2D rotation
+  (`reference/rope2d_check.py`: a 2x2 grid, head split 2+2, forward and backward, `1.192e-07` at a tolerance of
+  `1e-6`); its three laws are stated over the addressing defs in `main.bend` (`rope2_yaddr`, `rope2_xaddr`,
+  `rope2_yentry`, `rope2_xentry`, which the layer's `U32` code calls through `U32.from_nat`), so there is no
+  comparison, no pick and no `U32` arithmetic left in the addressing. The float claims (identity at `(0,0)`; `(y,x)`
+  then `(-y,-x)`) remain tests: a law cannot compare `F32`. On the GPU (`gpu.bend`) both passes give `main.bend`'s bits
+  (`demo/gpu_layers_test.bend`, cases 21 and 22) because the angle tables are built on the host, as `RoPE`'s are:
+  CUDA's float `cos` and `sin` round 1 ulp away from the host's on 6 to 20% of a table's entries.
 
 - The layers work on matrices: a tensor is a `Mat<r, c>`, with batches and heads folded into rows and columns.
 - Convolution is `Conv2d`, `im2col` then `Linear`'s three products, in `main.bend` and, with the gather and scatter as
   bangs, in `gpu.bend`: the patch matrix is `n·oh·ow` rows of `c·k·k`, the parameters are `Lin<c·k·k, co>`, so the
   optimizer, the checkpoint code and the layer plumbing serve it unchanged. The image is written as the kernel plus a
-  surplus (`h + 2p = k + hs`), so a window bigger than its image cannot be written and no call site needs a lemma. What
-  is still tested rather than stated: the general `k = s` round trip of `col2im(im2col(x))` is compared with PyTorch at
-  three shapes (`reference/conv2d_check.py`), and the adjoint law is [#15](https://github.com/nuxyel/BendTorch/issues/15)'s
-  remaining piece.
+  surplus (`h + 2p = k + hs`), so a window bigger than its image cannot be written and no call site needs a lemma. The round
+  trip is a law at any kernel, stride and padding, cell by cell: `conv_roundtrip_window` says slot `(ch, ky, kx)` of
+  output position `(oy, ox)` is image cell `(oy·s + ky - p, ox·s + kx - p)`, channel `ch`, and the same numbers are
+  still compared with PyTorch at three shapes (`reference/conv2d_check.py`). Still owed is the adjoint law
+  ([#29](https://github.com/nuxyel/BendTorch/issues/29)): `col2im` is the gather's transpose, so `dy·im2col(x) =
+  col2im(dy)·x`. It cannot be proved about the code as it stands — `col2im` accumulates into an array by index, and
+  the checker cannot follow writes into an array by index (the same limit `causal`'s law records) — so it waits on
+  `ASet.Apart` over `Array.new`'s tree, and on the four `U32` facts of nuxyel/bend-ml#26, which lets
+  the accumulation be stated about the code rather than about a model of it. That is the work #29 carries.
+- `GroupNorm` is in all three lanes: `main.bend`, `fast.bend` and `gpu.bend`.
 - No `.pt` loading: weights come from a flat binary file in the twins' layout or from a `model.safetensors`
-  (`torch/load.bend`, through the temporary foreign reader). The exact GELU
-  (`GELUErf`) runs on the CPU and in JavaScript; it is not in `gpu.bend`.
+  (`torch/load.bend`, through the temporary foreign reader).
+- The exact GELU (`GELUErf`) is in `main.bend` and `gpu.bend`, not in `fast.bend` (which has no GELU of either form).
+  On the GPU its forward pass gives `main.bend`'s bits; its gradient takes CUDA's float `exp` and differs by up to 113
+  ulps on the test's inputs (`make gpu`'s `exp_cr` check gives 0 there).
+- `Tile` (a per-image row broadcast) is in `main.bend` and `gpu.bend`, not in `fast.bend`. On the GPU both passes give
+  `main.bend`'s bits (`demo/gpu_layers_test.bend`, cases 19 and 20), and the CPU lane's numbers are
+  `reference/tile_check.py`'s.
+- adaLN (#19) has no layer: `demo/adaln_probe.bend` composes it from `Tile`, `LayerNorm`, `Fork`, `Both`, `Mul2` and
+  `Add2`. Two pieces it needs are written in the probe or worked around, not in the package: `Rewire`, a layer without
+  parameters that regroups a pair's parts (a `Fork` and a `Both` cannot), and a column split, so `g`, `m` and `sh` come
+  from three `Linear` layers instead of one `Linear` of width `3c` cut in three. DiT's `1 + scale` is written as `m`,
+  with the 1 folded into its `Linear`'s bias. The CPU lane only: `fast.bend` has no `Tile`, and the probe was not run
+  through `gpu.bend`'s layers.
+- `Conv2dNB` (`Conv2d` without the bias, #39) is in `main.bend` and `gpu.bend`, as `Conv2d` is. On the GPU both passes
+  give `main.bend`'s bits (`demo/gpu_layers_test.bend`, case 23), and the CPU lane's numbers are
+  `reference/conv2dnb_check.py`'s.
+- Gradient accumulation (`Train.accumulate`, `Train.flush`, #36) relies on every backward pass adding into the
+  gradient it receives, the layer protocol. It is tested against PyTorch on a 7-6-3 MLP (`reference/test_accum.py`),
+  and over the three lanes on five small models (`demo/accum_lanes.bend`: LinearFirst, Linear, LinearNB, RMSNorm,
+  SwiGLU, attention with RoPE, Residual, GroupNorm, Embedding, MSE and cross-entropy, AdamW only): `fast.bend`'s and
+  `gpu.bend`'s layers give `main.bend`'s bits on the CPU threads. On the GPU the models with an exponential (SiLU,
+  softmax, cross-entropy) differ by up to 468 ulps after two steps, all through CUDA's float `exp` (`exp_cr` gives 0);
+  the one without is exact. Not in it: `gpu.bend`'s `Conv2d`, `GELUErf` and `FullAttention`, AdamW with packed BF16
+  moments, and SGD and momentum on those two lanes.
+- `LossOut.div`, the 1/k of each micro-batch's loss, takes a matrix output (`LossOut<Mat<n, c>>`); a loss over another
+  output type divides its own gradient. After a flush, the state's `loss` is the last micro-batch's (divided by k), not
+  the step's: a loop that reports the step's loss adds up the k it saw.
+- A checkpoint holds the parameters and the optimizer's moments, not the gradient: one written between two
+  `Train.accumulate` calls loses the micro-batches summed so far, so a resumed run starts that step's micro-batches
+  again.
 - int8 is for inference only (weights quantized by rows, activations in F32).
 - Mixed precision is BF16 storage with F32 arithmetic and F32 master weights, measured on the tiny Llama only. It
   costs time: 200 steps take 180 ms against 160 in F32 on one thread and 330 against 220 on 16

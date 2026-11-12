@@ -41,7 +41,11 @@ IMAP = numeric("imap_check", "check_imap.py")
 ST = numeric("safetensors_test", "test_safetensors.py")
 CFG = numeric("cfg_test", "test_cfg.py")
 CONV = numeric("conv2d_probe", "conv2d_check.py")
+ACC = numeric("accum_test", "test_accum.py")
 I2C = numeric("im2col_probe", "im2col_check.py")
+TILE = numeric("tile_probe", "tile_check.py")
+ROPE2 = numeric("rope2d_probe", "rope2d_check.py")
+CNB = numeric("conv2dnb_probe", "conv2dnb_check.py")
 
 
 ST135 = Path(os.environ.get("LLAMA_BEND", "../llama.bend")) / "data/smollm2-135m/hf/model.safetensors"
@@ -65,11 +69,11 @@ SMOLST = smol_st
 
 
 def fast():
-    # torch/fast.bend's layers and optimizer step must keep main.bend's bits (demo/fast_test.bend prints 15 zeros)
+    # torch/fast.bend's layers and optimizer step must keep main.bend's bits (demo/fast_test.bend prints 21 zeros)
     b = subprocess.run(["bend", "demo/fast_test.bend", "-o", ".scratch/mut_fast_test"], capture_output=True, env=ENV)
     if b.returncode != 0:
         return False
-    return subprocess.run([".scratch/mut_fast_test", "+RTS", "--threads", "16", "-RTS"], capture_output=True, text=True).stdout.split() == ["0"] * 15
+    return subprocess.run([".scratch/mut_fast_test", "+RTS", "--threads", "16", "-RTS"], capture_output=True, text=True).stdout.split() == ["0"] * 21
 
 
 FAST = fast
@@ -89,11 +93,11 @@ GPU = gpu
 
 def gpu_layers():
     # torch/gpu.bend's other layers, optimizer step, losses and embedding must keep main.bend's bits with +RTS --gpu off -RTS:
-    # demo/gpu_layers_test.bend prints 17 zeros (Conv2d's case is the last)
+    # demo/gpu_layers_test.bend prints 23 zeros (Conv2d's case, GELUErf's y and dx, Tile's y and dx, then RoPE2d's y and dx)
     b = subprocess.run(["bend", "demo/gpu_layers_test.bend", "-o", ".scratch/mut_gpu_layers"], capture_output=True, env=ENV)
     if b.returncode != 0:
         return False
-    return subprocess.run([".scratch/mut_gpu_layers", "+RTS", "--gpu", "off", "--threads", "16", "-RTS"], capture_output=True, text=True).stdout.split() == ["0"] * 17
+    return subprocess.run([".scratch/mut_gpu_layers", "+RTS", "--gpu", "off", "--threads", "16", "-RTS"], capture_output=True, text=True).stdout.split() == ["0"] * 24
 
 
 GPUL = gpu_layers
@@ -101,12 +105,36 @@ GPUL = gpu_layers
 
 def gpu_expcr():
     # make gpu's exactness check: with exp_cr in place of F32.exp, every GPU layer case gives main.bend's bits on the
-    # device (scripts/gpu_expcr.sh prints 17 zeros); needs CUDA, and make mutate runs under the heavy-run lock
+    # device (scripts/gpu_expcr.sh prints 23 zeros); needs CUDA, and make mutate runs under the heavy-run lock
     r = subprocess.run(["scripts/gpu_expcr.sh"], capture_output=True, text=True, env=ENV)
-    return r.returncode == 0 and r.stdout.strip().splitlines()[-1].split() == ["0"] * 17
+    return r.returncode == 0 and r.stdout.strip().splitlines()[-1].split() == ["0"] * 24
 
 
 EXPCR = gpu_expcr
+
+
+def accum_lanes():
+    # gradient accumulation over the parallel and device lanes (demo/accum_lanes.bend, reference/accum_lanes.py): the
+    # copies whose layers are torch/main.bend's and torch/gpu.bend's (on the CPU threads, +RTS --gpu off -RTS) and the source,
+    # whose layers are torch/fast.bend's, must give the same bits, k = 1 must be Train.step, and k = 4 one step on the
+    # four micro-batches
+    src = Path("demo/accum_lanes.bend").read_text()
+    line = "import ../torch/fast.bend as F\n"
+    if src.count(line) != 1:
+        return False
+    for name, lane in (("main", "torch/main.bend"), ("fast", "torch/fast.bend"), ("gpu", "torch/gpu.bend")):
+        Path(f".scratch/mut_accum_lanes_{name}.bend").write_text(src.replace(line, f"import ../{lane} as F\n"))
+        b = subprocess.run(["bend", f".scratch/mut_accum_lanes_{name}.bend", "-o", f".scratch/mut_accum_lanes_{name}"], capture_output=True, env=ENV)
+        if b.returncode != 0:
+            return False
+        r = subprocess.run([f".scratch/mut_accum_lanes_{name}", "+RTS", "--gpu", "off", "--threads", "16", "-RTS"], capture_output=True, text=True)
+        if r.returncode != 0:
+            return False
+        Path(f".scratch/mut_accum_lanes_{name}.txt").write_text(r.stdout)
+    return all(subprocess.run([PY, "reference/accum_lanes.py", "--zero", ".scratch/mut_accum_lanes_main.txt", f".scratch/mut_accum_lanes_{n}.txt"], capture_output=True).returncode == 0 for n in ("fast", "gpu"))
+
+
+ACCL = accum_lanes
 
 
 def has_cuda():
@@ -209,12 +237,32 @@ MUTANTS = [
      "T.lnb_b3(n, i, o, w, dx, TF.matmul_tn_acc(o, n, i, par, dy, x, g))", "T.lnb_b3(n, i, o, w, dx, TF.matmul_tn(o, n, i, par, dy, x))", FAST, "caught"),
     ("fast Linear (main.bend's name): delegates to LinearFirstF, which passes no gradient back", "torch/fast.bend",
      "LinearF(n, i, o, par)\n\ndef LinearFirst(", "LinearFirstF(n, i, o, par)\n\ndef LinearFirst(", MNIST, "caught"),
+    ("fast GroupNorm: a forward block takes the image of its group's number", "torch/fast.bend",
+     "T.gnf_grp(hw, (U32.div(t, ng) * (U32.from_nat(hw) * c : U32) : U32)", "T.gnf_grp(hw, (U32.mod(t, ng) * (U32.from_nat(hw) * c : U32) : U32)", FAST, "caught"),
+    ("fast GroupNorm: every group's backward blocks run on the first group's channels", "torch/fast.bend",
+     "gnb_imgs(n, 0, j, hwc, hw, c, cg, nf, eps, s))", "gnb_imgs(n, 0, 0, hwc, hw, c, cg, nf, eps, s))", FAST, "caught"),
+    ("fast GroupNorm: a backward range starts at channel i0, not at its first group's", "torch/fast.bend",
+     "gnb_go2(k, (i0 * U32.from_nat(cg) : U32), e,", "gnb_go2(k, i0, e,", FAST, "caught"),
+    ("fast GroupNorm: a range's dg is copied back over the gain, not after it", "torch/fast.bend",
+     "T.copy_n(len1, j0, (c + j0 : U32), w, Array.get(F32, dg, j0))", "T.copy_n(len1, j0, j0, w, Array.get(F32, dg, j0))", FAST, "caught"),
+    ("fast GroupNorm: the gain's and the bias's optimizer states swapped", "torch/fast.bend",
+     "T.ln_s2(d, opt_mat(1n, d, op, w, gw, sw), opt_mat(1n, d, op, b, gb, sb))", "T.ln_s2(d, opt_mat(1n, d, op, w, gw, sb), opt_mat(1n, d, op, b, gb, sw))", FAST, "caught"),
     ("gpu linear: the weight gradient is not accumulated", "torch/gpu.bend",
      "T.lin_b3(n, i, o, w, b, dx, gb, TG.matmul_tn_acc(o, n, i, 0n, dy, x, gw))", "T.lin_b3(n, i, o, w, b, dx, gb, TG.matmul_tn(o, n, i, 0n, dy, x))", GPU, "caught"),
     ("gpu element-wise: each leaf skips its last cell", "torch/gpu.bend",
      "case EN{+n}: ew1_loop(~f, TG.share(t, n, l), t, l, o, Array.get(F32, x, t))", "case EN{+n}: ew1_loop(~f, Nat.sub(TG.share(t, n, l), 1n), t, l, o, Array.get(F32, x, t))", GPUL, "caught"),
     ("gpu RMSNorm: the gain's gradient overwrites the one it is given", "torch/gpu.bend",
      "Array.set(F32, ga, j, (v + s : F32))", "Array.set(F32, ga, j, s)", GPUL, "caught"),
+    ("gpu GELUErf: the forward pass is the tanh form's", "torch/gpu.bend",
+     "ew1(~T.gelu_erf_v, t, l, e, x1, o)", "ew1(~T.gelu_v, t, l, e, x1, o)", GPUL, "caught"),
+    ("gpu GELUErf: the backward pass takes SiLU's derivative", "torch/gpu.bend",
+     "ewi(~T.gelu_erf_d, t, l, e, o, x1)", "ewi(~T.silu_d, t, l, e, o, x1)", GPUL, "caught"),
+    ("gpu Tile: the last output row of each image reads the next image's row", "torch/gpu.bend",
+     "i2c_set(e, Array.get(F32, d, ((U32.div(U32.div(e, c), t) * c : U32)", "i2c_set(e, Array.get(F32, d, ((U32.div((U32.div(e, c) + 1 : U32), t) * c : U32)", GPUL, "caught"),
+    ("gpu Tile: the backward pass leaves out each image's last row", "torch/gpu.bend",
+     "tib_rows(U32.to_nat(t), (((U32.div(e, c) * t : U32)", "tib_rows(Nat.sub(U32.to_nat(t), 1n), (((U32.div(e, c) * t : U32)", GPUL, "caught"),
+    ("gpu Tile: the backward pass keeps the last row instead of the sum", "torch/gpu.bend",
+     "gi_put(acc, Array.get(F32, dy, j), dx)", "gi_put(0.0, Array.get(F32, dy, j), dx)", GPUL, "caught"),
     ("gpu GroupNorm: a leaf takes the first image's block of its group", "torch/gpu.bend",
      "r4_y(T.gnf_grp(hw, (U32.div(t, ng) * hwc : U32)", "r4_y(T.gnf_grp(hw, (U32.mod(t, ng) * hwc : U32)", GPUL, "caught"),
     ("gpu GroupNorm: dx swaps the two means", "torch/gpu.bend",
@@ -223,6 +271,12 @@ MUTANTS = [
      "gdw_imgs(Nat.sub(n, 1n), t, U32.div(t, cg), hw", "gdw_imgs(Nat.sub(n, 1n), t, U32.div(t, ng), hw", GPUL, "caught"),
     ("gpu RoPE: the backward pass rotates forward", "torch/gpu.bend",
      "T.Bwd{p, rope_go(n, w, False{}, t, h, half, base, dy), g}", "T.Bwd{p, rope_go(n, w, True{}, t, h, half, base, dy), g}", GPUL, "caught"),
+    ("gpu RoPE2d: the backward pass rotates forward", "torch/gpu.bend",
+     "T.Bwd{p, rope2_go(n, w, False{}, th, tw, h, half_y, half_x, base, dy), g}", "T.Bwd{p, rope2_go(n, w, True{}, th, tw, h, half_y, half_x, base, dy), g}", GPUL, "caught"),
+    ("gpu RoPE2d: the x run's table entry takes the row's y", "torch/gpu.bend",
+     "+k = ((U32.mod(U32.mod(r, nt), tw) * hx : U32) + j : U32)", "+k = ((U32.div(U32.mod(r, nt), tw) * hx : U32) + j : U32)", GPUL, "caught"),
+    ("gpu RoPE2d: the y run's angle takes the row, not its place in the image", "torch/gpu.bend",
+     "+k = ((U32.div(U32.mod(r, nt), tw) * hy : U32) + j : U32)", "+k = ((U32.div(r, tw) * hy : U32) + j : U32)", GPUL, "caught"),
     ("gpu attention: dK and dV leave out the group's last head", "torch/gpu.bend",
      "tsum_h(Nat.sub(gn, 1n), ia, ib, j,", "tsum_h(Nat.sub(gn, 2n), ia, ib, j,", GPUL, "caught"),
     ("gpu attention: the second row of a pair of P's rows reads its keys one place late", "torch/gpu.bend",
@@ -310,6 +364,16 @@ MUTANTS = [
      "block_in(t, hd, kvw, r0, Nat.mul(j, hd), bk, dk)", "block_in(t, hd, kvw, r0, 0n, bk, dk)", OPS, "caught"),
     ("Fork: the backward pass drops the second layer's input gradient", "torch/main.bend",
      "      Bwd{Two{p1, p2}, add(dx1, dx2), Two{g1, g2}}", "      Bwd{Two{p1, p2}, dx1, Two{g1, g2}}", laws, "caught"),
+    ("fast attention: a unit's query heads start at its key/value head's columns", "torch/fast.bend",
+     "      atf_heads(g, e, (((bi * U32.from_nat(t) : U32) * U32.from_nat(w) : U32) + ((j * U32.from_nat(g) : U32) * U32.from_nat(hd) : U32) : U32), (((bi * U32.from_nat(t) : U32) * U32.from_nat(kvw) : U32) + (j * U32.from_nat(hd) : U32) : U32), U32.from_nat(hd), r)",
+     "      atf_heads(g, e, (((bi * U32.from_nat(t) : U32) * U32.from_nat(w) : U32) + (j * U32.from_nat(hd) : U32) : U32), (((bi * U32.from_nat(t) : U32) * U32.from_nat(kvw) : U32) + (j * U32.from_nat(hd) : U32) : U32), U32.from_nat(hd), r)", FAST, "caught"),
+    ("fast attention: every unit reads and writes the first sequence's rows", "torch/fast.bend",
+     "      atf_heads(g, e, (((bi * U32.from_nat(t) : U32) * U32.from_nat(w) : U32) + ((j * U32.from_nat(g) : U32) * U32.from_nat(hd) : U32) : U32), (((bi * U32.from_nat(t) : U32) * U32.from_nat(kvw) : U32) + (j * U32.from_nat(hd) : U32) : U32), U32.from_nat(hd), r)",
+     "      atf_heads(g, e, (((j * U32.from_nat(g) : U32) * U32.from_nat(hd) : U32) : U32), ((j * U32.from_nat(hd) : U32) : U32), U32.from_nat(hd), r)", FAST, "caught"),
+    ("fast attention: a unit takes its sequence as u % kv and its key/value head as u / kv", "torch/fast.bend",
+     "      +bi = U32.div(u, U32.from_nat(kv))\n      +j = U32.mod(u, U32.from_nat(kv))", "      +bi = U32.mod(u, U32.from_nat(kv))\n      +j = U32.div(u, U32.from_nat(kv))", FAST, "caught"),
+    ("fast attention: a block runs one unit fewer than its range", "torch/fast.bend",
+     "  atf_units(cnt, e, i0, r)", "  atf_units(Nat.sub(cnt, 1n), e, i0, r)", FAST, "caught"),
     ("packed AdamW: a block of words starts at element i0 instead of 2·i0", "torch/fast.bend",
      "      +e0 = (i0 + i0 : U32)\n      pq_b(", "      +e0 = i0\n      pq_b(", FAST, "caught"),
     ("packed AdamW: the last block runs past n (an odd matrix's last word gets a second moment)", "torch/fast.bend",
@@ -324,6 +388,16 @@ MUTANTS = [
      "  drow(i, hd, ((U32.from_nat(i) * qs : U32) + qc : U32), kc, ks,", "  drow(1n+i, hd, ((U32.from_nat(i) * qs : U32) + qc : U32), kc, ks,", laws, "caught"),
     ("attention: a query reads one key past its position (numbers)", "torch/main.bend",
      "  drow(i, hd, ((U32.from_nat(i) * qs : U32) + qc : U32), kc, ks,", "  drow(1n+i, hd, ((U32.from_nat(i) * qs : U32) + qc : U32), kc, ks,", OPS, "caught"),
+    ("attention: O's and dQ's row i stops one key early (the triangle's i products, not i + 1)", "torch/main.bend",
+     "  trow(Nat.sub(c, 1n), 0, 1n+i, (U32.from_nat(i) * U32.from_nat(t) : U32), bs, bc, ((U32.from_nat(i) * ow : U32) + oc : U32), o, dot0(1n+i,", "  trow(Nat.sub(c, 1n), 0, i, (U32.from_nat(i) * U32.from_nat(t) : U32), bs, bc, ((U32.from_nat(i) * ow : U32) + oc : U32), o, dot0(i,", laws, "caught"),
+    ("attention: O's and dQ's row i stops one key early (numbers)", "torch/main.bend",
+     "  trow(Nat.sub(c, 1n), 0, 1n+i, (U32.from_nat(i) * U32.from_nat(t) : U32), bs, bc, ((U32.from_nat(i) * ow : U32) + oc : U32), o, dot0(1n+i,", "  trow(Nat.sub(c, 1n), 0, i, (U32.from_nat(i) * U32.from_nat(t) : U32), bs, bc, ((U32.from_nat(i) * ow : U32) + oc : U32), o, dot0(i,", OPS, "caught"),
+    ("attention: dK's and dV's row j sums from one row late", "torch/main.bend",
+     "  tcol(Nat.sub(c, 1n), 0, 1n+r, ((U32.from_nat(j) * U32.from_nat(t) : U32) + U32.from_nat(j) : U32), U32.from_nat(t), ((U32.from_nat(j) * bs : U32) + bc : U32), bs, (U32.from_nat(j) * U32.from_nat(c) : U32), o, dot0(1n+r, ((U32.from_nat(j) * U32.from_nat(t) : U32) + U32.from_nat(j) : U32), ((U32.from_nat(j) * bs : U32) + bc : U32), U32.from_nat(t), bs, a, b))",
+     "  tcol(Nat.sub(c, 1n), 0, 1n+r, ((U32.from_nat(1n+j) * U32.from_nat(t) : U32) + U32.from_nat(j) : U32), U32.from_nat(t), ((U32.from_nat(1n+j) * bs : U32) + bc : U32), bs, (U32.from_nat(j) * U32.from_nat(c) : U32), o, dot0(1n+r, ((U32.from_nat(1n+j) * U32.from_nat(t) : U32) + U32.from_nat(j) : U32), ((U32.from_nat(1n+j) * bs : U32) + bc : U32), U32.from_nat(t), bs, a, b))", OPS, "caught"),
+    ("attention: dK's and dV's row j sums from row 0 again, 1 + r rows", "torch/main.bend",
+     "  tcol(Nat.sub(c, 1n), 0, 1n+r, ((U32.from_nat(j) * U32.from_nat(t) : U32) + U32.from_nat(j) : U32), U32.from_nat(t), ((U32.from_nat(j) * bs : U32) + bc : U32), bs, (U32.from_nat(j) * U32.from_nat(c) : U32), o, dot0(1n+r, ((U32.from_nat(j) * U32.from_nat(t) : U32) + U32.from_nat(j) : U32), ((U32.from_nat(j) * bs : U32) + bc : U32), U32.from_nat(t), bs, a, b))",
+     "  tcol(Nat.sub(c, 1n), 0, 1n+r, U32.from_nat(j), U32.from_nat(t), bc, bs, (U32.from_nat(j) * U32.from_nat(c) : U32), o, dot0(1n+r, U32.from_nat(j), bc, U32.from_nat(t), bs, a, b))", OPS, "caught"),
     ("full attention: a query reads only the keys up to its own position", "torch/main.bend",
      "drow(m, hd, ((U32.from_nat(i) * qs", "drow(i, hd, ((U32.from_nat(i) * qs", laws, "caught"),
     ("full attention: a query reads only the keys up to its own position (numbers)", "torch/main.bend",
@@ -425,6 +499,38 @@ MUTANTS = [
     ("col2im: the scatter starts one gathered cell late", "torch/main.bend",
      "        Array.get(F32, d, U32.from_nat(0n)),\n        Array.new(F32, TA.cap_depth(size), 0.0))}",
      "        Array.get(F32, d, U32.from_nat(1n)),\n        Array.new(F32, TA.cap_depth(size), 0.0))}", I2C, "caught"),
+    ("tile: the backward keeps the tile's last row instead of the sum", "torch/main.bend",
+     "    case Tuple{a, +old}:\n      Array.set(F32, a, src, (old + v : F32))\n\n# dx[src]",
+     "    case Tuple{a, +old}:\n      Array.set(F32, a, src, v)\n\n# dx[src]", TILE, "caught"),
+    ("tile: the last row of each image reads the next image's row", "torch/main.bend",
+     "def tile_row_of(+t: Nat, +r: Nat) -> Nat:\n  Nat.div(r, t)",
+     "def tile_row_of(+t: Nat, +r: Nat) -> Nat:\n  Nat.div(Nat.add(r, 1n), t)", laws, "caught"),
+    ("tile: every row of a tile is written to the tile's first row", "torch/main.bend",
+     "  Nat.add(Nat.mul(Nat.add(Nat.mul(i, t), j), c), k)", "  Nat.add(Nat.mul(Nat.add(Nat.mul(i, t), 0n), c), k)", TILE, "caught"),
+    ("rope2d: the row's x is its place divided by tw, as y is", "torch/main.bend",
+     "  Nat.mod(Nat.mod(r, nt), tw)", "  Nat.div(Nat.mod(r, nt), tw)", ROPE2, "caught"),
+    ("rope2d: the x run starts where the y run does", "torch/main.bend",
+     "Nat.mul(head, rope2_ht(hy, hx))), Nat.mul(hy, 2n)), j)", "Nat.mul(head, rope2_ht(hy, hx))), Nat.mul(hy, 0n)), j)", laws, "caught"),
+    ("rope2d: the y run's table entry takes the row's x", "torch/main.bend",
+     "  Nat.add(Nat.mul(rope2_yy(nt, tw, r), hy), j)", "  Nat.add(Nat.mul(rope2_xx(nt, tw, r), hy), j)", ROPE2, "caught"),
+    ("conv2dnb: the forward pass ignores the weight (a zero weight)", "torch/main.bend",
+     ", x), prm)),\n    prm => st => dy => gg => convnb_b2",
+     ", x), TA.Mat.zeros(co, ckk(c, k)))),\n    prm => st => dy => gg => convnb_b2", CNB, "caught"),
+    ("conv2dnb: the input gradient goes back through a zero weight", "torch/main.bend",
+     "par, dy, prm))),\n    op => prm => gg => st => mat_step(co, ckk(c, k)",
+     "par, dy, TA.Mat.zeros(co, ckk(c, k))))),\n    op => prm => gg => st => mat_step(co, ckk(c, k)", CNB, "caught"),
+    ("conv2dnb: the weight gradient is taken from a zero patch matrix", "torch/main.bend",
+     "ckk(c, k), co, par, st, gg,",
+     "ckk(c, k), co, par, TA.Mat.zeros(Nat.mul(n, cohw(k, hs, ws, p, s1)), ckk(c, k)), gg,", CNB, "caught"),
+    ("gpu Conv2dNB: the forward pass ignores the weight (a zero weight)", "torch/gpu.bend",
+     ", x), prm)),\n    prm => st => dy => gg => convnb_b2",
+     ", x), TA.Mat.zeros(co, T.ckk(c, k)))),\n    prm => st => dy => gg => convnb_b2", GPUL, "caught"),
+    ("gpu Conv2dNB: the input gradient goes back through a zero weight", "torch/gpu.bend",
+     "0n, dy, prm))),\n    op => prm => gg => st => mat_step(co, T.ckk(c, k)",
+     "0n, dy, TA.Mat.zeros(co, T.ckk(c, k))))),\n    op => prm => gg => st => mat_step(co, T.ckk(c, k)", GPUL, "caught"),
+    ("gpu Conv2dNB: the weight gradient starts from zero instead of the one it is handed", "torch/gpu.bend",
+     "T.ckk(c, k), co, st, gg, TG.matmul_precise",
+     "T.ckk(c, k), co, st, TA.Mat.zeros(co, T.ckk(c, k)), TG.matmul_precise", GPUL, "caught"),
     ("gpu im2col: the device gather reads the padding cells", "torch/gpu.bend",
      "      i2c_put(e, Bool.and(ok1, Bool.and(ok2, U32.is_lt(ix, w))), (src + ch : U32), CIC{d, o})",
      "      i2c_put(e, U32.is_lt(pos, (n * per : U32)), (src + ch : U32), CIC{d, o})", GPUL, "caught"),
@@ -456,6 +562,39 @@ MUTANTS = [
     ("train config: Train.with_cfg restarts 1 - b^t", "torch/main.bend",
      "    case Train{p, g, st, c, p1, p2, l}: Train{p, g, st, cfg, p1, p2, l}",
      "    case Train{p, g, st, c, p1, p2, l}: Train{p, g, st, cfg, 0.0, 0.0, l}", CFG, "caught"),
+    ("accumulation: LossOut.div leaves the gradient undivided", "torch/main.bend",
+     "Array.set(F32, a, i, (v / k : F32))", "Array.set(F32, a, i, v)", ACC, "caught"),
+    ("accumulation: LossOut.div leaves the loss undivided", "torch/main.bend",
+     "LossOut{(l / U32.to_f32(k) : F32), TA.Mat{div_l(", "LossOut{l, TA.Mat{div_l(", ACC, "caught"),
+    ("accumulation: each micro-batch starts from a zero gradient", "torch/main.bend",
+     "ta2(~P, ~X, ~Y, ~S, ~T, ~m, ~loss, cfg, g, st,", "ta2(~P, ~X, ~Y, ~S, ~T, ~m, ~loss, cfg, Layer.zeros(P, X, Y, S, m), st,",
+     ACC, "caught"),
+    ("accumulation: accumulate runs the optimizer step", "torch/main.bend",
+     "      ta2(~P, ~X, ~Y, ~S, ~T, ~m, ~loss, cfg,", "      ts2(~P, ~X, ~Y, ~S, ~T, ~m, ~loss, cfg,", ACC, "caught"),
+    ("accumulation: t advances at every micro-batch", "torch/main.bend",
+     "    case Bwd{p, dx, g}: Train{p, g, st, cfg, p1, p2, l}",
+     "    case Bwd{p, dx, g}: Train{p, g, st, cfg, (p1 + (OptCfg.c1(cfg) * (1.0 - p1 : F32) : F32) : F32), (p2 + (OptCfg.c2(cfg) * (1.0 - p2 : F32) : F32) : F32), l}",
+     ACC, "caught"),
+    ("accumulation: flush keeps 1 - b^t where it was", "torch/main.bend",
+     "F32) : F32) : F32)\n  ts4g(~P, ~X, ~Y, ~S, ~m, cfg, l, q1, q2, p, g,", "F32) : F32) : F32)\n  ts4g(~P, ~X, ~Y, ~S, ~m, cfg, l, p1, p2, p, g,",
+     ACC, "caught"),
+    ("accumulation: accumulate_at starts from a zero gradient", "torch/main.bend",
+     "ta_at_f(P, X, Y, S, Target, bf, loss, cfg, g, st,", "ta_at_f(P, X, Y, S, Target, bf, loss, cfg, zeros(Unit{}), st,", ACC, "caught"),
+    ("accumulation: flush_at keeps 1 - b^t where it was", "torch/main.bend",
+     "train_at_g(P, sf, cfg, l, q1, q2, p, g, Opt.guard(P, cfg, q1, q2, st))\n\n# Train.flush for one owned model",
+     "train_at_g(P, sf, cfg, l, p1, p2, p, g, Opt.guard(P, cfg, q1, q2, st))\n\n# Train.flush for one owned model", ACC, "caught"),
+    ("accumulation over a Fork: its second layer's backward pass starts from a zero gradient", "torch/main.bend",
+     "fork_b2(~P1, ~X, ~Y1, ~S1, ~add, ~la, P2, p1, s1, d1, g1, Layer.bwd(P2, X, Y2, S2, lb, p2, s2, d2, g2))",
+     "fork_b2(~P1, ~X, ~Y1, ~S1, ~add, ~la, P2, p1, s1, d1, g1, Layer.bwd(P2, X, Y2, S2, lb, p2, s2, d2, Layer.zeros(P2, X, Y2, S2, lb)))",
+     ACCL, "caught"),
+    ("gpu GroupNorm step: the gain takes the bias's gradient and the bias the gain's", "torch/gpu.bend",
+     "T.ln_s2(d, opt_mat(1n, d, op, w, gw, sw), opt_mat(1n, d, op, b, gb, sb))",
+     "T.ln_s2(d, opt_mat(1n, d, op, w, gb, sw), opt_mat(1n, d, op, b, gw, sb))", ACCL, "caught"),
+    ("gpu Residual: the forward pass drops the skip connection (Add2 hands on the layer's output alone)", "torch/gpu.bend",
+     "case T.Two{a, b}: T.Fwd{Unit{}, Mat.sum2(n, c, a, b), Unit{}}", "case T.Two{a, b}: T.Fwd{Unit{}, b, Unit{}}", ACCL, "caught"),
+    ("fast GroupNorm step: the gain takes the bias's gradient and the bias the gain's", "torch/fast.bend",
+     "T.ln_s2(d, opt_mat(1n, d, op, w, gw, sw), opt_mat(1n, d, op, b, gb, sb))",
+     "T.ln_s2(d, opt_mat(1n, d, op, w, gb, sw), opt_mat(1n, d, op, b, gw, sb))", ACCL, "caught"),
     ("train config: Train.new keeps a fixed configuration", "torch/main.bend",
      "OptState.new(~P, ~X, ~Y, ~S, ~m, cfg), cfg, 0.0, 0.0, 0.0}",
      "OptState.new(~P, ~X, ~Y, ~S, ~m, cfg), CAdamW{0.01, 0.9, 0.999, 0.00000001, 0.01, 0.1, 0.001}, 0.0, 0.0, 0.0}", CFG,

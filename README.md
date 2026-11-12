@@ -6,8 +6,8 @@
   <a href="https://github.com/nuxyel/BendTorch/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/nuxyel/BendTorch/ci.yml?branch=main&style=flat-square&label=ci&labelColor=4d4a44&color=7e9a5e" alt="CI"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-8b83b5?style=flat-square&labelColor=4d4a44" alt="MIT license"></a>
   <a href="https://bend-lang.com"><img src="https://img.shields.io/badge/Bend-2.0.40-8b83b5?style=flat-square&labelColor=4d4a44" alt="Bend 2.0.40"></a>
-  <img src="https://img.shields.io/badge/laws%20proved-35-7e9a5e?style=flat-square&labelColor=4d4a44" alt="35 laws proved">
-  <img src="https://img.shields.io/badge/planted%20bugs-167%2F167%20as%20expected-7e9a5e?style=flat-square&labelColor=4d4a44" alt="167 planted bugs, 167 as expected">
+  <img src="https://img.shields.io/badge/laws%20proved-44-7e9a5e?style=flat-square&labelColor=4d4a44" alt="44 laws proved">
+  <img src="https://img.shields.io/badge/planted%20bugs-212%2F212%20as%20expected-7e9a5e?style=flat-square&labelColor=4d4a44" alt="212 planted bugs, 212 as expected">
 </p>
 
 **BendTorch** trains neural networks in [Bend 2](https://bend-lang.com) with general pieces: layers with typed forward
@@ -42,6 +42,9 @@ def Model() -> T.Layer<P, X, Y, S>:
 # one training step, the same for every model and loss, under the configuration the state was made with
 # (Train.new(..., cfg, parameters); Train.with_cfg changes it, for a schedule)
 T.Train.step(~P, ~X, ~Y, ~S, ~List<&2, Nat>, ~Model(), ~ce, state, x, labels)
+
+# or one step over k micro-batches (gradient accumulation): Train.accumulate on each, its loss divided by k
+# (LossOut.div), then Train.flush
 ```
 
 A layer is a record of four functions over its parameters `P`, its input `X`, its output `Y` and what its forward pass
@@ -69,6 +72,7 @@ $ bend tests/bad_seq.bend      # Linear(784, 128) followed by Linear(64, 10)
 | `causal` | attention gives probability exactly 0 to every later position: the softmax of row i runs over exactly i + 1 positions, counted by its own loop |
 | `causal_keys` | attention reads only keys 0..i for the query at position i, one score each |
 | `causal_grad` | the backward pass sends no gradient to a key or value after the query's position: row i of the scores' gradient is computed over exactly i + 1 positions |
+| `causal_pv`, `causal_kv` | attention's products read only what a position can see: every number of row i of the output (and of dQ) sums exactly i + 1 products, keys 0..i, and every number of key j's row of dK and dV sums exactly t - j, rows j..t-1, so the masked half of each product is not computed |
 | `kv_of_group`, `gqa_head`, `kv_cols` | with `g` query heads per key/value head, query head `j·g + i` reads key/value head `j`; `kv_cols` says it of the columns both passes of attention read, which come from one function |
 | `attn_par_fwd`, `attn_par_bwd` | attention's tree of parallel sequences gives exactly what running them one after another gives, at every depth and however the sequences are split: the parallel passes are the sequential ones |
 | `full_keys`, `full`, `full_grad` | `FullAttention`, the same layer without the mask, reads every key for every query: the query at position i gets t scores, its softmax runs over all t positions, and its row of the scores' gradient sums over all t; `attn_par_fwd_full` and `attn_par_bwd_full` are the tree laws for its passes |
@@ -84,13 +88,13 @@ them again with Bend's kernel proved in Lean, with no `@unsafe`, no `?TODO` and 
 explains each proof. The linear laws are about an exact model where numbers are `Nat`; the F32 code computes the same
 formulas and is tested, not proved, to do so.
 
-167 deliberate faults planted in the code and the specification (`scripts/mutate.py`) each behave as expected: 164
+212 deliberate faults planted in the code and the specification (`scripts/mutate.py`) each behave as expected: 209
 are caught by a law or a test, and three survive by design, because they still compute the right result. One is right
 by accident (a one-cell array wraps every index to 0), and a bounds check catches the same fault; one only changes a
 GPU block size, and any block size that divides a row gives the same sum, bit for bit: the law `block_sum` proves it;
 the third lets packed AdamW write past n into cells that hold zeros and stay zero.
 
-<p align="center"><img src="docs/media/mutants.webp" alt="167 planted faults: 164 caught, 3 survive by design" width="80%"></p>
+<p align="center"><img src="docs/media/mutants.webp" alt="212 planted faults: 209 caught, 3 survive by design" width="80%"></p>
 
 ## 03 · It trains, and it computes what PyTorch computes
 
@@ -102,6 +106,7 @@ one or two F32 operations in PyTorch's order (relu, an embedding lookup, the MSE
 |---|---|---|---|
 | every layer, forward and backward, 10 seeds ([`test_ops.py`](reference/test_ops.py)) | 18,140 | 13,435 | 0.43 |
 | a 7-6-3 MLP: gradients, accumulation, 3 steps of SGD, momentum, Adam, Adam + L2, AdamW, 12 seeds ([`test_mlp.py`](reference/test_mlp.py)) | 6,588 | 4,219 | 0.06 |
+| the same MLP, a step over 4 micro-batches of 5 rows (`Train.accumulate`, `Train.flush`) against PyTorch's accumulated step: 3 steps of SGD, momentum, Adam, AdamW and AdamW with BF16 moments, 8 seeds ([`test_accum.py`](reference/test_accum.py)) | 6,578 | 3,494 | 0.04 |
 | the two-layer Llama: the loss and all 21 parameter gradients ([`test_tiny.py`](reference/test_tiny.py)) | 22,753 | 3,916 | 0.02 |
 | the same Llama after 20 AdamW steps: every loss and every final weight | 22,772 | 4,826 | 0.86 (0.79 against float64, the test's rule) |
 
@@ -188,14 +193,14 @@ against PyTorch's.
 
 ## 05 · Use it
 
-Four packages on BendHub, all at version 2.0.2.0. Import the files you need in your own Bend program:
+Four packages on BendHub, all at version 2.1.0.0. Import the files you need in your own Bend program:
 
 ```python
-import bendtorch@2.0.2.0/main.bend as T          # layers, combinators, losses, optimizers, Train
-import bendtorch@2.0.2.0/tensor.bend as TT       # general tensors: any rank, broadcasting, their gradients
-import bendtorch-fast@2.0.2.0/main.bend as F     # the same layers and bits, in parallel on the CPU
-import bendtorch-gpu@2.0.2.0/main.bend as G      # the layers on one CUDA GPU (all but GELUErf)
-import bendtorch-load@2.0.2.0/main.bend as L     # weights from flat binary and safetensors files, checkpoints
+import bendtorch@2.1.0.0/main.bend as T          # layers, combinators, losses, optimizers, Train
+import bendtorch@2.1.0.0/tensor.bend as TT       # general tensors: any rank, broadcasting, their gradients
+import bendtorch-fast@2.1.0.0/main.bend as F     # the same layers and bits, in parallel on the CPU
+import bendtorch-gpu@2.1.0.0/main.bend as G      # the layers torch/README.md lists, on one CUDA GPU
+import bendtorch-load@2.1.0.0/main.bend as L     # weights from flat binary and safetensors files, checkpoints
 ```
 
 `bendtorch` holds the laws and their proofs. The other three are outside the proofs on purpose: `-fast` and `-gpu` share
@@ -211,7 +216,7 @@ Linux x86_64, clang, Python 3.14, `curl`. The Python venv with PyTorch takes abo
 make setup   # Bend 2.0.40 (SHA256-checked), Lean 4.34.0, the Python venv of reference/; no sudo
 make data    # MNIST and Tiny Shakespeare into data/, the twins' initial weights and batches (seed 0)
 make check   # the laws (--verdict), the rejected programs, every layer, the MLP, MNIST, the Llama and a SmolLM2-sized block against PyTorch (~2 min)
-make mutate  # the 167 deliberate faults
+make mutate  # the 212 deliberate faults
 make bench   # BendTorch against PyTorch on MNIST, the tiny Llama and the block (~6 min)
 make check-js  # the same tests on the JavaScript build, run with Bun; the outputs must be the native build's bits
 ```
@@ -242,8 +247,8 @@ The full list, each with its measurement or reason, is in [`docs/limitations.md`
   GPU step is the runtime (filling new arrays on one lane, a fixed cost between kernels), not the work.
 - **Convolution is one layer**: `Conv2d` is `im2col` then `Linear`, in both lanes, with the parameters typed
   `Lin<c·k·k, co>` so the optimizer step, the zero parameters and the checkpoints are the linear layers' own. It has a
-  row law and a round-trip law at a 1 x 1 kernel; GroupNorm is in both lanes too, and full attention shipped in v1.3.0
-  ([#17](https://github.com/nuxyel/BendTorch/issues/17) closed). A UNet still needs RoPE2d
+  row law and a round-trip law at a 1 x 1 kernel; GroupNorm is in the CPU, parallel and GPU lanes, and full attention
+  shipped in v1.3.0 ([#17](https://github.com/nuxyel/BendTorch/issues/17) closed). A UNet still needs RoPE2d
   ([#18](https://github.com/nuxyel/BendTorch/issues/18)) and adaLN ([#19](https://github.com/nuxyel/BendTorch/issues/19));
   an unconditional UNet needs neither.
 - **Matrices only**, F32 training (BF16 storage, int8 inference), one CUDA GPU; SmolLM2-1.7B trains in 32 GB only with AdamW's moments packed in BF16, at 24.1 GB of peak memory.

@@ -8,9 +8,12 @@
 # LinearF, LinearFirstF and LinearNBF are main.bend's Linear, LinearFirst and LinearNB with their three products
 # (x·Wᵀ, dY·W, dYᵀ·X added into dW) taken from bend-ml-tensor-fork instead of bend-ml-tensor-array, and their optimizer
 # step in blocks. SiLU, ActIn, Mul2, Add2, Residual, Mat.dup and Mat.sum2 are main.bend's with their element-wise loops
-# in blocks (tensor-fork's par1..par4), the optimizer step (mat_step, lin_step) too. Every number is computed by
-# main.bend's own loop or tensor-array's own cells, so the bits are main.bend's at every depth and thread count (tests:
-# demo/fast_test.bend). Small matrices run in one block (ew_depth), as in main.bend.
+# in blocks (tensor-fork's par1..par4), the optimizer step (mat_step, lin_step) too. GroupNorm is main.bend's block
+# code in blocks: the forward pass a range of (image, group) blocks a block, the backward pass a range of groups.
+# Attention's forward pass is main.bend's units (one sequence's key/value group) in blocks, reading Q, K and V and
+# writing O in place; its backward pass is main.bend's. Every number is computed by
+# main.bend's own loop or tensor-array's own cells, so the bits are main.bend's at every depth and thread count
+# (tests: demo/fast_test.bend). Small matrices run in one block (ew_depth), as in main.bend.
 #
 # Outside the proofs, on purpose: tensor-fork shares arrays through Base's @unsafe Array.fork, so `bend` names the defs
 # below that reach it, and no file with laws imports this one (`make laws` checks both). All of it is Bend.
@@ -324,9 +327,204 @@ def Mul2(+n: Nat, +c: Nat) -> T.Layer<Unit, T.Two<TA.Mat<n, c>, TA.Mat<n, c>>, T
 def Residual(~n: Nat, ~c: Nat, ~P: Type, ~S: Type, ~f: T.Layer<P, TA.Mat<n, c>, TA.Mat<n, c>, S>) -> T.Layer<T.Two<T.Two<Unit, P>, Unit>, TA.Mat<n, c>, TA.Mat<n, c>, T.Two<T.Two<Unit, S>, Unit>>:
   T.ResidualOf(~TA.Mat<n, c>, ~P, ~S, ~(m => Mat.dup(n, c, m)), ~(a => b => Mat.sum2(n, c, a, b)), ~Add2(n, c), ~f)
 
-# main.bend's RMSNorm, RoPE, Attention, MSE and CrossEntropy under their own names (Embedding below, with its step in
-# blocks), so that a program that takes its layers from here can take device versions of the same names from another
-# file by its import line alone (they run as in main.bend)
+# ---- GroupNorm: main.bend's block code (gnf_grp, gnb_grp) over ranges of blocks ----
+# Images are channels last (main.bend's GroupNorm): block t is image t / ng's group t % ng, its first cell
+# (t / ng)·hw·c and its first channel (t % ng)·cg. The forward pass splits the n·ng blocks: each writes only its own
+# cells of y. The backward pass splits the ng groups, each running its group's blocks image by image, as main.bend does:
+# a group writes only its columns of dx and its channels' dg and db, and a channel's terms are added in main.bend's
+# order (images, then rows, from +0.0), so its sums are main.bend's. A block of the backward pass needs six arrays and a
+# par4 shares four, so the gain and the two gradients travel in one array w of 3c numbers (g, then dg, then db); each
+# range copies g out of it, works on its own dg and db of c numbers from zero, and copies its channels of them back.
+
+type GNE is Data:
+  GNE{n: Nat, ng: U32, hw: Nat, c: U32, cn: Nat, cg: Nat, nf: F32, eps: F32}
+
+def gn_e(+n: Nat, +hw: Nat, +ng: Nat, +cg: Nat, +eps: F32) -> GNE:
+  GNE{n, U32.from_nat(ng), hw, U32.from_nat(Nat.mul(ng, cg)), Nat.mul(ng, cg), cg, F32.from_nat(Nat.mul(hw, cg)), eps}
+
+def gn_d2(lt: Bool, +a: Nat, +b: Nat) -> Nat:
+  match lt:
+    case True{}: a
+    case False{}: b
+
+# ew_depth's blocks for the cells, at most as many as the ranges to split
+def gn_depth(+cnt: Nat, +k: Nat) -> Nat:
+  gn_d2(Nat.is_lt(ew_depth(cnt), TF.depth(k)), ew_depth(cnt), TF.depth(k))
+
+# blocks t .. t + k - 1 of the forward pass
+def gnf_blks(k: Nat, +t: U32, +ng: U32, +hw: Nat, +c: U32, +cg: Nat, +nf: F32, +eps: F32, s: T.R4) -> T.R4:
+  match k:
+    case 0n: s
+    case 1n+q: gnf_blks(q, (t + 1 : U32), ng, hw, c, cg, nf, eps, T.gnf_grp(hw, (U32.div(t, ng) * (U32.from_nat(hw) * c : U32) : U32), (U32.mod(t, ng) * U32.from_nat(cg) : U32), c, cg, nf, eps, s))
+
+def r4_b4(s: T.R4) -> TF.B4<F32, F32, F32, F32>:
+  match s:
+    case T.R4{x, g, b, y}: TF.B4{x, g, b, y}
+
+def gnf_leaf(+e: GNE, +i0: U32, +cnt: Nat, r: TF.B4<F32, F32, F32, F32>) -> TF.B4<F32, F32, F32, F32>:
+  match e r:
+    case GNE{+n, +ng, +hw, +c, +cn, +cg, +nf, +eps} TF.B4{x, g, b, y}:
+      r4_b4(gnf_blks(cnt, i0, ng, hw, c, cg, nf, eps, T.R4{x, g, b, y}))
+
+def gn_f2(-m: Nat, -d: Nat, q: TF.B4<F32, F32, F32, F32>) -> T.Fwd<T.LN<d>, TA.Mat<m, d>, TA.Mat<m, d>>:
+  match q:
+    case TF.B4{x, g, b, y}: T.ln_f2(m, d, T.R4{x, g, b, y})
+
+def gn_fwd(+n: Nat, +hw: Nat, +ng: Nat, +cg: Nat, +eps: F32, p: T.LN<Nat.mul(ng, cg)>, x: TA.Mat<Nat.mul(n, hw), Nat.mul(ng, cg)>) -> T.Fwd<T.LN<Nat.mul(ng, cg)>, TA.Mat<Nat.mul(n, hw), Nat.mul(ng, cg)>, TA.Mat<Nat.mul(n, hw), Nat.mul(ng, cg)>>:
+  match p x:
+    case T.LN{TA.Mat{g}, TA.Mat{b}} TA.Mat{xa}:
+      gn_f2(Nat.mul(n, hw), Nat.mul(ng, cg), TF.par4(~GNE, ~F32, ~F32, ~F32, ~F32, ~gnf_leaf, gn_e(n, hw, ng, cg, eps), gn_depth(Nat.mul(Nat.mul(n, hw), Nat.mul(ng, cg)), Nat.mul(n, ng)), Nat.mul(n, ng), xa, g, b, T.zeros_a(Nat.mul(Nat.mul(n, hw), Nat.mul(ng, cg)))))
+
+# group j's blocks in the remaining `left` images, from the image whose first cell is off
+def gnb_imgs(left: Nat, +off: U32, +j: U32, +hwc: U32, +hw: Nat, +c: U32, +cg: Nat, +nf: F32, +eps: F32, s: T.R4B) -> T.R4B:
+  match left:
+    case 0n: s
+    case 1n+q: gnb_imgs(q, (off + hwc : U32), j, hwc, hw, c, cg, nf, eps, T.gnb_grp(hw, off, j, c, cg, nf, eps, s))
+
+# k groups from the one whose first channel is j, each over the n images
+def gnb_grps(k: Nat, +j: U32, +n: Nat, +hwc: U32, +hw: Nat, +c: U32, +cg: Nat, +nf: F32, +eps: F32, s: T.R4B) -> T.R4B:
+  match k:
+    case 0n: s
+    case 1n+q: gnb_grps(q, (j + U32.from_nat(cg) : U32), n, hwc, hw, c, cg, nf, eps, gnb_imgs(n, 0, j, hwc, hw, c, cg, nf, eps, s))
+
+def a2_b(q: T.A2) -> Array<F32>:
+  match q:
+    case T.A2{a, b}: b
+
+def gnb_put2(+len1: Nat, +j0: U32, +c: U32, db: Array<F32>, q: T.A2) -> Array<F32>:
+  match q:
+    case T.A2{dg, w}: a2_b(T.copy_n(len1, j0, ((c + c : U32) + j0 : U32), w, Array.get(F32, db, j0)))
+
+# the range's channels j0 .. j0 + len1 of its dg and db into w, at c + j and 2c + j
+def gnb_put(+len1: Nat, +j0: U32, +c: U32, w: Array<F32>, dg: Array<F32>, db: Array<F32>) -> Array<F32>:
+  gnb_put2(len1, j0, c, db, T.copy_n(len1, j0, (c + j0 : U32), w, Array.get(F32, dg, j0)))
+
+def gnb_fin(+len1: Nat, +j0: U32, +c: U32, w: Array<F32>, s: T.R4B) -> TF.B4<F32, F32, F32, F32>:
+  match s:
+    case T.R4B{x, dy, gp, dx, T.A2{dg, db}}: TF.B4{x, dy, dx, gnb_put(len1, j0, c, w, dg, db)}
+
+def gnb_go2(+k: Nat, +j0: U32, +e: GNE, x: Array<F32>, dy: Array<F32>, dx: Array<F32>, q: T.A2) -> TF.B4<F32, F32, F32, F32>:
+  match e q:
+    case GNE{+n, +ng, +hw, +c, +cn, +cg, +nf, +eps} T.A2{w, gp}:
+      gnb_fin(Nat.sub(Nat.mul(k, cg), 1n), j0, c, w, gnb_grps(k, j0, n, (U32.from_nat(hw) * c : U32), hw, c, cg, nf, eps, T.R4B{x, dy, gp, dx, T.A2{T.zeros_a(cn), T.zeros_a(cn)}}))
+
+# groups i0 .. i0 + k - 1 (k >= 1): g copied out of w, then the groups' blocks
+def gnb_go(+k: Nat, +i0: U32, +e: GNE, x: Array<F32>, dy: Array<F32>, dx: Array<F32>, w: Array<F32>) -> TF.B4<F32, F32, F32, F32>:
+  match e:
+    case GNE{+n, +ng, +hw, +c, +cn, +cg, +nf, +eps}:
+      gnb_go2(k, (i0 * U32.from_nat(cg) : U32), e, x, dy, dx, T.copy_n(Nat.sub(cn, 1n), 0, 0, T.zeros_a(cn), Array.get(F32, w, 0)))
+
+def gnb_leaf(+e: GNE, +i0: U32, +cnt: Nat, r: TF.B4<F32, F32, F32, F32>) -> TF.B4<F32, F32, F32, F32>:
+  match cnt r:
+    case 0n r: r
+    case 1n+q TF.B4{x, dy, dx, w}: gnb_go(1n+q, i0, e, x, dy, dx, w)
+
+def gn_b5(+d: Nat, -m: Nat, b: TA.Mat<1n, d>, gg: T.LN<d>, g: Array<F32>, x: Array<F32>, dy: Array<F32>, dx: Array<F32>, dg: Array<F32>, q: T.A2) -> T.Bwd<T.LN<d>, TA.Mat<m, d>>:
+  match q:
+    case T.A2{w, db}: T.ln_b2(d, m, b, gg, T.R4B{x, dy, g, dx, T.A2{dg, db}})
+
+def gn_b4(+d: Nat, -m: Nat, b: TA.Mat<1n, d>, gg: T.LN<d>, g: Array<F32>, x: Array<F32>, dy: Array<F32>, dx: Array<F32>, q: T.A2) -> T.Bwd<T.LN<d>, TA.Mat<m, d>>:
+  match q:
+    case T.A2{w, dg}: gn_b5(d, m, b, gg, g, x, dy, dx, dg, T.copy_n(Nat.sub(d, 1n), (U32.from_nat(d) + U32.from_nat(d) : U32), 0, T.zeros_a(d), Array.get(F32, w, (U32.from_nat(d) + U32.from_nat(d) : U32))))
+
+# dg and db out of w, then main.bend's ln_b2 adds them into the gradients it is given
+def gn_b3(+d: Nat, -m: Nat, b: TA.Mat<1n, d>, gg: T.LN<d>, g: Array<F32>, q: TF.B4<F32, F32, F32, F32>) -> T.Bwd<T.LN<d>, TA.Mat<m, d>>:
+  match q:
+    case TF.B4{x, dy, dx, w}: gn_b4(d, m, b, gg, g, x, dy, dx, T.copy_n(Nat.sub(d, 1n), U32.from_nat(d), 0, T.zeros_a(d), Array.get(F32, w, U32.from_nat(d))))
+
+def gn_b2(+n: Nat, +hw: Nat, +ng: Nat, +cg: Nat, +eps: F32, b: TA.Mat<1n, Nat.mul(ng, cg)>, gg: T.LN<Nat.mul(ng, cg)>, xa: Array<F32>, da: Array<F32>, q: T.A2) -> T.Bwd<T.LN<Nat.mul(ng, cg)>, TA.Mat<Nat.mul(n, hw), Nat.mul(ng, cg)>>:
+  match q:
+    case T.A2{g, w}:
+      gn_b3(Nat.mul(ng, cg), Nat.mul(n, hw), b, gg, g, TF.par4(~GNE, ~F32, ~F32, ~F32, ~F32, ~gnb_leaf, gn_e(n, hw, ng, cg, eps), gn_depth(Nat.mul(Nat.mul(n, hw), Nat.mul(ng, cg)), ng), ng, xa, da, T.zeros_a(Nat.mul(Nat.mul(n, hw), Nat.mul(ng, cg))), w))
+
+# w = g followed by 2c zeros
+def gn_bwd(+n: Nat, +hw: Nat, +ng: Nat, +cg: Nat, +eps: F32, p: T.LN<Nat.mul(ng, cg)>, x: TA.Mat<Nat.mul(n, hw), Nat.mul(ng, cg)>, dy: TA.Mat<Nat.mul(n, hw), Nat.mul(ng, cg)>, gg: T.LN<Nat.mul(ng, cg)>) -> T.Bwd<T.LN<Nat.mul(ng, cg)>, TA.Mat<Nat.mul(n, hw), Nat.mul(ng, cg)>>:
+  match p x dy:
+    case T.LN{TA.Mat{g}, b} TA.Mat{xa} TA.Mat{da}:
+      gn_b2(n, hw, ng, cg, eps, b, gg, xa, da, T.copy_n(Nat.sub(Nat.mul(ng, cg), 1n), 0, 0, T.zeros_a(Nat.mul(3n, Nat.mul(ng, cg))), Array.get(F32, g, 0)))
+
+# the gain and the bias take this file's optimizer step, as Linear's two matrices do
+def ln_step2(+d: Nat, +op: T.Opt, p: T.LN<d>, g: T.LN<d>, st: T.Two<T.OptState<TA.Mat<1n, d>>, T.OptState<TA.Mat<1n, d>>>) -> T.Step<T.LN<d>>:
+  match p g st:
+    case T.LN{w, b} T.LN{gw, gb} T.Two{sw, sb}:
+      T.ln_s2(d, opt_mat(1n, d, op, w, gw, sw), opt_mat(1n, d, op, b, gb, sb))
+
+def ln_step(+d: Nat, +op: T.Opt, p: T.LN<d>, g: T.LN<d>, st: T.OptState<T.LN<d>>) -> T.Step<T.LN<d>>:
+  ln_step2(d, op, p, g, T.OptState.split(TA.Mat<1n, d>, TA.Mat<1n, d>, T.OptState.map(T.LN<d>, T.Two<TA.Mat<1n, d>, TA.Mat<1n, d>>, st, x => T.ln_pair(d, x), x => T.ln_pair(d, x))))
+
+# GroupNorm over n images of hw pixels and ng groups of cg channels, channels last (main.bend's GroupNorm)
+def GroupNorm(+n: Nat, +hw: Nat, +ng: Nat, +cg: Nat, +eps: F32) -> T.Layer<T.LN<Nat.mul(ng, cg)>, TA.Mat<Nat.mul(n, hw), Nat.mul(ng, cg)>, TA.Mat<Nat.mul(n, hw), Nat.mul(ng, cg)>, TA.Mat<Nat.mul(n, hw), Nat.mul(ng, cg)>>:
+  T.Layer{p => x => gn_fwd(n, hw, ng, cg, eps, p, x), p => s => dy => g => gn_bwd(n, hw, ng, cg, eps, p, s, dy, g), op => p => g => st => ln_step(Nat.mul(ng, cg), op, p, g, st), u => T.LN{TA.Mat.zeros(1n, Nat.mul(ng, cg)), TA.Mat.zeros(1n, Nat.mul(ng, cg))}, p => T.ln_dump(Nat.mul(ng, cg), p), p => xs => off => T.ln_load(Nat.mul(ng, cg), p, xs, off), p => xs => off => T.ln_store(Nat.mul(ng, cg), p, xs, off), u => U32.from_nat(Nat.mul(2n, Nat.mul(ng, cg)))}
+
+# ---- Attention's forward pass: main.bend's units in blocks over the shared arrays ----
+# A unit is one sequence's key/value group, as in main.bend: its g query heads, each over the group's key/value head.
+# main.bend copies each unit's rows and columns of Q, K and V out, runs its tree of units, and copies the outputs back
+# into O, the copies on one thread before and after the tree; here par4 shares Q, K, V and O, and each head runs
+# main.bend's own functions (probs, trow0, tmul) at the unit's offsets in them, writing its columns of its sequence's
+# rows of O in place. Units write disjoint cells, the sums are main.bend's in its order, so the bits are main.bend's.
+# The backward pass is main.bend's (it needs Q, K, V, dO, dQ, dK and dV, seven arrays, and par4 shares four).
+
+type AE is Data:
+  AE{t: Nat, g: Nat, hd: Nat, w: Nat, kvw: Nat, kv: Nat, sc: F32}
+
+def atf_fin(q: Array<F32>, k: Array<F32>, r: T.PO) -> TF.B4<F32, F32, F32, F32>:
+  match r:
+    case T.PO{p, v, o}:
+      TF.B4{q, k, v, o}
+
+def atf_head2(+t: Nat, +hd: Nat, +w: Nat, +kvw: Nat, +kc: U32, +oc: U32, v: Array<F32>, o: Array<F32>, r: T.QK) -> TF.B4<F32, F32, F32, F32>:
+  match r:
+    case T.QK{q, k, p}:
+      atf_fin(q, k, T.tmul(Nat.sub(t, 1n), 0n, hd, t, U32.from_nat(kvw), kc, U32.from_nat(w), oc, T.trow0(0n, hd, t, U32.from_nat(kvw), kc, U32.from_nat(w), oc, p, v, o)))
+
+# one query head: its columns of Q and of O from qc (its sequence's first row included), its key/value head's columns
+# of K and V from kc; main.bend's head_f2c with the offsets of the shared arrays
+def atf_head(+e: AE, +qc: U32, +kc: U32, r: TF.B4<F32, F32, F32, F32>) -> TF.B4<F32, F32, F32, F32>:
+  match e r:
+    case AE{+t, +g, +hd, +w, +kvw, +kv, +sc} TF.B4{q, k, v, o}:
+      atf_head2(t, hd, w, kvw, kc, qc, v, o, T.probs(t, hd, sc, U32.from_nat(w), qc, U32.from_nat(kvw), kc, q, k))
+
+# a unit's query heads in order, hd columns apart, over one key/value head
+def atf_heads(left: Nat, +e: AE, +qc: U32, +kc: U32, +hdu: U32, r: TF.B4<F32, F32, F32, F32>) -> TF.B4<F32, F32, F32, F32>:
+  match left:
+    case 0n:
+      r
+    case 1n+n:
+      atf_heads(n, e, (qc + hdu : U32), kc, hdu, atf_head(e, qc, kc, r))
+
+# unit u: sequence u / kv, key/value head j = u % kv and its query heads j·g .. j·g + g - 1 (main.bend's kv_of)
+def atf_unit(+e: AE, +u: U32, r: TF.B4<F32, F32, F32, F32>) -> TF.B4<F32, F32, F32, F32>:
+  match e:
+    case AE{+t, +g, +hd, +w, +kvw, +kv, +sc}:
+      +bi = U32.div(u, U32.from_nat(kv))
+      +j = U32.mod(u, U32.from_nat(kv))
+      atf_heads(g, e, (((bi * U32.from_nat(t) : U32) * U32.from_nat(w) : U32) + ((j * U32.from_nat(g) : U32) * U32.from_nat(hd) : U32) : U32), (((bi * U32.from_nat(t) : U32) * U32.from_nat(kvw) : U32) + (j * U32.from_nat(hd) : U32) : U32), U32.from_nat(hd), r)
+
+def atf_units(left: Nat, +e: AE, +u: U32, r: TF.B4<F32, F32, F32, F32>) -> TF.B4<F32, F32, F32, F32>:
+  match left:
+    case 0n:
+      r
+    case 1n+n:
+      atf_units(n, e, (u + 1 : U32), atf_unit(e, u, r))
+
+# a block: units i0 .. i0 + cnt - 1
+def atf_leaf(+e: AE, +i0: U32, +cnt: Nat, r: TF.B4<F32, F32, F32, F32>) -> TF.B4<F32, F32, F32, F32>:
+  atf_units(cnt, e, i0, r)
+
+def atf_out(-n: Nat, -w: Nat, r: TF.B4<F32, F32, F32, F32>) -> T.Fwd<Unit, TA.Mat<n, w>, T.AttnS>:
+  match r:
+    case TF.B4{q, k, v, o}:
+      T.Fwd{Unit{}, TA.Mat{o}, T.AttnS{q, k, v}}
+
+# the b·kv units in 2^d blocks, d enough for one unit a block
+def attn_fwd(+n: Nat, +w: Nat, +kvw: Nat, +b: Nat, +t: Nat, +kv: Nat, +g: Nat, +hd: Nat, +sc: F32, x: T.Two<TA.Mat<n, w>, T.Two<TA.Mat<n, kvw>, TA.Mat<n, kvw>>>) -> T.Fwd<Unit, TA.Mat<n, w>, T.AttnS>:
+  match x:
+    case T.Two{TA.Mat{q}, T.Two{TA.Mat{k}, TA.Mat{v}}}:
+      atf_out(n, w, TF.par4(~AE, ~F32, ~F32, ~F32, ~F32, ~atf_leaf, AE{t, g, hd, w, kvw, kv, sc}, TF.depth(Nat.mul(b, kv)), Nat.mul(b, kv), q, k, v, T.zeros_a(Nat.mul(n, w))))
+
+# main.bend's RMSNorm, RoPE, MSE and CrossEntropy under their own names, and Attention with the forward pass above
+# (Embedding below, with its step in blocks), so that a program that takes its layers from here can take device versions
+# of the same names from another file by its import line alone (they run as in main.bend)
 def RMSNorm(+n: Nat, +d: Nat, +eps: F32) -> T.Layer<TA.Mat<1n, d>, TA.Mat<n, d>, TA.Mat<n, d>, TA.Mat<n, d>>:
   T.RMSNorm(n, d, eps)
 
@@ -334,7 +532,7 @@ def RoPE(+n: Nat, +w: Nat, +t: Nat, +h: Nat, +half: Nat, +base: F32, -e: {w == N
   T.RoPE(n, w, t, h, half, base, e)
 
 def Attention(+n: Nat, +w: Nat, +kvw: Nat, +b: Nat, +t: Nat, +kv: Nat, +g: Nat, +hd: Nat, +sc: F32, -e1: {n == Nat.mul(b, t) : Nat}, -e2: {w == Nat.mul(Nat.mul(kv, g), hd) : Nat}, -e3: {kvw == Nat.mul(kv, hd) : Nat}) -> T.Layer<Unit, T.Two<TA.Mat<n, w>, T.Two<TA.Mat<n, kvw>, TA.Mat<n, kvw>>>, TA.Mat<n, w>, T.AttnS>:
-  T.Attention(n, w, kvw, b, t, kv, g, hd, sc, e1, e2, e3)
+  T.Layer{p => x => attn_fwd(n, w, kvw, b, t, kv, g, hd, sc, x), p => s => dy => g2 => T.attn_bwd(n, w, kvw, T.AttnDims{b, t, kv, g, hd, sc}, s, dy), op => p => g2 => st => T.no_step(Unit, op, p, g2, st), u => Unit{}, p => T.PL{p, Nil{}}, p => xs => off => T.PA{p, xs, off}, p => xs => off => T.PA{p, xs, off}, u => 0}
 
 def MSE(+n: Nat, +c: Nat, y: TA.Mat<n, c>, t: TA.Mat<n, c>) -> T.LossOut<TA.Mat<n, c>>:
   T.MSE(n, c, y, t)

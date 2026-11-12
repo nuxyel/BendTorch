@@ -1983,6 +1983,116 @@ Six new laws and one rewritten, all by `--verdict`, about the code the demos exe
   took 31 seconds, checkout and text rules included.
 - The full tier by hand on `devel` (0931e99, a dispatch: everything, as the Sunday run and a release will): green in
   58 minutes, `make check bits` 10, the 167 mutants 44 (163 as expected, the same 4 skipped), the JavaScript lane 4.
+## 2026-11-04: the im2col round trip at stride `k` (#29)
+
+`conv_roundtrip` had the `k = 1` case. What was missing was the general one: with a stride equal to the kernel size
+and no padding, slot `(ch, ky, kx)` of a patch row is image cell `(oy·k + ky, ox·k + kx)`, channel `ch`, so the gather
+and the scatter name the same cell for every `k`. The numbers said so at `k = s = 1, 2, 3, 4` (`test/im2col-ks`,
+all `0.000e+00`); now the law says it.
+
+### The lemma, beside `divmod_one`
+
+The centre is the mixed-radix decode `i = (p_ch·k + p_ky)·k + p_kx`, and Bend's division is repeated subtraction, so
+the first thing to prove is that `Nat.divmod.go` meets its spec. That is `divmod_go_spec`: with `b` the original
+divisor, at every step `a = n + d·b + r` **and** `b = m + r + 1`, hence at `n = 0` `a = d·b + r`. It is an induction
+on `n` with those two as the hypothesis, and `divmod_spec` is the instantiation at `Nat.divmod(a, b)`, one `def` each
+beside `divmod_one`. The statement had been instrumented over 41 `(a, b)` pairs and 860 steps before it was proved
+(0 invariant failures), so the induction was not guessed.
+
+### What the decode needed
+
+Each level of `i = (ch·k + ky)·k + kx` is a block count plus a rest, which is `gqa_head`'s idiom generalised:
+
+- `go_count`: `n` steps of the countdown leave the quotient and add `n` to the remainder.
+- `go_blocks`, `go_blocks_fst`, `go_blocks_snd`: `j` whole blocks of `1 + (n + t)` numbers, then `n` numbers that do
+  not complete one, give quotient `j` and remainder `n`. (`div_blocks` counts the blocks; `div_rest` only had the
+  quotient, and the decode needs both halves.)
+- `split_idx`: `(ch·k + ky)·k + kx = ch·(k·k) + (ky·k + kx)` (`mul_dist`, `mul_assoc`).
+- `radix_bound`: `k·k = 1 + ((ky·k + kx) + (k·a + b))` when `k = 1 + ky + a` and `k = 1 + kx + b`, which is the room
+  the inner cell leaves. It is a ten-step `Nat.add`/`Nat.mul` chain (`add4` earns its keep here).
+- then `p_ch_ks` (the outer quotient), `p_ky_mod` (the outer remainder), `p_ky_ks`/`p_kx_ks` (the inner quotient and
+  remainder), `p_iy_ks`/`p_ix_ks` (`sub0`).
+
+The bounds are hypotheses, as in `replayed_read` in bend-ml: `ky < k` is `k = 1 + ky + a`, `kx < k` is
+`k = 1 + kx + b`. Bend has no order predicate to assume, and the decode genuinely needs the bounds — a part larger
+than the radix does not decode — so they cannot be dropped, only written as decompositions.
+
+### What unblocked the proof
+
+Two things, both of which had stopped earlier attempts:
+
+- **`NL.add_succ`.** The step the kernel would not take definitionally is `1 + (np + X) = np + (1 + X)`; `add_succ`
+  is that, and the `m = 0` case of `divmod_go_spec` is three rewrites around it (`add_succ`, `add_comm`,
+  `add_assoc`). Before, the case failed with `expected 1n+Nat.add(np, …)`, `observed Nat.add(np, 1n+…)`.
+- **`+e` / `+f` on proof parameters.** A proof used twice in one branch is otherwise "consumed more than once"; the
+   `+` modifier makes it reusable. `divmod_go_spec` uses its invariant in both recursive calls and in the statement
+   of its helper lemma, so it needs it.
+
+### Runs
+
+- `bend PROOF.bend --check-only` and `bend PROOF.bend --verdict`: ALL PROOFS CHECK.
+- `make laws` (the whole gate: `torch/main.bend`, both `PROOF.bend` runs, `dtype.bend --verdict`, the `FAST_DEFS` /
+  `LOAD_DEFS` / `GPU_DEFS` pins, the `load.bend`/`gpu.bend`/`fast.bend` import bans and the ten `tests/bad_*.bend`
+  rejections): green, 36 laws in all.
+- The numbers are unchanged from `test/im2col-ks`: the `k = s` round trip exact at `k = 1, 2, 3, 4`.
+
+### Not covered, and said so
+
+The law is `s = k` and `p = 0`. A stride other than the kernel size, or padding, changes which cells a window reads
+and is not stated; the padded case reads `0` outside the window (`p_ok`), which is a statement about `p_rc`, not
+about the index. The adjoint of `im2col` (that `col2im` is the transpose of the gather) is not a law either; it is
+the next piece of #29.
+
+## 2026-11-04: the round trip at any stride and padding, and what the adjoint still needs
+
+`conv_roundtrip_ks` was `s = k, p = 0`. The real layers are `k = 3, s = 2, p = 1`, and the decode turned out not to
+care: `p_ky` and `p_kx` are the slot's offsets inside the `k x k` window, so they never mention the stride or the
+padding. Only the source coordinate does, and it is `(oy*s + ky) - p`.
+
+### The law
+
+`conv_roundtrip_window`: for every kernel, stride and padding, slot `(ch, ky, kx)` of output position `(oy, ox)` is
+image cell `(oy*s + ky - p, ox*s + kx - p)`, channel `ch`. Four bounds are hypotheses, all written as
+decompositions: `k = 1 + ky + a`, `k = 1 + kx + b` (the window offsets), and `oy*s + ky = p + ty`,
+`ox*s + kx = p + tx` (the window row and column are inside the image). The last two are not decoration: without them
+`p_iy`/`p_ix` truncate at 0 and `p_ok` is false, so the gather reads 0 and there is no cell to name.
+
+### What the proof cost
+
+One lemma, `sub_self_add(p, t)`: `(p + t) - p = t`, an induction on `p` (`sub0` at 0, one definitional step after).
+`p_iy_win`/`p_ix_win` are then `p_ky_ks`/`p_kx_ks` with `sub(x, 0)` replaced by "subtract `p` from the window's
+coordinate": the congr chain rewrites `p_ky` to `ky`, the window hypothesis rewrites `oy*s + ky` to `p + ty`, and
+`sub_self_add` cancels the padding. The law's proof is the same assembly as `conv_roundtrip_ks`'s with those two.
+
+`conv_roundtrip_ks` is now *proved as an instance* of the general law (`s = k`, `p = 0`, where the two window
+hypotheses are `{==}` because `0 + x = x`), so the subsumption is checked by the kernel rather than asserted in a
+comment. `conv_roundtrip` (`k = 1`) is a different statement — it takes the image coordinate directly instead of
+deriving it from `(oy, ox)` — so it keeps its own proof, and the README says so.
+
+### Runs
+
+- `bend PROOF.bend --check-only` and `--verdict`: ALL PROOFS CHECK.
+- `make laws`: green, 37 laws in all, the ten `tests/bad_*.bend` still rejected as expected.
+- `reference/conv2d_check.py` rebuilt from source (`.scratch/conv2d_probe` removed first): y, dx, dW and db all
+  `0.000e+00` on the three shapes, including `c1` and `c2` at `k = 3, p = 1, s = 2` — the geometry the new law states
+  per cell. `reference/im2col_check.py` still `0.000e+00` at `k = 1, k = s = 2, 3, 4`.
+
+### The adjoint (#15), and why it is not next in the same sitting
+
+`col2im` is the gather's transpose, so `dy·im2col(x) = col2im(dy)·x`. It cannot be proved about the code as it
+stands: `col2im` accumulates into an array (`add_at`, `Array.set`) by index, and the checker cannot follow writes into
+an array by index — the same limit the `causal` law records for its probabilities. So the adjoint has to be stated
+over a model in `torch/spec.bend`, and that model needs index-addressed accumulation: `nth`/`set_at` over
+`List<Nat>`, with the arithmetic that goes with them. `spec.bend` has dots, matrix-vector products and Frobenius
+inner products over whole lists, but no indexed access at all.
+
+The shape the proof would take: with the image a `List<Nat>` and the slot-to-cell map `p_src` (whose per-cell
+behaviour is now a law), the adjoint is a reindexing of one sum,
+`Σ_slots dy[j]·x[p_src j] = Σ_cells x[c]·(Σ_{j: p_src j = c} dy[j])`, so it needs (i) an exchange of two sums,
+(ii) that each slot's cell is a real cell (boundedness: `p_src j < n·h·w·c`), and (iii) that summing over the cells
+of the image picks each slot's term exactly once. For `s = k` that last one is a bijection and the decode gives it;
+for overlapping windows it is the fiber sum, which needs `Nat` equality reasoning the codebase does not have yet.
+That is the work, and it is a piece of its own rather than an afternoon's extension of tonight's lemma.
 
 ## Bend 2.0.40 (2026-11-06)
 
@@ -2052,3 +2162,450 @@ Six new laws and one rewritten, all by `--verdict`, about the code the demos exe
   (8.58x PyTorch F32's distance from float64; 7.16x and 7.92x in the others), as on 2026-10-24 (8.51x in one round of
   three). Over three nights it fails two rounds of nine. 132 of their 163 cells are within 5% of 2026-10-24's; the
   largest moves are 16-thread cells and Flux.jl's and Lux.jl's GPU block, which swing by 2x within the night.
+
+## v2.0.2 on BendHub (2026-11-07)
+
+- Release PR #38, its full CI run green (57 min), merged as be3d1ba, tagged v2.0.2.
+- Gates on Bend 2.0.40: `make check bits gpu smol smol-gpu bits-smol reader mutate-smol` at b725924 (the package move,
+  above); `make corpus check-js` at 9c55899, whose code is b725924's (corpus sha256 a9b9fa1cffdef55c, 1.3.0's, the same
+  bits on 1 and 16 threads); `make package CORE=bendtorch VERSION=2.0.2.0`, every package test green.
+- Published from `build/packages/` at the tag's content: `bendtorch@2.0.2.0` `0x126b6a38011ee25cff0be3f38ba4be79`,
+  `bendtorch-fast@2.0.2.0` `0x3887e0154e90fde4cd50297e70c0c4a3`, `bendtorch-gpu@2.0.2.0`
+  `0xa28f5e4637d47d1d04bb2a054051fa0b`, `bendtorch-load@2.0.2.0` `0x1ca41758012c9b3d91a53720cdf95521`. Each published on
+  the first try.
+- From a clean folder importing the published packages, on Bend 2.0.40: `demo/reader_test.bend` over
+  `bendtorch-load@2.0.2.0` passes `reference/test_reader.py` on the C lane and on the JavaScript lane;
+  `demo/fast_test.bend` over `bendtorch-fast@2.0.2.0` prints its fifteen zeros on 1 and 16 threads, and
+  `demo/gpu_test.bend` over `bendtorch-gpu@2.0.2.0` its eight on 1 and 16 CPU threads.
+- The GitHub release v2.0.2 carries the CHANGELOG's entry and these hashes.
+
+## GELUErf on the GPU lane, GroupNorm on the parallel lane (2026-11-01)
+
+- `torch/gpu.bend`'s `GELUErf`: SiLU's two element-wise bangs with `main.bend`'s `gelu_erf_v` and `gelu_erf_d` as their
+  leaves, so every number is `main.bend`'s expression. Its three defs that reach tensor-gpu are in `GPU_DEFS`.
+- `demo/gpu_layers_test.bend` cases 16 and 17: y and dx apart, at SiLU's 512 x 1536, inputs in [-6, 6) so that
+  `erf(x / sqrt 2)` reaches every piece. 0 ulps on 1 and 16 CPU threads. On the RTX 4050 y is 0, so `erf` in plain F32
+  arithmetic gives the host's bits on CUDA too (the comment in `main.bend` said that was not checked yet); dx is 113
+  ulps off, through CUDA's float `exp` in the pdf: with `exp_cr` in its place it is 0, as all 18 cases are. 113 is far
+  above SiLU's 4, so `make gpu` bounds y at 0 and lets dx through to the `exp_cr` check, as it does for attention.
+- `torch/fast.bend`'s `GroupNorm`, `main.bend`'s types and names, with `main.bend`'s block code (`gnf_grp`, `gnb_grp`)
+  in tensor-fork blocks. Forward: ranges of the n·ng (image, group) blocks, each writing only its own cells of y.
+  Backward: ranges of groups, each running its group's blocks image by image, so a range writes only its columns of dx
+  and its channels of dg and db, and each channel's terms are added in `main.bend`'s order from +0.0. A backward block
+  needs six arrays and `par4` shares four, so g, dg and db travel in one array of 3c; each range copies g out, works on
+  its own zeroed dg and db and copies its channels back. The step is this file's `opt_mat` on the two `1 x c`
+  matrices. At most `ew_depth`'s blocks, and no more than there are blocks or groups; a range with no work returns
+  its arrays unchanged.
+- `demo/fast_test.bend`: 8 images of 256 pixels in 8 groups of 16 (16 forward ranges, 8 backward), 4 of 1024 in 3
+  groups of 16 (ranges with no work in both passes), 3 of 5 in 3 groups of 2 (one range), with gradients that are not
+  zero, and the AdamW step on the gain and the bias. Its inputs leave out the specials: one NaN in a block makes the
+  whole block NaN on both sides and hides the rest. 19 zeros on 1 and 16 threads and in JavaScript; the Makefile,
+  `check_js.sh`, `package.sh` and `mutate.py` expect 19.
+- Seven mutants, each first checked to build and to move the numbers: on the fast lane a forward block taking its
+  group's number as its image, every backward group on the first group's channels, a backward range starting at
+  channel i0, dg copied back over g, and the gain's and bias's optimizer states swapped; on the device lane GELUErf's
+  forward in the tanh form and its backward with SiLU's derivative. `make mutate`: 156 mutants.
+- `fast.bend` still has no GELU of either form, so a program using `GELUErf` cannot move between the parallel and GPU
+  lanes by its import line alone.
+- Gates on this branch (busy machine; no timing taken): laws, check, bits, gpu (SiLU 4, cross-entropy 4, attention
+  176,128, small 7,680, full 172,032, full small 8,192, GELUErf's dx 113; all 18 cases 0 with `exp_cr`), check-js,
+  mutate (156 of 156 as expected, none skipped). Not merged until #22 is rebased and in: it touches `gpu.bend`, the
+  Makefile's `GPU_DEFS` and `gpu_layers_test` too, and its counts move with these.
+- Rebased on devel at 2.0.1 with tensor-array 0.1.20.0 (2026-11-06): devel had added Conv2d as `gpu_layers_test`'s
+  case 16, so GELUErf's y and dx are cases 17 and 18 and the test prints 19 numbers (`make gpu` holds y and Conv2d at 0
+  and lets dx through to the `exp_cr` check); `GPU_DEFS` has Conv2d's defs and GELUErf's; `fast_test` prints 19 zeros
+  as above; `make mutate` has devel's 167 and these seven, 174. The published `bendtorch-gpu@2.0.1.0` has no GELUErf, so
+  the README keeps "all but GELUErf" on its import line until the next release.
+- Gates after the rebase (Bend 2.0.40, busy machine): `make check bits` (every output identical), `make gpu` (SiLU 4
+  ulps, cross-entropy 4, attention 176,128, small 7,680, full 172,032, full small 8,192, GELUErf's dx 113; all 19 cases
+  0 with `exp_cr`), `reader`, `smol`, `smol-gpu`, `bits-smol`, `check-js`, and `make mutate`: 174 of 174 as expected
+  (171 caught, the 3 that survive by design), 44 minutes.
+## 2026-11-04: `Tile` (BendTorch#19), and the timings nuxyel asked for
+
+A conditioned block modulates per image (`h = h * (1 + scale)`), but the state is per token, and nothing broadcast a
+per-image row over its tokens: the modulation had to be repeated on the host and rebuilt with `Mat.from_list`. `Tile`
+is the smallest piece nuxyel asked for: `Mat<b,c>` to `Mat<b*t,c>`, row `i` of the input becoming rows
+`i*t .. i*t+t-1`, with the backward summing each image's `t` rows back into its row.
+
+The walk is one chain — images, rows, row, cells — because Bend has no mutual recursion here, and the addressing is two
+`Nat` defs (`tile_src`, `tile_dst`) that the loop calls through `U32.from_nat`, so the hot path has no division (the
+division lives in the forward's index only through `tile_src`, computed once per row, not per cell).
+
+### Score
+
+`reference/tile_check.py`, probe rebuilt from source, a 2 x 4 input over `t = 3` (6 x 4) and a 6 x 4 dY:
+
+    Tile: max |Bend - torch| forward 0.000e+00  backward 0.000e+00  (tolerance 1e-6)
+    a last-row backward would be off by 2.000e+00
+    PASS
+
+The second line is the point: a backward that kept the last row of each tile instead of summing them has the right
+shape and passes a shape check, and it is off by 2.0 here.
+
+### The laws
+
+`tile_row`: the `t` output rows of image `i` are all image row `i`, i.e. `(i*t + j) / t = i` for `j <= s` with
+`t = 1 + s`. The proof is `div_blocks` (the `i` whole blocks of `t` leave `go(j, s, i, 0)`) then `div_rest` (a
+remainder `j <= s` does not complete another block).
+`tile_sum`: every one of the `t` rows reads (forward) and adds into (backward) the same cell — `tile_src(c, t, i*t+j, k)
+= i*c + k`. It is `tile_row` carried through the column arithmetic, so it is nearly a corollary and the README row says
+so; it is still the statement the backward rests on.
+
+`make laws` green with 36 laws in `LAWS.bend` (37 in all); `--verdict` green; `make build` green.
+
+### The timings (#19 asked for them before deciding on a fused `Modulate`)
+
+The comparison is one elementwise pass over Tile's output shape (512 x 128, i.e. 8 images x 64 tokens x 128 wide)
+against that pass plus the tile broadcast; both written as 20,000 iterations threading a 512 x 128 matrix, medians of
+three, `/usr/bin/time`, wall clock with 0.01 s resolution:
+
+    one elementwise pass                1.51, 1.46, 1.49 s   (median 1.49 s, 74.5 us a step)
+    Tile then the same pass              1.40, 1.45, 1.45 s   (median 1.45 s, 72.5 us a step)
+
+So the broadcast is **not measurably slower** than materialising the operand it replaces: the single-pass version fills a
+512 x 128 matrix with the tiled scale, and the tiled version fills 8 x 128 and broadcasts it on the device. At this
+shape a fused `Modulate` would buy nothing measurable; what #19 measured was the *host* staging, and `Tile` is the
+piece that removes it. Reported on the issue.
+
+### Not in this change
+
+The device lane: `make gpu` is unavailable here (no `nvcc`, no `CUDA_HOME`), so `gpu.bend`'s copy is deferred rather
+than committed untested.
+
+## 2026-11-04: RoPE2d (BendTorch#18) — the layer, its three laws, and what stays a test
+
+`RoPE` rotates row `r` by `r mod t` with one frequency set, so an image's two axes share it. `RoPE2d` is the separate
+def nuxyel asked for (`RoPE` untouched): row `r` of `b*th*tw` gives `y = (r mod (th*tw))/tw` and `x = r mod tw`; the
+head's first `2*half_y` numbers rotate by `y`, its last `2*half_x` by `x`, each with its own inverse frequencies. Same
+shape as `RoPE`: one table (`rope2_tab`, an entry per (position, dim of the head)), one in-place pair rotation per pair
+(`rope_p2`/`rope_p3`, unchanged), both directions from one `fwd` flag, `Unit` state, the layer record copied.
+
+The layer runs the two halves as **two runs over disjoint dimensions**, the y part then the x part, each with its own
+table. `Bool.pick` evaluates both branches, so a per-pair pick called `F32.pow` twice to use one result; the two runs
+call it once. Same rotations, same order within a head, and the bits did not move: the reference check is
+byte-identical to the run before the refactor.
+
+### The laws, stated over the code
+
+The three laws are about the addressing defs **in `torch/main.bend`** — `rope2_ht`, `rope2_yaddr`, `rope2_xaddr`,
+`rope2_yentry`, `rope2_xentry` — which the layer's `U32` code calls through `U32.from_nat`. That is what makes them
+laws about the code rather than about a model of it: a change to the layer's addressing breaks them.
+
+- `rope2_partition`: the two runs tile the head's `2*half_y + 2*half_x` numbers with no gap and no overlap — the x run
+  starts one `half_y` past the y pair at `j = half_y`, and each run walks its own `j` from `0` to its half.
+- `rope2_is_rope`: at `tw = 1`, `half_x = 0` the y run is `RoPE`, at the same address `r*w + head*(half+half) + c`.
+- `rope2_is_rope_tab`: the same for the table entry, `(r mod th)*half + j`.
+
+The fourth thing BendTorch#18 asks for, "identity at `(0,0)`", and the `(y,x)` then `(-y,-x)` round trip, are `F32`
+statements. Laws here are `Nat`/`Bool` and never `F32`, so they stay as tests — the reference check's `1.192e-07` on
+`back(fwd(x))` is that claim, measured.
+
+**Honest about strength.** `rope2_is_rope` and `rope2_is_rope_tab` are near-definitional: once `tw = 1` and
+`half_x = 0` are substituted, both sides are the same `Nat` expression (the proof is `mul2`, `add_zero`, `div_one`,
+`mul_one_r`). They pin the two *formulas* to each other — a change to either breaks the law — but they are not a deeper
+theorem, and the README rows say so.
+
+### Runs
+
+    bend torch/main.bend --check-only        ALL PROOFS CHECK
+    bend PROOF.bend --check-only             ALL PROOFS CHECK
+    bend PROOF.bend --verdict                ALL PROOFS CHECK
+    make laws                                green, 37 laws in LAWS.bend (38 in all)
+    make build                               green, all 24 demos compile
+    make check-rope2d                        PASS, 1.192e-07 forward and backward
+                                             the two axes differ: y[1] != y[2] -> True
+
+**No device twin**: `gpu.bend` needs the same walk and a CUDA toolkit, which is absent here; the maintainer writes and
+runs it after the merge, and `docs/limitations.md` says so.
+
+## Tile on the GPU lane (2026-11-07)
+
+- `torch/gpu.bend`'s `Tile`, `main.bend`'s types and name. The forward pass is a cell bang over the `b·t·c` output
+  cells, each copying the input cell `main.bend`'s `tile_src` names, `(r / t)·c + k` for output row `r` and column `k`,
+  in `U32`. The backward pass is a cell bang over the `b·c` input cells, each adding the `t` rows of dy that read it,
+  in increasing row from 0.0: that is the order `tile_cells` adds them into its zeros, so the sums have `main.bend`'s
+  bits. The leaves reuse the conv section's `CIC`, `i2c_set`, `gi_put` and `gis_set`; `tile_fwd`, `tile_bwd` and
+  `Tile` reach tensor-gpu and are in `GPU_DEFS`.
+- `demo/gpu_layers_test.bend` cases 19 and 20, y and dx apart: 8 images of 64 tokens at SmolLM2's width (512 x 576 out)
+  and 3 images of 5 tokens of 7 numbers (105 cells, so the leaves' last shares are short). 0 ulps on 1 and 16 CPU
+  threads with `+RTS --gpu off -RTS`, and 0 on the RTX 4050: no exponential is taken, so `make gpu` bounds both at 0.
+  The Makefile, `scripts/gpu_expcr.sh` and `scripts/mutate.py` expect 21 cases.
+- Three mutants, each first checked to build and to move the numbers: the last output row of each image reads the next
+  image's row (case 19 off), the backward pass leaves out each image's last row and the backward pass keeps the last
+  row instead of the sum (case 20 off). `make mutate ONLY=<the three>`: 3 of 3 caught; 177 mutants in all.
+- Gates (Bend 2.0.40, busy machine, bits only): `make laws` (`GPU_DEFS` with `tile_fwd`, `tile_bwd`, `Tile`), `make
+  check`, and `make gpu`: SiLU 4 ulps, cross-entropy 4, attention 176,128, small 7,680, full 172,032, full small 8,192,
+  GELUErf's dx 113, every other case 0, Tile's two included; all 21 cases 0 with `exp_cr`; MNIST, the tiny Llama and
+  the SmolLM2-sized block on the GPU against PyTorch, and the GPU builds' outputs are `bench/bits.txt`'s.
+
+## RoPE2d on the GPU lane (2026-11-07)
+
+- `torch/gpu.bend`'s `RoPE2d`, `main.bend`'s types and name. The two angle tables are built on the host by
+  `main.bend`'s `rope2_tabN`, as `RoPE`'s twin builds its one, then one bang rotates every pair of both runs: pair
+  `e < n·h·half_y` is the y run's pair `e` with the y table, the rest the x run's pair `e - n·h·half_y` with the x
+  table. Each pair is rotated by `main.bend`'s `rope_p2` at the addresses and table entries `rope2_yone` and
+  `rope2_xone` compute, written here in `U32`. The two runs touch disjoint numbers, so one bang does both. `rope2_go2`,
+  `rope2_go` and `RoPE2d` reach tensor-gpu and are in `GPU_DEFS`.
+- Why the tables stay on the host: I ran `main.bend`'s own expressions for RoPE's tables (`rope_ang`'s `F32.pow`, then
+  `F32.cos` and `F32.sin`) in a bang on the RTX 4050 and compared every entry with the host's (a probe, not kept). The
+  cos and sin of the host's angles differ by 1 ulp on 6 to 20% of the entries: 8 and 6 of 128 (8 positions, half 16),
+  202 and 171 of 2,048 (64 positions, half 32), 82 and 74 of 1,024 (64 and 16, base 100,000), 12,770 and 11,623 of
+  65,536 (4,096 and 16). The angle itself differs by up to 2 ulps on 118 of 2,048 and 113 of 1,024 entries, and the
+  cos of a device angle by up to 128 ulps. With `+RTS --gpu off -RTS` every entry is the host's. So the tables would
+  cost `main.bend`'s bits on the device, and on the host they are `th·half_y + tw·half_x` angles a call.
+- `demo/gpu_layers_test.bend` cases 21 and 22 (after Tile's 19 and 20), y and dx apart: 8 images of 8 x 8 tokens at SmolLM2's width (9 heads of
+  16 y and 16 x pairs) and 3 images of 3 x 5 tokens, 2 heads of 3 y and 2 x pairs (90 pairs, so the leaves' last
+  shares are short). 0 ulps on 1 and 16 CPU threads with `+RTS --gpu off -RTS`, and 0 on the RTX 4050, so `make gpu`
+  bounds both at 0. The Makefile, `scripts/gpu_expcr.sh` and `scripts/mutate.py` expect 23 cases.
+- Three mutants, each first checked to build and to move the numbers: the backward pass rotates forward (case 22 off),
+  the x run's table entry takes the row's y and the y run's angle takes the row instead of its place in the image
+  (both cases off). `make mutate ONLY=<the three>`: 3 of 3 caught; 180 mutants in all, with Tile's three.
+- Gates (Bend 2.0.40, busy machine, bits only): `make laws` (`GPU_DEFS` with `rope2_go2`, `rope2_go`, `RoPE2d`), `make
+  check`, and `make gpu`: SiLU 4 ulps, cross-entropy 4, attention 176,128, small 7,680, full 172,032, full small 8,192,
+  GELUErf's dx 113, every other case 0, RoPE2d's two included; all 23 cases 0 with `exp_cr`; MNIST, the tiny Llama and
+  the SmolLM2-sized block on the GPU against PyTorch, and the GPU builds' outputs are `bench/bits.txt`'s.
+
+## Gradient accumulation (2026-11-07, #36)
+
+- **What.** `Train.accumulate` runs the forward pass, the loss and the backward pass into the record's gradient and
+  stops; `Train.flush` runs one optimizer step on the summed gradient, under the record's configuration, and hands it
+  back zeroed. `Train.accumulate_at` and `Train.flush_at` are the owned forms, as `Train.step_at`. `LossOut.div(n, c, k,
+  r)` divides a matrix output's loss and every number of its gradient by k. @adeerkhan asked for it in #36: a 64x64 image
+  example types a batch of two images and no more (bendlang/bend#1071), and accumulation trades steps for batch size
+  without the types changing.
+- **Why this shape.** A backward pass already adds into the gradient it receives and the optimizer step zeroes it, so
+  `Train.step` already had the seam, after the backward pass. The 1/k goes into each micro-batch's loss, PyTorch's
+  `loss / k`, not into the gradient: dividing a `P` by k would need a scaling closure in every layer and combinator.
+  Adam's t advances once a flush, as `optimizer.step()` runs once per effective batch. The record's `loss` after an
+  accumulate is that micro-batch's (divided by k) and a flush keeps it, so with k = 1 the record is `Train.step`'s field
+  for field.
+- **Tests** (`demo/accum_test.bend`, `reference/test_accum.py`, `make check-accum`), the MLP of `mlp_test` on 20 rows,
+  3 steps of SGD, momentum, Adam, AdamW and AdamW with BF16 moments, 8 seeds:
+  - k = 1, accumulate then flush, in the template and the owned forms: `Train.step`'s bits (losses, parameters, moments,
+    1 - b^t, the zeroed gradient).
+  - k = 4 micro-batches of 5 rows against PyTorch's accumulated step (`(loss / 4).backward()` four times, one
+    `optimizer.step()`): every micro-batch's loss, the gradient summed over one step's four, the parameters, the moments
+    and 1 - b1^t, 1 - b2^t (t = 3, not 12): 6,578 numbers, 3,494 bit-identical, the worst 0.039 of the tolerance (6
+    weights of the BF16 run left out, their moment within 64 ulps of a rounding midpoint, as in `test_mlp.py`). The
+    gradient is zero after every flush.
+  - k = 4 against one `Train.step` on the 20 rows at once: equal up to the order of the sums, the worst 0.018 of the
+    tolerance, 1.2e-7 at most on a parameter.
+  - The owned forms and `fast.bend`'s linear layers give the template forms' bits at k = 4.
+- **Mutants**, eight, each first checked to build and to fail the check: `LossOut.div` leaving the gradient or the loss
+  undivided, a micro-batch starting from a zero gradient (both forms), `accumulate` running the step, t advancing at
+  every micro-batch, and a flush leaving 1 - b^t where it was (both forms).
+- **No law.** The k = 1 identity (accumulate then flush is the step) holds by construction for every model, but stated
+  over the owned forms it names the model and the record twice, and neither is `Data`; it would need the affine
+  workaround the other proofs use, so it stays a bit-for-bit test. Not tested over `gpu.bend`'s layers
+  (`docs/limitations.md`).
+- **Gates** (Bend 2.0.40, busy machine, pass/fail and bits only): `make laws check bits` green, every output in
+  `bench/bits.txt` identical (6 min); `make check-js` green, `accum_test` added to the JavaScript lane with the native
+  build's numbers (6,578, 3,494 bit-identical, 0.039); `make mutate`: 182 mutants, 179 as expected and the three
+  SmolLM2 safetensors mutants skipped for a path (this worktree is not beside llama.bend), then run with `LLAMA_BEND`
+  set: 3 as expected (43 min and 4 min).
+
+## Gradient accumulation over the parallel and device lanes (2026-11-08, #36)
+
+- **What.** `demo/accum_lanes.bend` trains five small models four ways each and prints every state: `lin`
+  (LinearFirst 12 -> 16, RMSNorm, LinearNB 16 -> 8, MSE), `mlp` (Residual of RMSNorm and SwiGLU, 16 -> 24 -> 16),
+  `attn` (Residual of RMSNorm and attention: 2 query heads and 1 key/value head of 8, RoPE, sequences of 8), `gn`
+  (GroupNorm over images of 4 pixels in 2 groups of 4 channels, SiLU, Linear 8 -> 6) and `emb` (Embedding of 13 ids
+  into 8, LinearNB 8 -> 13, cross-entropy); the runs are two AdamW steps of four micro-batches (`acc`), of one step on
+  the four micro-batches' rows at once (`big`), of k = 1 (`one`) and of `Train.step` (`step`). The layers come from the
+  file imported as `F`, `fast.bend` in the source; `make check-accum-lanes` and `make gpu` build copies whose `F` is
+  `main.bend` (the reference) or `gpu.bend` by changing that line, as `make gpu` does for mnist. The micro-batches'
+  rows are the big batch's in order (each number a hash of its index in one stream), so `acc` and `big` see the same
+  data. `reference/accum_lanes.py` checks, in each output, that `one` is `step` bit for bit and `acc` is `big` within
+  `oracle.py`'s tolerance, and prints the distance in ulps of each model to `main.bend`'s copy, then `one` to `step`.
+- **On the CPU threads** (`make check-accum-lanes`): `fast.bend`'s copy on 1 and 16 threads and `gpu.bend`'s with
+  `+RTS --gpu off -RTS` on 1 and 16 give `main.bend`'s bits, every number of every run (`0 0 0 0 0 0`). `acc` against
+  `big`: the worst 0.021 of the tolerance (`mlp`), at most 2.4e-7 on a number; 7,224 of 10,338 numbers identical.
+- **On the RTX 4050** (`make gpu`, each run its own program): `lin` exact, k = 1 `Train.step` to the bit, and through
+  CUDA's float `exp` (SiLU, softmax, cross-entropy) `mlp` up to 320 ulps, `attn` 320, `gn` 80, `emb` 468 after two steps,
+  all in the moments: the parameters are at most 64 ulps off (`mlp`), and most are exact; the losses within 1 ulp. With `exp_cr` in place of `F32.exp`
+  (`scripts/gpu_expcr.sh accum`, its new mode) every number is `main.bend`'s, so the device code differs only by the
+  exponential. `acc` against `big` on the device: the worst 0.033 of the tolerance. The device runs repeat bit for bit.
+- **The device was not used at first.** Built as one pure loop per run, the CUDA build launched no kernel at all (nsys:
+  no CUDA kernel data) and every number came out as `main.bend`'s: `Train.new`'s zeros are made by parallel lets
+  (`pair_zeros`), and a bang that follows a parallel let in the same evaluation runs on the CPU threads, as
+  `demo/gpu_layers_test.bend` records for attention. Each call (`Train.new`, every accumulate, flush and step) now
+  hands its record on through an effect (`IO.now`), so the next one starts a new evaluation: 1,490 kernel launches in
+  `attn`'s accumulated run.
+- **Mutants**, four, each first checked to build and to move the numbers: a `Fork` whose second layer's backward pass
+  starts from a zero gradient (`main.bend`: the other tests hand a `Fork` a zero gradient, a backward pass from new
+  or a training step, so it changes nothing there; here `mlp`'s and `attn`'s `acc` miss `big` by 70,000 times the tolerance in all three lanes alike, which only
+  the `acc`-`big` check sees); `gpu.bend`'s GroupNorm step giving the gain the bias's gradient and the bias the gain's
+  (`gpu_test` and `gpu_layers_test` still print zeros under it; `gn` moves on `gpu.bend` alone); the same in `fast.bend` (`demo/fast_test.bend`
+  catches it too); `gpu.bend`'s Residual whose `Add2` hands on the layer's output without the skip connection (neither
+  `gpu_test` nor `gpu_layers_test` runs `gpu.bend`'s Residual; `mlp` and `attn` move). 186 in all.
+- **Not covered**: `gpu.bend`'s `Conv2d`, `GELUErf` and `FullAttention`, AdamW with packed BF16 moments, SGD and
+  momentum on these two lanes, the JavaScript lane (`docs/limitations.md`).
+- **Gates** (Bend 2.0.40, busy machine, bits and pass/fail only): `make laws check bits` green (6 min 42 s; the new
+  check about 2 min of it, mostly building the three copies); `make gpu` green (6 min 15 s), its new lines: k = 1 0
+  ulps, `lin` 0, `mlp` 320, `attn` 320, `gn` 80, `emb` 468, and `0 0 0 0 0 0` with `exp_cr`; `make mutate` on the four
+  new mutants: 4 of 4 caught (8 min); `scripts/affected.py self-check` passes.
+
+## Tile and RoPE2d together on devel, and their CPU mutants (2026-11-11)
+
+- #34 (Tile) and #33 (RoPE2d) merged into devel. The two device twins, written on 2026-11-07 over each PR's head, both
+  used cases 19 and 20 of `demo/gpu_layers_test.bend`; on devel Tile keeps 19 and 20 and RoPE2d takes 21 and 22, so
+  the Makefile, `scripts/gpu_expcr.sh` and `scripts/mutate.py` expect 23 cases.
+- Six CPU mutants, none of which the PRs had: Tile's backward keeping the last row instead of the sum, its last row
+  reading the next image's row (the law `tile_row` fails), every row of a tile written to its first row; RoPE2d's x
+  taken as its position divided by `tw`, the x run starting where the y run does (the law `rope2_partition` fails),
+  the y run's table entry taking the row's x.
+- Two of the RoPE2d mutants survived at first. `reference/rope2d_check.py` ignored the binary `make mutate` passes it
+  and always ran `.scratch/rope2d_probe`, the unmutated build. With the binary taken from the command line, as
+  `tile_check.py` does, both are caught: 186 mutants, 183 caught and 3 surviving by design.
+
+## Gradient accumulation on devel, with Tile and RoPE2d (2026-11-11, #36)
+
+- devel (Tile, RoPE2d and their device twins) merged into `grad-accum`. The conflicts were the lists that both sides
+  extend: the Makefile's demos and checks (both sides' entries kept), `make gpu` (23 cases, then the accumulation
+  lines), the README's law count (devel's 42) and `docs/limitations.md` (both sides' bullets).
+- 198 mutants in all: devel's 186 and the twelve of accumulation. The chart is redrawn.
+- Gates (Bend 2.0.40, busy machine, bits and pass/fail only): `make check` green; `make gpu` green, all 23 cases 0 with
+  `exp_cr`, accumulation on the device k = 1 0 ulps, `lin` 0, `mlp` 320, `attn` 320, and `0 0 0 0 0 0` with `exp_cr`;
+  `make mutate`: 198 mutants, 198 as expected (58 min).
+
+## Conv2dNB (#40), and its device twin (2026-11-11)
+
+- #40 (@adeerkhan) adds `Conv2dNB`, `Conv2d` without the bias for the image reference's convolutions (#39):
+  `main.bend`'s `im2col` and `col2im` around `LinearNB`'s forward, backward and optimizer step, the parameters the
+  `co x c·k·k` weight alone. `reference/conv2dnb_check.py` against `F.conv2d(..., bias=None)` and its autograd, on
+  `conv2d_check.py`'s three shapes: y, dX and dW 0.000e+00. Merged into devel; the only conflict was the Makefile's
+  demo and check lists.
+- `torch/gpu.bend`'s `Conv2dNB`, `main.bend`'s types and name: the device `im2col`, the device `LinearNB`'s products
+  (`TG.matmul_nt`, `TG.matmul_precise`, `matmul_tn_acc` for the weight gradient) and the device `col2im`.
+  `convnb_b2` and `Conv2dNB` reach tensor-gpu and are in `GPU_DEFS`.
+- `demo/gpu_layers_test.bend` case 23: y, dX and the weight gradient (added into one that is not zero) at `Conv2d`'s
+  four shapes (a small odd one, a realistic one and the two strided ones). 0 ulps with `+RTS --gpu off -RTS` and on
+  the RTX 4050, so `make gpu` bounds it at 0. The Makefile, `scripts/gpu_expcr.sh` and `scripts/mutate.py` expect 24
+  cases.
+- Six mutants, each first checked to type-check and then caught: on each lane, the forward pass with a zero weight and
+  the input gradient through a zero weight; on the CPU the weight gradient from a zero patch matrix, on the device the
+  weight gradient from a zero starting gradient (the CPU probe starts from zero, so only the device test sees that
+  one). 204 mutants in all, 201 caught and 3 surviving by design.
+
+
+## Attention sums only the triangle (2026-11-08, #28)
+
+- **What.** The causal path's `O = P·V` and `dQ = G·K` (`pmul`) and `dK += Gᵀ·Q`, `dV += Pᵀ·dO` (`pacc`) summed every
+  key and every row, the masked half included, where `P` and `G` are 0 (laws `causal`, `causal_grad`). Now row `i`
+  sums keys `0..i` (`trow0`, `tmul`) and key `j`'s row sums rows `j..t-1` (`tcol0`, `tacc`), the loops carrying the
+  row as a Nat. `head_f2c` and `hb2c`..`hb4c` are the causal path's callers; `FullAttention` keeps `head_f2` and
+  `hb2`..`hb4`, with `pmul` and `pacc`. `gpu.bend`'s attention already summed only the triangle (`pv_val`, `kv_val`).
+- **Bits.** Each sum starts at +0.0 and the terms left out were 0·x, ±0.0 for a finite x, so on finite numbers nothing
+  changes. `make check-triangle` (`demo/triangle_probe.bend`, `reference/triangle_check.py`) runs the four products
+  both ways on the P and G the causal path builds, at four shapes (3 query heads over 2 key/value heads at t = 7, the
+  ViT block's head at t = 16, t = 1, SmolLM2-135M's at t = 128, dK and dV added into sums that are not zero): 0 cells
+  differ of 84, 21, 1,024, 4, 73,728 and 8,192 per product; a control with numbers past the diagonal differs in 105 of
+  112. `bench/bits.txt` unchanged.
+- **The one change, on specials.** `test_ops`' IEEE edge cases found 11 cells where PyTorch gives NaN and BendTorch now
+  a number: y's row 4 (v[5, 3] = -inf, a position row 4 cannot see), dQ's rows 0-1 (k[2, 1] = inf) and rows 4-6
+  (k[7, 4] = NaN), PyTorch's 0 · inf of a masked position. The accepted case of 2026-10-18 (dQ's row 4 through dS)
+  now covers them: the reference there is PyTorch's own with those three made finite, every other cell PyTorch's.
+  `docs/limitations.md` says so.
+- **Laws.** `causal_pv`: the count `trow0` hands on, the length of each of row `i`'s dots, is `i + 1`. `causal_kv`: key
+  `j`'s, with `r` keys after it, is `1 + r`. Each proof follows the row's loop, which passes the length on
+  (`cnt_trow`, `cnt_tcol`). That a dot of length `k` sums `k` products is read from `sdot`. 39 laws in all.
+- **Counted** (Cachegrind, one thread, Bend 2.0.40, the core alone minus a program that only fills and hashes its
+  inputs):
+
+  | core | devel | triangle | |
+  |---|---:|---:|---:|
+  | ViT block (t = 16, one head of 64), forward | 25.05 M | 19.04 M | -24.0% |
+  | ViT block, forward and backward | 87.28 M | 64.77 M | -25.8% |
+  | SmolLM2-135M (t = 128, 9 heads over 3), forward | 315.43 M | 219.43 M | -30.4% |
+  | SmolLM2-135M, forward and backward | 1,144.70 M | 755.64 M | -34.0% |
+  | FullAttention, ViT / SmolLM2-135M forward | 30.80 / 425.97 M | the same | |
+
+  The prototypes had projected -29% and -34% at SmolLM2's shape and -7% and -8% at the ViT block's, counting only the
+  products left out. The ViT block gains more than that. The new loops also skip `pmul`'s `U32.div`/`U32.mod` of each
+  cell's index, but I did not count how much of the difference that is.
+- **Timed** (idle machine, the core alone 200 passes at the ViT shape and 20 at SmolLM2's on fresh inputs, minus the
+  fill-only program, 11 alternated rounds, one thread pinned to CPU 3 and 16 threads): ViT 1.201 to 0.872 ms a pass on
+  one thread and 0.768 to 0.737 on 16 (ranges 0.727-0.794 and 0.701-0.762, within noise); SmolLM2-135M 13.58 to 9.31 ms
+  on one thread and 5.45 to 4.09 on 16. The README's speed table (whole programs, 2026-11-07) predates this.
+- **Mutants**, each checked to build and to move a number or break a law: row `i` stopping one key early (the law and
+  the numbers), dK's and dV's rows summed from one row late, and from row 0 again. 178 in all.
+- **Gates** (Bend 2.0.40): `make laws check bits gpu smol bits-smol` (the device bounds unchanged: SiLU 4 ulps,
+  cross-entropy 4, attention 176,128, small 7,680, full 172,032, full small 8,192; every case 0 with `exp_cr`), the four
+  new mutants caught.
+
+## fast.bend's Attention: the forward pass's units in blocks over shared arrays (2026-11-08, #28)
+
+- **Why.** On 16 threads the attention core barely used them: at the ViT block's shape it ran 0.77 ms a pass on 16
+  threads against 1.20 on one (idle machine, 2026-11-08). `main.bend`'s forward pass copies each unit's rows
+  and columns of Q, K and V out (`fslices`), runs the units in a tree of parallel lets, and copies their outputs back
+  into O (`blocks_in`), the copies on one thread before and after the tree.
+- **What.** `fast.bend`'s `Attention` now has its own forward pass, `attn_fwd`: tensor-fork's `par4` shares Q, K, V
+  and a zeroed O between 2^d blocks of units (d enough for one unit a block), and each query head of a unit runs
+  `main.bend`'s own `probs`, `trow0` and `tmul` at the unit's offsets in the shared arrays, writing its columns of its
+  sequence's rows of O in place. Units write disjoint cells and every sum is `main.bend`'s in its order. The stash is
+  the same `AttnS{q, k, v}`, and the backward pass is `main.bend`'s: it needs Q, K, V, dO, dQ, dK and dV, seven arrays,
+  and `par4` shares four. `FAST_DEFS` gains `attn_fwd` and `Attention`.
+- **Bits.** `demo/fast_test.bend` runs `T.Attention` and `F.Attention` forward and backward (y, dQ, dK, dV; the
+  backward reads each forward pass's stash) on 3 sequences of 5 with 3 query heads over each of 2 key/value heads (6
+  units in 8 blocks, two empty) and on 16 sequences of 16 with one head of 64: 0 words differ, on 1 and 16 threads and
+  in JavaScript; it prints 21 zeros now. `smol.bend` and `smol_block.bend` take `F.Attention`: `bench/bits.txt` and
+  `make bits-smol` unchanged.
+- **Timed** (idle machine, the core alone as in the entry above: 200 passes at the ViT shape, 20 at SmolLM2-135M's,
+  minus the fill-only program, 11 alternated rounds, one thread pinned to CPU 3 and 16), ms a pass:
+
+  | | devel | `main.bend` with the triangle | `fast.bend` |
+  |---|---:|---:|---:|
+  | ViT block, one thread | 1.216 | 0.886 | 0.543 |
+  | ViT block, 16 threads | 0.772 (0.753-0.820) | 0.732 (0.676-0.795) | 0.266 (0.212-0.305) |
+  | SmolLM2-135M, one thread | 13.68 | 9.32 | 9.12 |
+  | SmolLM2-135M, 16 threads | 5.49 (5.03-5.89) | 4.15 (3.92-4.30) | 3.37 (3.28-3.54) |
+
+  At the ViT shape the forward pass in blocks takes 39% off the one-thread time and 64% off the 16-thread time; at
+  SmolLM2's, with 6 units of t = 128 where the arithmetic dominates, 2% and 19%.
+  Every run gave one output. Not timed: a whole training step (the backward pass is `main.bend`'s, so a step gains
+  less than the forward does).
+- **Mutants**, each checked to build and to move `fast_test`'s numbers: a unit's query heads starting at its key/value
+  head's columns, every unit on the first sequence's rows, sequence and key/value head swapped in the unit's number,
+  and a block running one unit fewer. 182 in all; `fast_test`'s gate expects 21 zeros.
+- **Gates** (Bend 2.0.40): `make laws check bits check-js smol bits-smol`, the four new mutants caught.
+- **Left**: the backward pass over shared arrays (seven arrays: packing the reads would copy them, which is what this
+  removes from the forward pass).
+
+## The triangle branch merged into devel (2026-11-11, #28)
+
+- `attn-triangle` (the two entries above: the causal products over the triangle, laws `causal_pv` and `causal_kv`, and
+  `fast.bend`'s Attention forward pass in blocks) merged on top of Tile, RoPE2d, gradient accumulation and Conv2dNB.
+  The conflicts were the lists and the counts: `triangle_probe` and `check-triangle` join the Makefile's lists, the
+  CHANGELOG's laws section counts 39, 41 and 44 in the order the laws landed, and the mutants figure was drawn again by
+  `docs/media/mutants.mjs`: 44 laws, 212 mutants, 209 caught, the same three surviving by design.
+
+## adaLN as a composition (2026-11-11, #19)
+
+- #19 asked for a per-image modulation of a per-token state (DiT's adaLN). With `Tile` in (#34), the rest is a
+  composition, as I said on the issue, and no layer is added to `torch/`. `demo/adaln_probe.bend` builds, over 2 images
+  of 3 tokens, width 4: the gated residual `h + Tile(g)·f(h)` (`Both(Tile, Fork(Id, f))`, then `Mul2` and `Add2`); the
+  modulation `Tile(sh) + Tile(m)·LayerNorm(h)` (`Both(Tile, Both(Tile, LayerNorm))`, then `Mul2` and `Add2`); and the
+  whole block, with `g`, `m` and `sh` from three `Linear(3, 4)` of `silu(cond)` and `f` a `Linear(4, 4)`.
+- `reference/adaln_check.py` (`make check-adaln`): y, the gradients of `h`, `cond`, `g`, `m`, `sh` and every parameter's
+  against PyTorch, 390 numbers, 235 bit-identical, the worst 0.381 of the tolerance. The modulation with `m = 1`,
+  `sh = 0` gives `LayerNorm`'s numbers, forward, `dh` and both parameter gradients. A probe built with the gradients of
+  `m` and `sh` swapped fails at 478,614 times the tolerance, so the check sees a misrouted gradient.
+- What the composition needed that the package does not have: a layer that only regroups a pair's parts (`Rewire` in
+  the probe: forward a function, backward its inverse, no parameters). `Fork` copies one input and `Both` maps a pair
+  part by part, but `Add2(h, Mul2(G, f(h)))` takes three values out of two pairs, so a regrouping is unavoidable.
+  Also missing: a column split, so the three per-image rows come from three `Linear` layers rather than one of width
+  `3c` cut in three, which is the same weights split by rows. `m` is DiT's `1 + scale`, with the 1 in its bias.
+- Left: whether `Rewire` belongs in `torch/main.bend` (it has nothing to prove and nothing to step), and the GPU lane (the
+  probe uses `main.bend`'s layers; `gpu.bend` has `Tile`, `Mul2`, `Add2`, `SiLU` and `Linear`, but no `LayerNorm`).
+- Gates (Bend 2.0.40, busy machine, pass/fail only): `make laws check` green (8 min 7 s); `scripts/affected.py
+  self-check` passes. No file in `torch/` changed, so no mutants.
+
+## Release 2.1.0: the gates (2026-11-11)
+
+- At 84e0fbd's code (Tile, RoPE2d, gradient accumulation, Conv2dNB, the triangle's sums, adaLN by composition, the
+  packages at 2.1.0.0), Bend 2.0.40: `make laws check bits corpus gpu smol smol-gpu bits-smol reader check-js
+  mutate-smol` green (corpus sha256 a9b9fa1cffdef55c, 2.0.2's, the same bits on 1 and 16 threads; mutate-smol 6 of 6);
+  `make mutate` 212 of 212 at the merge of the triangle branch, whose `torch/` is this code's.
+- `make package CORE=bendtorch VERSION=2.1.0.0` failed first: `scripts/package.sh` still wanted 19 zeros from
+  `fast_test`, which prints 21 since the triangle branch's Attention case (the branch had updated the Makefile,
+  `check_js.sh` and `mutate.py`, not the package script). Fixed; every package test green.

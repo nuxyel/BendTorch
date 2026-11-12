@@ -186,6 +186,39 @@ law causal_grad:
   for g: Array<F32>
   {T.gr_n(T.grow(i, t, hd, sc, ds, dc, vs, vc, d, v, p, g)) == 1n+i : Nat}
 
+# LAW (causal_pv): in T.Attention's P·V, and in its backward pass's dQ = G·K, every cell of row i is a dot of exactly
+# i + 1 products, keys 0..i. T.trow0 gives each of the row's dots that length (a dot of length k sums k products,
+# T.sdot) and hands it on as the row's count; this law says the count is i + 1. The keys after i, where P and G are 0
+# (laws causal, causal_grad), are not read: summing them added only 0·x.
+law causal_pv:
+  for +i: Nat
+  for +c: Nat
+  for +t: Nat
+  for +bs: U32
+  for +bc: U32
+  for +ow: U32
+  for +oc: U32
+  for a: Array<F32>
+  for b: Array<F32>
+  for o: Array<F32>
+  {T.pn_n(T.trow0(i, c, t, bs, bc, ow, oc, a, b, o)) == 1n+i : Nat}
+
+# LAW (causal_kv): in T.Attention's backward pass, every cell of key j's row of dK += Gᵀ·Q and of dV += Pᵀ·dO is a dot
+# of exactly 1 + r products, rows j..t-1, where r is the number of keys after j (T.tacc walks the keys with
+# t = 1 + j + r). T.tcol0 gives each dot that length and hands it on; this law says the count is 1 + r, so t - j. The
+# rows before j, where G and P are 0, are not read.
+law causal_kv:
+  for +j: Nat
+  for +r: Nat
+  for +c: Nat
+  for +t: Nat
+  for +bs: U32
+  for +bc: U32
+  for a: Array<F32>
+  for b: Array<F32>
+  for o: Array<F32>
+  {T.pn_n(T.tcol0(j, r, c, t, bs, bc, a, b, o)) == 1n+r : Nat}
+
 # LAW (attn_par_fwd): T.Attention runs its sequences in a tree of parallel lets (T.fpar: the sequences cut in halves,
 # each half cut again, d levels deep, the leaves' outputs appended). Whatever the depth and however the sequences are
 # split between the two halves, the tree gives exactly what T.fleaf gives running them one after another, in order: the
@@ -373,6 +406,127 @@ law im2col_rows:
   for +s: Nat
   for d: Array<F32>
   {List.length(&2, F32, T.im2col_n(n, h, w, c, k, p, s, d)) == Nat.mul(Nat.mul(n, Nat.mul(T.ocount(h, p, k, s), T.ocount(w, p, k, s))), Nat.mul(c, Nat.mul(k, k))) : Nat}
+
+# LAW (conv_roundtrip_ks): the round trip at stride k. With a stride equal to the kernel size and no padding, one
+# gathered cell of a patch row is one image cell: slot (ch, ky, kx) of output position (oy, ox) is image cell
+# (oy*k + ky, ox*k + kx), channel ch. im2col reads that cell (p_src) and col2im writes the gradient back into it
+# (its scatter is p_src itself, in c2_go), so for k = s and p = 0 the two passes address the same number cell for
+# cell. `ky_lt` and `kx_lt` write ky < k and kx < k as k = 1 + ky + a and k = 1 + kx + b, which is how the decode
+# gets the bounds its division needs. The identity at the centre is the decode:
+# i = (p_ch(i,k)*k + p_ky(i,k))*k + p_kx(i,k), proved from the division algorithm's own block step.
+law conv_roundtrip_ks:
+  for +n: Nat
+  for +oy: Nat
+  for +ox: Nat
+  for +ch: Nat
+  for +ky: Nat
+  for +kx: Nat
+  for +h: Nat
+  for +w: Nat
+  for +c: Nat
+  for +k: Nat
+  for +a: Nat
+  for +b: Nat
+  for +ky_lt: {k == Nat.add(1n, Nat.add(ky, a)) : Nat}
+  for +kx_lt: {k == Nat.add(1n, Nat.add(kx, b)) : Nat}
+  {T.p_src(Nat.add(Nat.mul(Nat.add(Nat.mul(ch, k), ky), k), kx), n, oy, ox, h, w, c, k, 0n, k) ==
+    U32.from_nat(Nat.add(Nat.mul(Nat.add(Nat.mul(Nat.add(Nat.mul(n, h), Nat.add(Nat.mul(oy, k), ky)), w),
+      Nat.add(Nat.mul(ox, k), kx)), c), ch)) : U32}
+
+# LAW (conv_roundtrip_window): the round trip at any stride and padding, per cell. Slot (ch, ky, kx) of output
+# position (oy, ox) reads image cell (oy*s + ky - p, ox*s + kx - p), channel ch: im2col reads that cell and col2im
+# writes the gradient back into it, because both address it with p_src. The window hypotheses write the two bounds:
+# ky < k and kx < k as k = 1 + ky + a and k = 1 + kx + b, and "the window's row is inside the image" as
+# oy*s + ky = p + ty, ox*s + kx = p + tx (without them the subtraction p_iy/p_ix truncates and the cell is not read
+# at all: p_ok is false there, and the gather uses 0).
+#
+# The decode does not care about the stride or the padding: p_ch is i/k^2, p_ky is (i mod k^2)/k and p_kx is i mod k,
+# whatever s and p are, so this is conv_roundtrip_ks' proof with two subtraction facts instead of sub(x, 0) = x. It
+# covers the geometry the layers use (the UNet's k = 3, s = 2, p = 1 among them), and the two narrower laws,
+# conv_roundtrip (k = 1, s = 1, p = 0) and conv_roundtrip_ks (s = k, p = 0), are its instances.
+law conv_roundtrip_window:
+  for +n: Nat
+  for +oy: Nat
+  for +ox: Nat
+  for +ch: Nat
+  for +ky: Nat
+  for +kx: Nat
+  for +h: Nat
+  for +w: Nat
+  for +c: Nat
+  for +k: Nat
+  for +p: Nat
+  for +s: Nat
+  for +a: Nat
+  for +b: Nat
+  for +ty: Nat
+  for +tx: Nat
+  for +ky_lt: {k == Nat.add(1n, Nat.add(ky, a)) : Nat}
+  for +kx_lt: {k == Nat.add(1n, Nat.add(kx, b)) : Nat}
+  for +row_in: {Nat.add(Nat.mul(oy, s), ky) == Nat.add(p, ty) : Nat}
+  for +col_in: {Nat.add(Nat.mul(ox, s), kx) == Nat.add(p, tx) : Nat}
+  {T.p_src(Nat.add(Nat.mul(Nat.add(Nat.mul(ch, k), ky), k), kx), n, oy, ox, h, w, c, k, p, s) ==
+    U32.from_nat(Nat.add(Nat.mul(Nat.add(Nat.mul(Nat.add(Nat.mul(n, h), ty), w), tx), c), ch)) : U32}
+
+# LAW (tile_row): the t output rows of image row i are all image row i, in order. With t = 1 + s, output row i*t + j
+# (j <= s) reads input row i: Nat.div(i*t + j, t) = i. It is the division fact under the whole layer — the forward's
+# broadcast and the backward's sum both address through it — and it is stated over tile_row_of, the def the code calls.
+law tile_row:
+  for +i: Nat
+  for +s: Nat
+  for +j: Nat
+  for +a: Nat
+  for +es: {s == Nat.add(j, a) : Nat}
+  {T.tile_row_of(Nat.add(1n, s), Nat.add(Nat.mul(i, Nat.add(1n, s)), j)) == i : Nat}
+
+# LAW (tile_sum): every one of the t rows of image i reads (forward) and adds into (backward) the same cell of image
+# row i, column k — tile_src(c, t, i*t + j, k) = i*c + k for every j <= s. That is what makes the backward a sum of
+# the t rows rather than the last of them; an implementation that offset the row would break it.
+law tile_sum:
+  for +c: Nat
+  for +i: Nat
+  for +s: Nat
+  for +j: Nat
+  for +a: Nat
+  for +k: Nat
+  for +es: {s == Nat.add(j, a) : Nat}
+  {T.tile_src(c, Nat.add(1n, s), Nat.add(Nat.mul(i, Nat.add(1n, s)), j), k) ==
+     Nat.add(Nat.mul(i, c), k) : Nat}
+
+# LAW (rope2_partition): a head's 2*half_y + 2*half_x numbers are tiled by the two runs of pairs with nothing missed
+# and nothing twice. The y run's pair at j is (j, j + half_y); the x run's is (2*half_y + j, 2*half_y + j + half_x),
+# and the law says the x run starts exactly one half_y past the y pair at j = half_y — i.e. the two runs meet at the
+# boundary without a gap or an overlap. Each pair is used once because each run walks its own j from 0 to its half.
+law rope2_partition:
+  for +w: Nat
+  for +hy: Nat
+  for +hx: Nat
+  for +r: Nat
+  for +head: Nat
+  for +j: Nat
+  {T.rope2_xaddr(w, hy, hx, r, head, j) ==
+     Nat.add(T.rope2_yaddr(w, hy, hx, r, head, Nat.add(hy, j)), hy) : Nat}
+
+# LAW (rope2_is_rope): at tw = 1 and half_x = 0 the y run is RoPE. RoPE rotates the pair (c, c + half) of head `head`
+# in row r at address r*w + head*(half + half) + c, and the y run at half_y = half, half_x = 0 addresses the same pair
+# the same way — so the 2D layer is RoPE's general case, not a second implementation of the same rotation.
+law rope2_is_rope:
+  for +w: Nat
+  for +half: Nat
+  for +r: Nat
+  for +head: Nat
+  for +j: Nat
+  {T.rope2_yaddr(w, half, 0n, r, head, j) ==
+     Nat.add(Nat.add(Nat.mul(r, w), Nat.mul(head, Nat.add(half, half))), j) : Nat}
+
+# LAW (rope2_is_rope_tab): the same for the table: at tw = 1 the y entry (r mod (th*1))/1 * half + j is RoPE's
+# (r mod th)*half + j, so both layers read the same angles for the same positions.
+law rope2_is_rope_tab:
+  for +half: Nat
+  for +r: Nat
+  for +j: Nat
+  for +th: Nat
+  {T.rope2_yentry(Nat.mul(th, 1n), 1n, half, r, j) == Nat.add(Nat.mul(Nat.mod(r, th), half), j) : Nat}
 
 # LAW (conv_roundtrip): with a 1 x 1 kernel, no padding and a stride of 1, a patch is one cell: im2col reads the image
 # cell at the patch's own coordinates, (b, oy, ox, ch), and col2im writes that number back into it (its scatter is p_src
