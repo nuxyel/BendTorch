@@ -5,6 +5,17 @@ the packages are or in how they are used, MINOR for a new capability, PATCH for 
 four BendHub packages (`bendtorch`, `bendtorch-fast`, `bendtorch-gpu`, `bendtorch-load`) carry the release's number
 with a fourth digit (`2.0.0.0`). The engineering log behind each entry, measurement by measurement, is `NOTES.md`.
 
+## Unreleased
+
+### New
+
+- **InstanceNorm by `GroupNorm`** (#43): no new layer. `GroupNorm(n, len, c, 1n, eps)`, one channel per group, is
+  `nn.InstanceNorm1d` over rows of positions with the channels last. `demo/instancenorm_probe.bend` and
+  `reference/instancenorm_check.py` (`make check-instancenorm`) compare it with `F.instance_norm` and its autograd, with
+  gain 1 and bias 0 (`affine=False`) and with a gain and a bias per channel: y, dX and both parameter gradients, 132
+  numbers, the worst 0.06 of the tolerance. One group of all the channels and the statistics of the whole batch would be
+  off by 0.57 and 0.47. The gain and the bias stay parameters, so a training step moves them (`docs/limitations.md`).
+
 ## 2.1.0 (2026-11-11)
 
 A minor release: three layers for image models (`Conv2dNB`, `Tile`, `RoPE2d`, each on the CPU and the GPU lane),
