@@ -3731,10 +3731,9 @@ def Conv2dNB(+n: Nat, +c: Nat, +co: Nat, +k: Nat, +hs: Nat, +ws: Nat, +p: Nat, +
 
 # ---- MaxPool2d ----
 #
-# Geometry is guarded the way Conv2d's is, by construction: the caller passes
-# the image as the kernel plus a surplus (h = k + hs, w = k + ws) and the
-# stride minus one (s = 1 + s1). A kernel larger than its image and a stride
-# of zero therefore cannot be written as a call; no runtime check is needed.
+# The layer takes its sizes as Conv2d does: the image as the kernel plus a surplus (h = k + hs, w = k + ws) and the
+# stride minus one (s = 1 + s1), so a kernel larger than its image and a stride of 0 cannot be written as a call. The
+# defs under it (mp_oh .. mp_bwd) take h, w and the stride themselves.
 #
 # The state is the input itself: the backward recomputes each window's arg-max from it with the
 # same scan, so no index is stored and ties follow the same first-in-row-major rule both ways.
