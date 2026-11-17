@@ -13,6 +13,7 @@
 # - RMSNorm, RoPE, RoPE2d and Attention (main.bend's names; fast.bend's are main.bend's, on the CPU).
 # - im2col, col2im and Conv2d: the gather and its scatter as cell bangs, then the linear layer's three products.
 # - Tile: its broadcast and the sum of its rows as cell bangs.
+# - MaxPool2d: its windows' maxima, and the sum of the gradients each input cell receives, as cell bangs.
 # - MSE, CrossEntropy and Embedding (its rows, its gradient and its step), so that a training step's work, the loss
 #   included, stays on the device; the host reads back a few numbers a row for the loss.
 # The names are fast.bend's, so a program switches by its import line alone (the Makefile builds the GPU demos so).
@@ -1991,6 +1992,170 @@ def tile_bwd(+b: Nat, +t: Nat, +c: Nat, m: TA.Mat<Nat.mul(b, t), c>) -> TA.Mat<b
 # b images (rows) of c numbers, each row broadcast over t tokens: Mat<b, c> to Mat<b·t, c> (main.bend's Tile)
 def Tile(+b: Nat, +t: Nat, +c: Nat) -> T.Layer<Unit, TA.Mat<b, c>, TA.Mat<Nat.mul(b, t), c>, Unit>:
   T.Layer{p => x => T.Fwd{p, tile_fwd(b, t, c, x), Unit{}}, p => s => dy => g => T.Bwd{p, tile_bwd(b, t, c, dy), g}, op => p => g => st => T.no_step(Unit, op, p, g, st), u => Unit{}, p => T.PL{p, Nil{}}, p => xs => off => T.PA{p, xs, off}, p => xs => off => T.PA{p, xs, off}, u => 0}
+
+# ---- MaxPool2d on the device (main.bend's MaxPool2d, #42): the forward pass a cell bang over the n·oh·ow·c output
+# cells, each the maximum of its window by main.bend's scan (mp_win: the window's first cell, then every later cell, in
+# row-major order, that is greater); the backward a cell bang over the n·h·w·c input cells, each summing dy over the
+# windows that read it and whose scan ends on it, stepping oy and then ox in increasing order, which is the order
+# main.bend's mp_b_go adds them into its zeros (output cell t increasing). Both passes give main.bend's bits. The
+# stride is s itself, as in main.bend, and the state is the input.
+#
+# A cell may be read by up to ceil(k / s) windows along each axis, so each axis walks k candidates (the most) and a
+# candidate that is not a window over the cell is skipped, as col2im does.
+
+type EMP is Data:
+  EMP{n: U32, h: U32, w: U32, c: U32, k: U32, s: U32, oh: U32, ow: U32, per: U32}
+
+# a window's scan: the input, the maximum and the plane index (row·w + col) of the first cell that reached it
+type MPW is Type:
+  MPW{d: Array<F32>, v: F32, i: U32}
+
+# the input, dy and the output of a backward leaf, and one cell's running sum
+type MPC is Type:
+  MPC{d: Array<F32>, dy: Array<F32>, o: Array<F32>}
+
+type MPS is Type:
+  MPS{d: Array<F32>, dy: Array<F32>, o: Array<F32>, acc: F32}
+
+def emp(+n: Nat, +h: Nat, +w: Nat, +c: Nat, +k: Nat, +s: Nat) -> EMP:
+  EMP{U32.from_nat(n), U32.from_nat(h), U32.from_nat(w), U32.from_nat(c), U32.from_nat(k), U32.from_nat(s), U32.from_nat(T.mp_oh(h, k, s)), U32.from_nat(T.mp_ow(w, k, s)), U32.from_nat(T.mp_ohw(h, w, k, s))}
+
+# the window whose first cell has plane index p0, from its cell j on (the read in hand): main.bend's mp_win, the first
+# cell taken as it is and a later one only when it is greater
+def mpw(left: Nat, +j: U32, +k: U32, +w: U32, +c: U32, +base: U32, +p0: U32, +first: Bool, +best: F32, +bi: U32, r: Array<F32> & F32) -> MPW:
+  match left r:
+    case 0n Tuple{d, +v}:
+      +gt = Bool.or(first, F32.is_gt(v, best))
+      MPW{d, Bool.pick(F32, gt, v, best), Bool.pick(U32, gt, ((p0 + (U32.div(j, k) * w : U32) : U32) + U32.mod(j, k) : U32), bi)}
+    case 1n+q Tuple{d, +v}:
+      +gt = Bool.or(first, F32.is_gt(v, best))
+      +j2 = (j + 1 : U32)
+      +pl = ((p0 + (U32.div(j2, k) * w : U32) : U32) + U32.mod(j2, k) : U32)
+      mpw(q, j2, k, w, c, base, p0, False{}, Bool.pick(F32, gt, v, best), Bool.pick(U32, gt, ((p0 + (U32.div(j, k) * w : U32) : U32) + U32.mod(j, k) : U32), bi), Array.get(F32, d, (base + (pl * c : U32) : U32)))
+
+def mpf_set(+e: U32, m: MPW, o: Array<F32>) -> CIC:
+  match m:
+    case MPW{d, +v, i}: CIC{d, Array.set(F32, o, e, v)}
+
+# output cell e (main.bend's t): channel e mod c of output position (e / c) mod (oh·ow) of image (e / c) / (oh·ow)
+def mpf_cell(+e: U32, +g: EMP, s: CIC) -> CIC:
+  match g s:
+    case EMP{+n, +h, +w, +c, +k, +st, +oh, +ow, +per} CIC{d, o}:
+      +cell = U32.div(e, c)
+      +r = U32.mod(cell, per)
+      +p0 = (((U32.div(r, ow) * st : U32) * w : U32) + (U32.mod(r, ow) * st : U32) : U32)
+      +base = ((((U32.div(cell, per) * h : U32) * w : U32) * c : U32) + U32.mod(e, c) : U32)
+      mpf_set(e, mpw(U32.to_nat(((k * k : U32) - 1 : U32)), 0, k, w, c, base, p0, True{}, 0.0, 0, Array.get(F32, d, (base + (p0 * c : U32) : U32))), o)
+
+def mpf_loop(k: Nat, +e: U32, +l: U32, +g: EMP, s: CIC) -> CIC:
+  match k:
+    case 0n: s
+    case 1n+q: mpf_loop(q, (e + l : U32), l, g, mpf_cell(e, g, s))
+
+# the output cells, n·oh·ow·c of them
+def mpf_n(+g: EMP) -> U32:
+  match g:
+    case EMP{+n, +h, +w, +c, +k, +st, +oh, +ow, +per}: ((n * per : U32) * c : U32)
+
+def lf_mpf(+t: U32, +l: U32, +g: EMP, x1: Array<F32>, x2: Array<F32>, x3: Array<F32>, x4: Array<F32>, o: Array<F32>) -> Array<F32>:
+  cic_o(mpf_loop(TG.share(t, mpf_n(g), l), t, l, g, CIC{x1, o}))
+
+def mpf_fin(-n: Nat, -c: Nat, -h: Nat, -w: Nat, -k: Nat, -s1: Nat, r: TG.R1) -> T.Fwd<Unit, TA.Mat<Nat.mul(n, T.mp_ohw(h, w, k, s1)), c>, TA.Mat<Nat.mul(n, Nat.mul(h, w)), c>>:
+  match r:
+    case TG.R1{x1, x2, x3, x4, a}: T.Fwd{Unit{}, TA.Mat{a}, TA.Mat{x1}}
+
+def mp_fwd(+n: Nat, +c: Nat, +h: Nat, +w: Nat, +k: Nat, +s1: Nat, x: TA.Mat<Nat.mul(n, Nat.mul(h, w)), c>) -> T.Fwd<Unit, TA.Mat<Nat.mul(n, T.mp_ohw(h, w, k, s1)), c>, TA.Mat<Nat.mul(n, Nat.mul(h, w)), c>>:
+  match x:
+    case TA.Mat{d}:
+      mpf_fin(n, c, h, w, k, s1, TG.run1_new(~EMP, ~lf_mpf, TG.depth(Nat.mul(Nat.mul(n, T.mp_ohw(h, w, k, s1)), c)), emp(n, h, w, c, k, s1), d, nn(Unit{}), nn(Unit{}), nn(Unit{}), TA.cap_depth(Nat.mul(Nat.mul(n, T.mp_ohw(h, w, k, s1)), c))))
+
+# dy[t] added into the running sum when the window's scan ended on this cell
+def mpb_add(hit: Bool, +acc: F32, d: Array<F32>, r: Array<F32> & F32, o: Array<F32>) -> MPS:
+  match hit r:
+    case True{} Tuple{dy, +v}: MPS{d, dy, o, (acc + v : F32)}
+    case False{} Tuple{dy, v}: MPS{d, dy, o, acc}
+
+def mpb_hit(+cell: U32, +t: U32, +acc: F32, m: MPW, dy: Array<F32>, o: Array<F32>) -> MPS:
+  match m:
+    case MPW{d, v, +i}: mpb_add(U32.is_eq(i, cell), acc, d, Array.get(F32, dy, t), o)
+
+# one candidate (oy, ox): when it is a window over the cell, its scan, and dy of its output cell if the scan ended here
+def mpb_cand(ok: Bool, +oy: U32, +ox: U32, +cell: U32, +b: U32, +ch: U32, +g: EMP, s: MPS) -> MPS:
+  match ok g s:
+    case False{} g2 r: r
+    case True{} EMP{+n, +h, +w, +c, +k, +st, +oh, +ow, +per} MPS{d, dy, o, +acc}:
+      +p0 = (((oy * st : U32) * w : U32) + (ox * st : U32) : U32)
+      +base = ((((b * h : U32) * w : U32) * c : U32) + ch : U32)
+      +t = ((((b * per : U32) + ((oy * ow : U32) + ox : U32) : U32) * c : U32) + ch : U32)
+      mpb_hit(cell, t, acc, mpw(U32.to_nat(((k * k : U32) - 1 : U32)), 0, k, w, c, base, p0, True{}, 0.0, 0, Array.get(F32, d, (base + (p0 * c : U32) : U32))), dy, o)
+
+# the candidates along x, in increasing ox
+def mpb_qx(left: Nat, +yok: Bool, +qx: U32, +ox0: U32, +oy: U32, +ix: U32, +cell: U32, +b: U32, +ch: U32, +g: EMP, s: MPS) -> MPS:
+  match left g:
+    case 0n g2: s
+    case 1n+q EMP{+n, +h, +w, +c, +k, +st, +oh, +ow, +per}:
+      +ox = (ox0 + qx : U32)
+      +mx = (ox * st : U32)
+      +ok = Bool.and(Bool.and(U32.is_lt(ox, ow), U32.is_le(mx, ix)), U32.is_lt((ix - mx : U32), k))
+      mpb_qx(q, yok, (qx + 1 : U32), ox0, oy, ix, cell, b, ch, g, mpb_cand(Bool.and(yok, ok), oy, ox, cell, b, ch, g, s))
+
+# the candidates along y, in increasing oy, each running mpb_qx in increasing ox
+def mpb_qy(left: Nat, +qy: U32, +oy0: U32, +ox0: U32, +iy: U32, +ix: U32, +cell: U32, +b: U32, +ch: U32, +g: EMP, s: MPS) -> MPS:
+  match left g:
+    case 0n g2: s
+    case 1n+q EMP{+n, +h, +w, +c, +k, +st, +oh, +ow, +per}:
+      +oy = (oy0 + qy : U32)
+      +my = (oy * st : U32)
+      +ok = Bool.and(Bool.and(U32.is_lt(oy, oh), U32.is_le(my, iy)), U32.is_lt((iy - my : U32), k))
+      mpb_qy(q, (qy + 1 : U32), oy0, ox0, iy, ix, cell, b, ch, g, mpb_qx(U32.to_nat(k), ok, 0, ox0, oy, ix, cell, b, ch, g, s))
+
+def mps_set(+e: U32, s: MPS) -> MPC:
+  match s:
+    case MPS{d, dy, o, +a}: MPC{d, dy, Array.set(F32, o, e, a)}
+
+# the number the backward writes at input cell e: the sum, in main.bend's order, of dy over the windows that chose it
+def mpb_cell(+e: U32, +g: EMP, s: MPC) -> MPC:
+  match g s:
+    case EMP{+n, +h, +w, +c, +k, +st, +oh, +ow, +per} MPC{d, dy, o}:
+      +q = U32.div(e, c)
+      +ix = U32.mod(q, w)
+      +q2 = U32.div(q, w)
+      +iy = U32.mod(q2, h)
+      +oy0 = Bool.pick(U32, U32.is_lt(iy, k), 0, U32.div(((iy + st : U32) - k : U32), st))
+      +ox0 = Bool.pick(U32, U32.is_lt(ix, k), 0, U32.div(((ix + st : U32) - k : U32), st))
+      mps_set(e, mpb_qy(U32.to_nat(k), 0, oy0, ox0, iy, ix, ((iy * w : U32) + ix : U32), U32.div(q2, h), U32.mod(e, c), g, MPS{d, dy, o, 0.0}))
+
+def mpb_loop(k: Nat, +e: U32, +l: U32, +g: EMP, s: MPC) -> MPC:
+  match k:
+    case 0n: s
+    case 1n+q: mpb_loop(q, (e + l : U32), l, g, mpb_cell(e, g, s))
+
+def mpc_o(s: MPC) -> Array<F32>:
+  match s:
+    case MPC{d, dy, o}: o
+
+# the input cells, n·h·w·c of them
+def mpb_n(+g: EMP) -> U32:
+  match g:
+    case EMP{+n, +h, +w, +c, +k, +st, +oh, +ow, +per}: (((n * h : U32) * w : U32) * c : U32)
+
+# x1 = the input, x2 = dy
+def lf_mpb(+t: U32, +l: U32, +g: EMP, x1: Array<F32>, x2: Array<F32>, x3: Array<F32>, x4: Array<F32>, o: Array<F32>) -> Array<F32>:
+  mpc_o(mpb_loop(TG.share(t, mpb_n(g), l), t, l, g, MPC{x1, x2, o}))
+
+def mpb_fin(-n: Nat, -c: Nat, -h: Nat, -w: Nat, r: TG.R1) -> T.Bwd<Unit, TA.Mat<Nat.mul(n, Nat.mul(h, w)), c>>:
+  match r:
+    case TG.R1{x1, x2, x3, x4, a}: T.Bwd{Unit{}, TA.Mat{a}, Unit{}}
+
+def mp_bwd(+n: Nat, +c: Nat, +h: Nat, +w: Nat, +k: Nat, +s1: Nat, s: TA.Mat<Nat.mul(n, Nat.mul(h, w)), c>, dy: TA.Mat<Nat.mul(n, T.mp_ohw(h, w, k, s1)), c>) -> T.Bwd<Unit, TA.Mat<Nat.mul(n, Nat.mul(h, w)), c>>:
+  match s dy:
+    case TA.Mat{sx} TA.Mat{dyd}:
+      mpb_fin(n, c, h, w, TG.run1_new(~EMP, ~lf_mpb, TG.depth(Nat.mul(Nat.mul(n, Nat.mul(h, w)), c)), emp(n, h, w, c, k, s1), sx, dyd, nn(Unit{}), nn(Unit{}), TA.cap_depth(Nat.mul(Nat.mul(n, Nat.mul(h, w)), c))))
+
+# n images of h x w pixels and c channels, each channel's k x k windows at stride s1 to their maximum (main.bend's
+# MaxPool2d): no parameters, and the input as the state
+def MaxPool2d(+n: Nat, +c: Nat, +h: Nat, +w: Nat, +k: Nat, +s1: Nat) -> T.Layer<Unit, TA.Mat<Nat.mul(n, Nat.mul(h, w)), c>, TA.Mat<Nat.mul(n, T.mp_ohw(h, w, k, s1)), c>, TA.Mat<Nat.mul(n, Nat.mul(h, w)), c>>:
+  T.Layer{u => x => mp_fwd(n, c, h, w, k, s1, x), u => s => dy => g => mp_bwd(n, c, h, w, k, s1, s, dy), op => p => g => st => T.no_step(Unit, op, p, g, st), u => Unit{}, p => T.PL{Unit{}, Nil{}}, p => xs => off => T.PA{Unit{}, xs, off}, p => xs => off => T.PA{Unit{}, xs, off}, u => 0}
 
 # ---- main.bend's names for the same layers (#13) ----
 #
