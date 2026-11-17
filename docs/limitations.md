@@ -176,8 +176,9 @@ Numbers marked "busy machine" were taken with other jobs running and are a first
   bits (`demo/gpu_layers_test.bend`, case 24), and the CPU lane's numbers are `reference/maxpool_check.py`'s. One square
   kernel, no padding and no dilation. Like `Conv2d`, its geometry is guarded by construction: the caller passes the
   image as the kernel plus a surplus (`MaxPool2d(n, c, h-k, w-k, k, s-1)`), so a kernel bigger than its image is not
-  writable, and the stride is passed minus one, so zero is not writable either. The law `mp_count` is about the formula
-  `(h - k)/s + 1`, not about the def `mp_oh` that computes it.
+  writable, and the stride is passed minus one, so zero is not writable either (#44). A kernel of 0 still is:
+  `MaxPool2d(1n, 1n, 2n, 2n, 0n, 0n)` type-checks and gives nine cells of 0.0 from a 2 x 2 image, where PyTorch refuses
+  the kernel. The law `mp_count` is about the formula `(h - k)/s + 1`, not about the def `mp_oh` that computes it.
 - Gradient accumulation (`Train.accumulate`, `Train.flush`, #36) relies on every backward pass adding into the
   gradient it receives, the layer protocol. It is tested against PyTorch on a 7-6-3 MLP (`reference/test_accum.py`),
   and over the three lanes on five small models (`demo/accum_lanes.bend`: LinearFirst, Linear, LinearNB, RMSNorm,
