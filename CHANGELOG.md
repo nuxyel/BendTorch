@@ -7,21 +7,6 @@ with a fourth digit (`2.0.0.0`). The engineering log behind each entry, measurem
 
 ## Unreleased
 
-### MaxPool2d: guard the geometry the way Conv2d does
-
-- `MaxPool2d(n, c, h, w, k, s)` becomes `MaxPool2d(n, c, h-k, w-k, k, s-1)`
-  in both `main.bend` and `gpu.bend`. The image is the kernel plus a surplus
-  and the stride is passed minus one, so a kernel larger than its image and
-  a stride of zero cannot be expressed as calls — the two gaps left in
-  `docs/limitations.md` after #42. All probe and GPU-lane call sites were
-  moved to the new convention; the numbers are unchanged.
-- `make check-maxpool2d` PASS (c0-c2 0.000e+00, c3 tie, c4 below `-1e38`);
-  `make check-gpu-layers` PASS on 1 and 16 CPU threads. `make laws` reaches
-  the verdict (ALL PROOFS CHECK) but this lane's `torch/fast.bend` fails on
-  `Array.get_unchecked` — reproduced unmodified on upstream devel, an
-  environment/toolchain mismatch, not this change.
-
-
 ### New
 
 - **InstanceNorm by `GroupNorm`** (#43): no new layer. `GroupNorm(n, len, c, 1n, eps)`, one channel per group, is
@@ -42,14 +27,17 @@ with a fourth digit (`2.0.0.0`). The engineering log behind each entry, measurem
 
 ### MaxPool2d (#42, for #39)
 
-- **`MaxPool2d`** by @adeerkhan (#42): max pooling for any `(n, c, h, w, k, s)`, no padding, images channels last. A tie
+- **`MaxPool2d`** by @adeerkhan (#42, #44): max pooling for any `(n, c, h, w, k, s)`, no padding, images channels last,
+  called as `MaxPool2d(n, c, h - k, w - k, k, s - 1)`. A tie
   keeps the first cell in row-major order, and windows that overlap (`s < k`) add their gradients into the same input
   cell. The state is the input, so the backward finds each window's cell again with the forward's scan, which starts
   from the window's own first cell: a window whose cells are all below `-1e38` gives its maximum and keeps its gradient
   inside the window. `y` and `dX` are `0.000e+00` against `F.max_pool2d(..., return_indices=True)` and its autograd on
   five cases: windows that tile, that overlap, two images, a tie and that low window (`reference/maxpool_check.py`,
-  `make check-maxpool2d`). A window holding a NaN gives a number where PyTorch gives NaN, and the sizes are not guarded
-  as `Conv2d`'s are (`docs/limitations.md`).
+  `make check-maxpool2d`). A window holding a NaN gives a number where PyTorch gives NaN (`docs/limitations.md`).
+- **Its sizes are `Conv2d`'s** (#44, by @adeerkhan): the image is written as the kernel plus a surplus and the stride
+  minus one, so a kernel larger than its image and a stride of 0, which PyTorch refuses, cannot be written. A kernel
+  of 0 still can (`docs/limitations.md`).
 - **Two new laws** in `LAWS.bend`, proved in `PROOF.bend` and checked by `bend PROOF.bend --verdict`, **46 laws in all**
   (with `dtype.bend`'s `unpair_pair`), both by @adeerkhan:
   - `mp_count`: with a surplus `h - k = q·s + r` and `r < s` (written `s = 1 + r + a`), the output count
