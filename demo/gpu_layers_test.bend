@@ -42,6 +42,15 @@ def fillw(k: Nat, +i: U32, +seed: U32, a: Array<F32>) -> Array<F32>:
 def matw(+r: Nat, +c: Nat, +seed: U32) -> TA.Mat<r, c>:
   TA.Mat{fillw(Nat.mul(r, c), 0, seed, Array.new(F32, TA.cap_depth(Nat.mul(r, c)), 0.0))}
 
+# values on five levels, -2.0 to 2.0, so that most windows of a pooling hold their maximum more than once
+def fillq(k: Nat, +i: U32, +seed: U32, a: Array<F32>) -> Array<F32>:
+  match k:
+    case 0n: a
+    case 1n+p: fillq(p, (i + 1 : U32), seed, Array.set(F32, a, i, (U32.to_f32(U32.mod(U32.mod(((i * 2654435761 : U32) + (seed * 40503 : U32) : U32), 1000), 5)) - 2.0 : F32)))
+
+def matq(+r: Nat, +c: Nat, +seed: U32) -> TA.Mat<r, c>:
+  TA.Mat{fillq(Nat.mul(r, c), 0, seed, Array.new(F32, TA.cap_depth(Nat.mul(r, c)), 0.0))}
+
 def bits(x: F32) -> U32:
   match x:
     case F32{w}: U32{w}
@@ -373,9 +382,9 @@ def convnb() -> U32:
 
 # ---- MaxPool2d: y and dX. Windows that overlap by one row and column (2 images of 3 channels, 9 x 7, k 3, s 2);
 # windows that tile, at a size past 2^14 leaves (4 x 16 x 32 x 32, k 2, s 2); every window over its neighbours, so a
-# cell is the maximum of up to nine of them and dX adds their gradients, with ties among its 14,400 windows, which go to
-# the first cell (2 x 8 x 32 x 32, k 3, s 1); and a stride past the kernel, which leaves cells no window reads
-# (1 x 5 x 7 x 5, k 2, s 3) ----
+# cell is the maximum of up to nine of them and dX adds their gradients, on an input of five levels, so that most of its
+# 14,400 windows hold their maximum more than once and the first cell must take it (2 x 8 x 32 x 32, k 3, s 1); and a
+# stride past the kernel, which leaves cells no window reads (1 x 5 x 7 x 5, k 2, s 3) ----
 
 def c_mp(+rows: Nat, +orows: Nat, +c: Nat, a: RR<Unit, TA.Mat<rows, c>, TA.Mat<orows, c>>, z: RR<Unit, TA.Mat<rows, c>, TA.Mat<orows, c>>) -> U32:
   match a z:
@@ -385,7 +394,7 @@ def maxpool() -> U32:
   max4(
     c_mp(126n, 24n, 3n, run(~Unit, ~TA.Mat<126n, 3n>, ~TA.Mat<24n, 3n>, ~TA.Mat<126n, 3n>, ~T.MaxPool2d(2n, 3n, 9n, 7n, 3n, 2n), Unit{}, mat(126n, 3n, 251), mat(24n, 3n, 252), Unit{}), run(~Unit, ~TA.Mat<126n, 3n>, ~TA.Mat<24n, 3n>, ~TA.Mat<126n, 3n>, ~G.MaxPool2d(2n, 3n, 9n, 7n, 3n, 2n), Unit{}, mat(126n, 3n, 251), mat(24n, 3n, 252), Unit{})),
     c_mp(4096n, 1024n, 16n, run(~Unit, ~TA.Mat<4096n, 16n>, ~TA.Mat<1024n, 16n>, ~TA.Mat<4096n, 16n>, ~T.MaxPool2d(4n, 16n, 32n, 32n, 2n, 2n), Unit{}, mat(4096n, 16n, 253), mat(1024n, 16n, 254), Unit{}), run(~Unit, ~TA.Mat<4096n, 16n>, ~TA.Mat<1024n, 16n>, ~TA.Mat<4096n, 16n>, ~G.MaxPool2d(4n, 16n, 32n, 32n, 2n, 2n), Unit{}, mat(4096n, 16n, 253), mat(1024n, 16n, 254), Unit{})),
-    c_mp(2048n, 1800n, 8n, run(~Unit, ~TA.Mat<2048n, 8n>, ~TA.Mat<1800n, 8n>, ~TA.Mat<2048n, 8n>, ~T.MaxPool2d(2n, 8n, 32n, 32n, 3n, 1n), Unit{}, mat(2048n, 8n, 255), mat(1800n, 8n, 256), Unit{}), run(~Unit, ~TA.Mat<2048n, 8n>, ~TA.Mat<1800n, 8n>, ~TA.Mat<2048n, 8n>, ~G.MaxPool2d(2n, 8n, 32n, 32n, 3n, 1n), Unit{}, mat(2048n, 8n, 255), mat(1800n, 8n, 256), Unit{})),
+    c_mp(2048n, 1800n, 8n, run(~Unit, ~TA.Mat<2048n, 8n>, ~TA.Mat<1800n, 8n>, ~TA.Mat<2048n, 8n>, ~T.MaxPool2d(2n, 8n, 32n, 32n, 3n, 1n), Unit{}, matq(2048n, 8n, 255), mat(1800n, 8n, 256), Unit{}), run(~Unit, ~TA.Mat<2048n, 8n>, ~TA.Mat<1800n, 8n>, ~TA.Mat<2048n, 8n>, ~G.MaxPool2d(2n, 8n, 32n, 32n, 3n, 1n), Unit{}, matq(2048n, 8n, 255), mat(1800n, 8n, 256), Unit{})),
     c_mp(35n, 4n, 5n, run(~Unit, ~TA.Mat<35n, 5n>, ~TA.Mat<4n, 5n>, ~TA.Mat<35n, 5n>, ~T.MaxPool2d(1n, 5n, 7n, 5n, 2n, 3n), Unit{}, mat(35n, 5n, 257), mat(4n, 5n, 258), Unit{}), run(~Unit, ~TA.Mat<35n, 5n>, ~TA.Mat<4n, 5n>, ~TA.Mat<35n, 5n>, ~G.MaxPool2d(1n, 5n, 7n, 5n, 2n, 3n), Unit{}, mat(35n, 5n, 257), mat(4n, 5n, 258), Unit{})))
 
 # ---- GroupNorm: y, dx and the gain's and bias's gradients (added into gradients that are not zero); 8 images of 64
