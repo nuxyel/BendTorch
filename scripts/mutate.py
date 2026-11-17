@@ -46,6 +46,7 @@ I2C = numeric("im2col_probe", "im2col_check.py")
 TILE = numeric("tile_probe", "tile_check.py")
 ROPE2 = numeric("rope2d_probe", "rope2d_check.py")
 CNB = numeric("conv2dnb_probe", "conv2dnb_check.py")
+MP = numeric("maxpool_probe", "maxpool_check.py")
 
 
 ST135 = Path(os.environ.get("LLAMA_BEND", "../llama.bend")) / "data/smollm2-135m/hf/model.safetensors"
@@ -93,11 +94,12 @@ GPU = gpu
 
 def gpu_layers():
     # torch/gpu.bend's other layers, optimizer step, losses and embedding must keep main.bend's bits with +RTS --gpu off -RTS:
-    # demo/gpu_layers_test.bend prints 23 zeros (Conv2d's case, GELUErf's y and dx, Tile's y and dx, then RoPE2d's y and dx)
+    # demo/gpu_layers_test.bend prints 25 zeros (the last ones Conv2d's case, GELUErf's y and dx, Tile's y and dx, RoPE2d's
+    # y and dx, Conv2dNB and MaxPool2d)
     b = subprocess.run(["bend", "demo/gpu_layers_test.bend", "-o", ".scratch/mut_gpu_layers"], capture_output=True, env=ENV)
     if b.returncode != 0:
         return False
-    return subprocess.run([".scratch/mut_gpu_layers", "+RTS", "--gpu", "off", "--threads", "16", "-RTS"], capture_output=True, text=True).stdout.split() == ["0"] * 24
+    return subprocess.run([".scratch/mut_gpu_layers", "+RTS", "--gpu", "off", "--threads", "16", "-RTS"], capture_output=True, text=True).stdout.split() == ["0"] * 25
 
 
 GPUL = gpu_layers
@@ -105,9 +107,9 @@ GPUL = gpu_layers
 
 def gpu_expcr():
     # make gpu's exactness check: with exp_cr in place of F32.exp, every GPU layer case gives main.bend's bits on the
-    # device (scripts/gpu_expcr.sh prints 23 zeros); needs CUDA, and make mutate runs under the heavy-run lock
+    # device (scripts/gpu_expcr.sh prints 25 zeros); needs CUDA, and make mutate runs under the heavy-run lock
     r = subprocess.run(["scripts/gpu_expcr.sh"], capture_output=True, text=True, env=ENV)
-    return r.returncode == 0 and r.stdout.strip().splitlines()[-1].split() == ["0"] * 24
+    return r.returncode == 0 and r.stdout.strip().splitlines()[-1].split() == ["0"] * 25
 
 
 EXPCR = gpu_expcr
@@ -531,6 +533,25 @@ MUTANTS = [
     ("gpu Conv2dNB: the weight gradient starts from zero instead of the one it is handed", "torch/gpu.bend",
      "T.ckk(c, k), co, st, gg, TG.matmul_precise",
      "T.ckk(c, k), co, st, TA.Mat.zeros(co, T.ckk(c, k)), TG.matmul_precise", GPUL, "caught"),
+    ("maxpool2d: a later cell that only equals the maximum takes it", "torch/main.bend",
+     "      +gt = Bool.or(first, F32.is_gt(v, best))\n      +nb = Bool.pick(F32, gt, v, best)",
+     "      +gt = Bool.or(first, F32.is_ge(v, best))\n      +nb = Bool.pick(F32, gt, v, best)", MP, "caught"),
+    ("maxpool2d: the scan starts from 0.0, not from the window's first cell", "torch/main.bend",
+     "      +gt = Bool.or(first, F32.is_gt(v, best))\n      +nb = Bool.pick(F32, gt, v, best)",
+     "      +gt = F32.is_gt(v, best)\n      +nb = Bool.pick(F32, gt, v, best)", MP, "caught"),
+    ("maxpool2d: a cell two windows chose keeps the last gradient instead of their sum", "torch/main.bend",
+     "    case Tuple{a, +old}:\n      Array.set(F32, a, i, (old + v : F32))",
+     "    case Tuple{a, +old}:\n      Array.set(F32, a, i, v)", MP, "caught"),
+    ("maxpool2d: mp_flat steps a row by h instead of w", "torch/main.bend",
+     "Nat.add(Nat.mul(row, w), col)), c), ch)", "Nat.add(Nat.mul(row, h), col)), c), ch)", laws, "caught"),
+    ("gpu MaxPool2d: a later cell that only equals the maximum takes it", "torch/gpu.bend",
+     "      +gt = Bool.or(first, F32.is_gt(v, best))\n      +j2 = (j + 1 : U32)",
+     "      +gt = Bool.or(first, F32.is_ge(v, best))\n      +j2 = (j + 1 : U32)", GPUL, "caught"),
+    ("gpu MaxPool2d: the forward scan starts from 0.0, not from the window's first cell", "torch/gpu.bend",
+     "0, k, w, c, base, p0, True{}, 0.0, 0, Array.get(F32, d, (base + (p0 * c : U32) : U32))), o)",
+     "0, k, w, c, base, p0, False{}, 0.0, 0, Array.get(F32, d, (base + (p0 * c : U32) : U32))), o)", GPUL, "caught"),
+    ("gpu MaxPool2d: a cell takes the gradient of every window over it, not only of those that chose it", "torch/gpu.bend",
+     "mpb_add(U32.is_eq(i, cell), acc,", "mpb_add(U32.is_le(i, i), acc,", GPUL, "caught"),
     ("gpu im2col: the device gather reads the padding cells", "torch/gpu.bend",
      "      i2c_put(e, Bool.and(ok1, Bool.and(ok2, U32.is_lt(ix, w))), (src + ch : U32), CIC{d, o})",
      "      i2c_put(e, U32.is_lt(pos, (n * per : U32)), (src + ch : U32), CIC{d, o})", GPUL, "caught"),
