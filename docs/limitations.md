@@ -157,6 +157,11 @@ Numbers marked "busy machine" were taken with other jobs running and are a first
   from three `Linear` layers instead of one `Linear` of width `3c` cut in three. DiT's `1 + scale` is written as `m`,
   with the 1 folded into its `Linear`'s bias. The CPU lane only: `fast.bend` has no `Tile`, and the probe was not run
   through `gpu.bend`'s layers.
+- InstanceNorm (#43) has no layer: it is `GroupNorm` with one channel per group, `GroupNorm(n, len, c, 1n, eps)`
+  (`demo/instancenorm_probe.bend`, against `F.instance_norm`). Its gain and bias stay parameters: at 1 and 0 the numbers
+  are `affine=False`'s, but a training step moves them, and the package has no combinator that holds a layer's
+  parameters still. No running statistics (`track_running_stats`). AdaIN was not built; it would be adaLN's composition
+  with this normalization in `LayerNorm`'s place.
 - `Conv2dNB` (`Conv2d` without the bias, #39) is in `main.bend` and `gpu.bend`, as `Conv2d` is. On the GPU both passes
   give `main.bend`'s bits (`demo/gpu_layers_test.bend`, case 23), and the CPU lane's numbers are
   `reference/conv2dnb_check.py`'s.
