@@ -3731,6 +3731,11 @@ def Conv2dNB(+n: Nat, +c: Nat, +co: Nat, +k: Nat, +hs: Nat, +ws: Nat, +p: Nat, +
 
 # ---- MaxPool2d ----
 #
+# Geometry is guarded the way Conv2d's is, by construction: the caller passes
+# the image as the kernel plus a surplus (h = k + hs, w = k + ws) and the
+# stride minus one (s = 1 + s1). A kernel larger than its image and a stride
+# of zero therefore cannot be written as a call; no runtime check is needed.
+#
 # The state is the input itself: the backward recomputes each window's arg-max from it with the
 # same scan, so no index is stored and ties follow the same first-in-row-major rule both ways.
 # t (0 .. n*ohw*c-1) is one output cell: (image, oy, ox, channel), output row-major.
@@ -3983,10 +3988,10 @@ def mp_bwd(+n: Nat, +c: Nat, +h: Nat, +w: Nat, +k: Nat, +s1: Nat,
           MPM{sx, 0.0, 0n}, Array.get(F32, dyd, U32.from_nat(0n)),
           Array.new(F32, TA.cap_depth(size), 0.0)))
 
-def MaxPool2d(+n: Nat, +c: Nat, +h: Nat, +w: Nat, +k: Nat, +s1: Nat) -> Layer<Unit, TA.Mat<Nat.mul(n, Nat.mul(h, w)), c>, TA.Mat<Nat.mul(n, mp_ohw(h, w, k, s1)), c>, TA.Mat<Nat.mul(n, Nat.mul(h, w)), c>>:
+def MaxPool2d(+n: Nat, +c: Nat, +hs: Nat, +ws: Nat, +k: Nat, +s1: Nat) -> Layer<Unit, TA.Mat<Nat.mul(n, Nat.mul(Nat.add(k, hs), Nat.add(k, ws))), c>, TA.Mat<Nat.mul(n, mp_ohw(Nat.add(k, hs), Nat.add(k, ws), k, Nat.add(1n, s1))), c>, TA.Mat<Nat.mul(n, Nat.mul(Nat.add(k, hs), Nat.add(k, ws))), c>>:
   Layer{
-    u => x => mp_fwd(n, c, h, w, k, s1, x),
-    u => s => dy => g => mp_bwd(n, c, h, w, k, s1, s, dy),
+    u => x => mp_fwd(n, c, Nat.add(k, hs), Nat.add(k, ws), k, Nat.add(1n, s1), x),
+    u => s => dy => g => mp_bwd(n, c, Nat.add(k, hs), Nat.add(k, ws), k, Nat.add(1n, s1), s, dy),
     op => p => g => st => no_step(Unit, op, p, g, st),
     u => Unit{},
     p => PL{Unit{}, Nil{}},
