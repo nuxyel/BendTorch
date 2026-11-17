@@ -11,6 +11,9 @@ backward of a 6 x 4 dY (the 2 x 4 gradient). This builds the same tensors and co
 
 The second is the law nuxyel asked for, measured: a backward that kept the last row would pass a shape check and fail
 this one.
+
+With the rows read as time steps, the same two tensors are nearest upsampling by a whole factor (BendTorch#43):
+`F.interpolate(x, scale_factor=3, mode="nearest")` over one sequence of 2 steps and 4 channels, and its autograd.
 """
 import os
 import subprocess
@@ -18,6 +21,7 @@ import sys
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BEND = os.path.expanduser("~/.bend/bin/bend")
@@ -52,7 +56,14 @@ def main():
     # the discriminating case: a backward that kept the last row would differ
     last_row = np.abs(got_dx - dy.view(2, 3, 4)[:, -1, :].numpy()).max()
     print(f"a last-row backward would be off by {last_row:.3e}")
-    ok = ey <= 1e-6 and ed <= 1e-6 and last_row > 1e-6
+    # the rows as time steps: one sequence of 2 steps and 4 channels in F.interpolate's (N, C, L) layout
+    xu = x.clone().requires_grad_(True)
+    up = F.interpolate(xu.T[None], scale_factor=3, mode="nearest")[0].T
+    up.backward(dy)
+    eu = np.abs(got_y - up.detach().numpy()).max()
+    eg = np.abs(got_dx - xu.grad.numpy()).max()
+    print(f"nearest upsampling x3 (F.interpolate): max |Bend - torch| forward {eu:.3e}  backward {eg:.3e}")
+    ok = ey <= 1e-6 and ed <= 1e-6 and last_row > 1e-6 and eu <= 1e-6 and eg <= 1e-6
     print("PASS" if ok else "FAIL")
     return 0 if ok else 1
 
