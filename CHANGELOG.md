@@ -25,25 +25,32 @@ with a fourth digit (`2.0.0.0`). The engineering log behind each entry, measurem
   `F.interpolate(scale_factor=f, mode="nearest")`. `reference/tile_check.py` now compares the probe with it as well,
   forward and backward (`0.000e+00`). No change to the layer.
 
-### MaxPool2d (BendTorch#39)
+### MaxPool2d (#42, for #39)
 
-- **`MaxPool2d`**: general `(n, c, h, w, k, s)` max pooling, no padding. Ties keep the first
-  cell in row-major order and overlapping windows (`s < k`) add their gradients into the same
-  input cell. The state is the input, so the backward recomputes the arg-max with the same strict
-  `>` rule. `y` and `dX` are **0.000e+00** against `F.max_pool2d(..., return_indices=True)`
-  and its autograd on the tiled, overlapped and two-image cases (`reference/maxpool_check.py`).
-  The window scan starts from the window's own first cell: a window whose cells are all below
-  `-1e38` now returns the cell value, and each window's gradient lands inside that window
-  (the new `c4` case matches PyTorch exactly). A window holding a NaN is a separate limitation,
-  noted in `docs/limitations.md`. Not in this change: the device lane (the `gpu.bend` twin comes
-  after the merge).
-- **Two new laws** in `LAWS.bend`, proved in `PROOF.bend` and checked by `bend PROOF.bend --verdict`,
-  **46 laws in all** (with `dtype.bend`'s `unpair_pair`):
-  - `mp_count`: with a surplus `h - k = q·s + r` and `r < s` (written `s = 1 + r + a`), the output
-    count `(h - k)/s + 1` is `q + 1` — `div_blocks` then `div_rest`.
-  - `mp_scatter`: the two spellings of the backward's write cell name the same number —
-    `mp_flat`'s `(image·h·w + plane)·c + ch` is the image base plus `plane·c`. The proof uses no
-    bound on `ky` or `kx`; that the write stays inside its window is a test, not a claim of the law.
+- **`MaxPool2d`** by @adeerkhan (#42): max pooling for any `(n, c, h, w, k, s)`, no padding, images channels last. A tie
+  keeps the first cell in row-major order, and windows that overlap (`s < k`) add their gradients into the same input
+  cell. The state is the input, so the backward finds each window's cell again with the forward's scan, which starts
+  from the window's own first cell: a window whose cells are all below `-1e38` gives its maximum and keeps its gradient
+  inside the window. `y` and `dX` are `0.000e+00` against `F.max_pool2d(..., return_indices=True)` and its autograd on
+  five cases: windows that tile, that overlap, two images, a tie and that low window (`reference/maxpool_check.py`,
+  `make check-maxpool2d`). A window holding a NaN gives a number where PyTorch gives NaN, and the sizes are not guarded
+  as `Conv2d`'s are (`docs/limitations.md`).
+- **Two new laws** in `LAWS.bend`, proved in `PROOF.bend` and checked by `bend PROOF.bend --verdict`, **46 laws in all**
+  (with `dtype.bend`'s `unpair_pair`), both by @adeerkhan:
+  - `mp_count`: with a surplus `h - k = q·s + r` and `r < s` (written `s = 1 + r + a`), the output count
+    `(h - k)/s + 1` is `q + 1`, by `div_blocks` then `div_rest`.
+  - `mp_scatter`: the two spellings of the backward's write cell name the same number, `mp_flat`'s
+    `(image·h·w + plane)·c + ch` and the image base plus `plane·c`. The proof uses no bound on `ky` or `kx`; that the
+    write stays inside its window is a test, not a claim of the law.
+- **On the GPU lane**: `torch/gpu.bend`'s `MaxPool2d` gives `main.bend`'s bits, forward and backward, on the RTX 4050
+  and on 1 and 16 CPU threads (`demo/gpu_layers_test.bend`, case 24, four shapes: windows that overlap by one row and
+  column, windows that tile at a size past 2^14 leaves, 14,400 windows that all overlap, two thirds of them holding
+  their maximum more than once, and a stride past the kernel). Its backward is a sum per input cell, over the windows
+  that chose it, in `main.bend`'s order. Not in `fast.bend`.
+- **Seven mutants**, each caught: on each lane, a tie going to the later cell and a scan started from 0.0; on the CPU
+  lane, a cell two windows chose keeping only the last gradient, and `mp_flat` stepping a row by `h` (the law
+  `mp_scatter` fails); on the device lane, a cell taking the gradient of every window over it. 219 mutants in all: 216
+  caught, 3 surviving by design.
 
 ## 2.1.0 (2026-11-11)
 
@@ -106,7 +113,6 @@ attention: an infinity or a NaN at a position a row cannot see no longer reaches
 
 Four new laws in `LAWS.bend`, proved in `PROOF.bend` and checked again by `bend PROOF.bend --verdict`, 39 laws in all
 (with `dtype.bend`'s `unpair_pair`). Two by @adeerkhan (#32), and two for attention's sums:
-
 
 - `causal_pv`: every number of row `i` of attention's `O = P·V` (and `dQ = G·K`) is a sum of exactly `i + 1` products,
   the count `trow0` gives each of the row's dots.
