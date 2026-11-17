@@ -2619,3 +2619,22 @@ runs it after the merge, and `docs/limitations.md` says so.
   `0xc222e83b37d53779b42f2125d79e6c55`, `bendtorch-load@2.1.0.0` `0x558ff3ef0e2c670a7a9a529b0d91fc45`. Each published on
   the first try.
 - GitHub release v2.1.0.
+
+## InstanceNorm is GroupNorm with one channel per group (2026-11-16, #43)
+
+- #43 lists InstanceNorm among the layers a text-to-speech model wrote for itself on top of the package. It is already
+  there: `GroupNorm(n, hw, ng, cg, eps)` normalizes each image's group of `cg` channels over `hw·cg` numbers, so
+  `cg = 1` is each channel of each sequence over its positions. No layer is added to `torch/`.
+- `demo/instancenorm_probe.bend`: `GroupNorm(2n, 5n, 3n, 1n, 1e-5)` over 2 sequences of 5 steps and 3 channels, with
+  gain 1 and bias 0 and with a gain and a bias per channel. `reference/instancenorm_check.py` (`make
+  check-instancenorm`) compares y, dX and both parameter gradients with `F.instance_norm` and its autograd: 132 numbers,
+  78 bit-identical, the worst 0.061 of the tolerance.
+- The check tells the neighbours apart. Its two controls: one group of all three channels is off by 0.57 and the
+  statistics of the whole batch by 0.47. Two planted probes fail it: `GroupNorm(2n, 5n, 1n, 3n, eps)` at 618,092 times
+  the tolerance and `GroupNorm(1n, 10n, 3n, 1n, eps)` at 489,477, and each lands on its own control (3.6e-7 and 1.2e-7).
+- Left: `affine=False` while training (the gain and the bias are parameters, a step moves them, and nothing in the
+  package holds a layer's parameters still); running statistics; AdaIN, which would be adaLN's composition with this
+  normalization in `LayerNorm`'s place, not built.
+- Gates (Bend 2.0.40, busy machine on battery, pass/fail only): `make laws check-instancenorm` green, which is what
+  `make affected` asks for; `make affected-check` and `make check-rts` pass; bend-lint has no finding on the probe. No
+  file in `torch/` changed but its README, so no mutants.

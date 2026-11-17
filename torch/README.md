@@ -94,6 +94,12 @@ per image, `Tile` broadcasts each over its tokens, `LayerNorm` then `Mul2` and `
 package: a layer that only regroups a pair's parts (`Rewire` in the probe, a few lines), and a column split, so the three
 rows come from three `Linear` layers rather than one `Linear` of width `3c` cut in three (the same weights, split by rows).
 
+InstanceNorm (#43) needs no layer of its own either: `GroupNorm(n, len, c, 1n, eps)`, one channel per group, normalizes
+each channel of each sequence over its `len` positions, which is `nn.InstanceNorm1d(c, affine=True)` on rows of positions
+with the channels last. With the gain at 1 and the bias at 0 its numbers are the default's, `affine=False`; the two stay
+parameters, so a training step moves them. `demo/instancenorm_probe.bend` and `reference/instancenorm_check.py` check
+both against `F.instance_norm` and its autograd.
+
 `erf(x)` is written in the package with F32 additions, multiplications and comparisons only (Base has no `erf`), so it
 gives the same bits in C and JavaScript: a polynomial in x² below 0.84375, a correction polynomial around one of six
 centres up to 3.92, and 1 from there on. Over all 2^32 inputs it is at most 0.93 ulp from float64's erf (the correctly
