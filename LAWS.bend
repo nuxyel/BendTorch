@@ -542,3 +542,31 @@ law conv_roundtrip:
   for +w: Nat
   for +c: Nat
   {T.p_src(ch, b, iy, ix, h, w, c, 1n, 0n, 1n) == U32.from_nat(Nat.add(Nat.mul(Nat.add(Nat.mul(Nat.add(Nat.mul(b, h), iy), w), ix), c), ch)) : U32}
+
+# LAW (mp_count): with a surplus h - k = q·s + r and r < s (s = 1 + r + a), the MaxPool output count
+# (h - k)/s + 1 is q + 1: q whole windows fit and the next start is past the surplus.
+law mp_count:
+  for +q: Nat
+  for +r: Nat
+  for +a: Nat
+  for +s: Nat
+  for +sr: {s == Nat.add(1n, Nat.add(r, a)) : Nat}
+  {Nat.add(Nat.div(Nat.add(Nat.mul(q, s), r), s), 1n) == Nat.add(q, 1n) : Nat}
+
+# LAW (mp_scatter): the two spellings of the backward's write cell name the same number:
+# mp_flat's (image·h·w + plane)·c + ch is the image base image·h·w·c + ch plus plane·c, with
+# plane = (row + ky)·w + (col + kx), the cell the forward's window entry reads. The proof uses
+# no bound on ky or kx; that the write stays inside its window is a test, not this law.
+law mp_scatter:
+  for +c: Nat
+  for +h: Nat
+  for +w: Nat
+  for +ch: Nat
+  for +image: Nat
+  for +row: Nat
+  for +col: Nat
+  for +ky: Nat
+  for +kx: Nat
+  {T.mp_flat(c, h, w, ch, image, Nat.add(row, ky), Nat.add(col, kx)) ==
+   Nat.add(Nat.add(Nat.mul(Nat.mul(Nat.mul(image, h), w), c), ch),
+     Nat.mul(Nat.add(Nat.mul(Nat.add(row, ky), w), Nat.add(col, kx)), c)) : Nat}

@@ -25,6 +25,26 @@ with a fourth digit (`2.0.0.0`). The engineering log behind each entry, measurem
   `F.interpolate(scale_factor=f, mode="nearest")`. `reference/tile_check.py` now compares the probe with it as well,
   forward and backward (`0.000e+00`). No change to the layer.
 
+### MaxPool2d (BendTorch#39)
+
+- **`MaxPool2d`**: general `(n, c, h, w, k, s)` max pooling, no padding. Ties keep the first
+  cell in row-major order and overlapping windows (`s < k`) add their gradients into the same
+  input cell. The state is the input, so the backward recomputes the arg-max with the same strict
+  `>` rule. `y` and `dX` are **0.000e+00** against `F.max_pool2d(..., return_indices=True)`
+  and its autograd on the tiled, overlapped and two-image cases (`reference/maxpool_check.py`).
+  The window scan starts from the window's own first cell: a window whose cells are all below
+  `-1e38` now returns the cell value, and each window's gradient lands inside that window
+  (the new `c4` case matches PyTorch exactly). A window holding a NaN is a separate limitation,
+  noted in `docs/limitations.md`. Not in this change: the device lane (the `gpu.bend` twin comes
+  after the merge).
+- **Two new laws** in `LAWS.bend`, proved in `PROOF.bend` and checked by `bend PROOF.bend --verdict`,
+  **46 laws in all** (with `dtype.bend`'s `unpair_pair`):
+  - `mp_count`: with a surplus `h - k = q·s + r` and `r < s` (written `s = 1 + r + a`), the output
+    count `(h - k)/s + 1` is `q + 1` — `div_blocks` then `div_rest`.
+  - `mp_scatter`: the two spellings of the backward's write cell name the same number —
+    `mp_flat`'s `(image·h·w + plane)·c + ch` is the image base plus `plane·c`. The proof uses no
+    bound on `ky` or `kx`; that the write stays inside its window is a test, not a claim of the law.
+
 ## 2.1.0 (2026-11-11)
 
 A minor release: three layers for image models (`Conv2dNB`, `Tile`, `RoPE2d`, each on the CPU and the GPU lane),
@@ -86,6 +106,7 @@ attention: an infinity or a NaN at a position a row cannot see no longer reaches
 
 Four new laws in `LAWS.bend`, proved in `PROOF.bend` and checked again by `bend PROOF.bend --verdict`, 39 laws in all
 (with `dtype.bend`'s `unpair_pair`). Two by @adeerkhan (#32), and two for attention's sums:
+
 
 - `causal_pv`: every number of row `i` of attention's `O = P·V` (and `dQ = G·K`) is a sum of exactly `i + 1` products,
   the count `trow0` gives each of the row's dots.
