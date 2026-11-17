@@ -5,12 +5,13 @@
 #   SiLU, Mul2, Mat.sum2 and Mat.dup, RMSNorm, RoPE, Attention, SGD, momentum, AdamW, MSE (loss and gradient),
 #   Embedding (rows and gradient), CrossEntropy (loss and gradient), attention at small and odd sizes, GroupNorm,
 #   FullAttention at SmolLM2's sizes and at small sizes, Conv2d at a small odd shape and at a realistic one, GELUErf's y
-#   and its dx (inputs in [-6, 6), every piece of erf), Tile's y and its dx, RoPE2d's y and its dx, Conv2dNB
+#   and its dx (inputs in [-6, 6), every piece of erf), Tile's y and its dx, RoPE2d's y and its dx, Conv2dNB,
+#   MaxPool2d
 # With `+RTS --gpu off -RTS` or without CUDA every case is 0 (the same bits). On the GPU, SiLU, attention, full attention,
 # cross-entropy and GELUErf's gradient take CUDA's float exp, whose last bit can differ from the host's: 1 ulp is accepted
 # for an exponential (my decision, 2026-10-18), and the differences that follow from it downstream are what this test
 # shows; every other case is 0.
-#   gpu_layers_test        every case, one line          gpu_layers_test <k>   case k alone (0..23, in the order above)
+#   gpu_layers_test        every case, one line          gpu_layers_test <k>   case k alone (0..24, in the order above)
 import Base
 import ../torch/main.bend as T
 import ../torch/gpu.bend as G
@@ -370,6 +371,23 @@ def convnb() -> U32:
     c_convnb(2n, 3n, 2n, 3n, 6n, 4n, 1n, 1n, run(~TA.Mat<2n, 27n>, ~TA.Mat<70n, 3n>, ~TA.Mat<24n, 2n>, ~TA.Mat<24n, 27n>, ~T.Conv2dNB(2n, 3n, 2n, 3n, 6n, 4n, 1n, 1n, 0n), mat(2n, 27n, 231), mat(70n, 3n, 232), mat(24n, 2n, 233), mat(2n, 27n, 234)), run(~TA.Mat<2n, 27n>, ~TA.Mat<70n, 3n>, ~TA.Mat<24n, 2n>, ~TA.Mat<24n, 27n>, ~G.Conv2dNB(2n, 3n, 2n, 3n, 6n, 4n, 1n, 1n, 0n), mat(2n, 27n, 231), mat(70n, 3n, 232), mat(24n, 2n, 233), mat(2n, 27n, 234))),
     c_convnb(2n, 3n, 2n, 3n, 6n, 5n, 1n, 1n, run(~TA.Mat<2n, 27n>, ~TA.Mat<84n, 3n>, ~TA.Mat<24n, 2n>, ~TA.Mat<24n, 27n>, ~T.Conv2dNB(2n, 3n, 2n, 3n, 6n, 5n, 1n, 1n, 0n), mat(2n, 27n, 241), mat(84n, 3n, 242), mat(24n, 2n, 243), mat(2n, 27n, 244)), run(~TA.Mat<2n, 27n>, ~TA.Mat<84n, 3n>, ~TA.Mat<24n, 2n>, ~TA.Mat<24n, 27n>, ~G.Conv2dNB(2n, 3n, 2n, 3n, 6n, 5n, 1n, 1n, 0n), mat(2n, 27n, 241), mat(84n, 3n, 242), mat(24n, 2n, 243), mat(2n, 27n, 244))))
 
+# ---- MaxPool2d: y and dX. Windows that overlap by one row and column (2 images of 3 channels, 9 x 7, k 3, s 2);
+# windows that tile, at a size past 2^14 leaves (4 x 16 x 32 x 32, k 2, s 2); every window over its neighbours, so a
+# cell is the maximum of up to nine of them and dX adds their gradients, with ties among its 14,400 windows, which go to
+# the first cell (2 x 8 x 32 x 32, k 3, s 1); and a stride past the kernel, which leaves cells no window reads
+# (1 x 5 x 7 x 5, k 2, s 3) ----
+
+def c_mp(+rows: Nat, +orows: Nat, +c: Nat, a: RR<Unit, TA.Mat<rows, c>, TA.Mat<orows, c>>, z: RR<Unit, TA.Mat<rows, c>, TA.Mat<orows, c>>) -> U32:
+  match a z:
+    case RR{y1, d1, g1} RR{y2, d2, g2}: u32_max(dm(orows, c, y1, y2), dm(rows, c, d1, d2))
+
+def maxpool() -> U32:
+  max4(
+    c_mp(126n, 24n, 3n, run(~Unit, ~TA.Mat<126n, 3n>, ~TA.Mat<24n, 3n>, ~TA.Mat<126n, 3n>, ~T.MaxPool2d(2n, 3n, 9n, 7n, 3n, 2n), Unit{}, mat(126n, 3n, 251), mat(24n, 3n, 252), Unit{}), run(~Unit, ~TA.Mat<126n, 3n>, ~TA.Mat<24n, 3n>, ~TA.Mat<126n, 3n>, ~G.MaxPool2d(2n, 3n, 9n, 7n, 3n, 2n), Unit{}, mat(126n, 3n, 251), mat(24n, 3n, 252), Unit{})),
+    c_mp(4096n, 1024n, 16n, run(~Unit, ~TA.Mat<4096n, 16n>, ~TA.Mat<1024n, 16n>, ~TA.Mat<4096n, 16n>, ~T.MaxPool2d(4n, 16n, 32n, 32n, 2n, 2n), Unit{}, mat(4096n, 16n, 253), mat(1024n, 16n, 254), Unit{}), run(~Unit, ~TA.Mat<4096n, 16n>, ~TA.Mat<1024n, 16n>, ~TA.Mat<4096n, 16n>, ~G.MaxPool2d(4n, 16n, 32n, 32n, 2n, 2n), Unit{}, mat(4096n, 16n, 253), mat(1024n, 16n, 254), Unit{})),
+    c_mp(2048n, 1800n, 8n, run(~Unit, ~TA.Mat<2048n, 8n>, ~TA.Mat<1800n, 8n>, ~TA.Mat<2048n, 8n>, ~T.MaxPool2d(2n, 8n, 32n, 32n, 3n, 1n), Unit{}, mat(2048n, 8n, 255), mat(1800n, 8n, 256), Unit{}), run(~Unit, ~TA.Mat<2048n, 8n>, ~TA.Mat<1800n, 8n>, ~TA.Mat<2048n, 8n>, ~G.MaxPool2d(2n, 8n, 32n, 32n, 3n, 1n), Unit{}, mat(2048n, 8n, 255), mat(1800n, 8n, 256), Unit{})),
+    c_mp(35n, 4n, 5n, run(~Unit, ~TA.Mat<35n, 5n>, ~TA.Mat<4n, 5n>, ~TA.Mat<35n, 5n>, ~T.MaxPool2d(1n, 5n, 7n, 5n, 2n, 3n), Unit{}, mat(35n, 5n, 257), mat(4n, 5n, 258), Unit{}), run(~Unit, ~TA.Mat<35n, 5n>, ~TA.Mat<4n, 5n>, ~TA.Mat<35n, 5n>, ~G.MaxPool2d(1n, 5n, 7n, 5n, 2n, 3n), Unit{}, mat(35n, 5n, 257), mat(4n, 5n, 258), Unit{})))
+
 # ---- GroupNorm: y, dx and the gain's and bias's gradients (added into gradients that are not zero); 8 images of 64
 # pixels in 8 groups of 16 channels, and 3 images of 5 pixels in 3 groups of 2 ----
 
@@ -388,17 +406,22 @@ def gn() -> U32:
 
 # every case, on one line
 def all_cases() -> IO(Unit):
-  IO.print(U32.show(silu()) ++ " " ++ U32.show(mul2()) ++ " " ++ U32.show(sumdup()) ++ " " ++ U32.show(rms()) ++ " " ++ U32.show(rope()) ++ " " ++ U32.show(attn()) ++ " " ++ U32.show(step(T.SGD{0.01}, 0n)) ++ " " ++ U32.show(step(T.Momentum{0.01, 0.9}, 1n)) ++ " " ++ U32.show(step(T.Opt.at(T.CAdamW{0.001, 0.9, 0.999, 0.00000001, 0.01, 0.1, 0.001}, 0.1, 0.001), 2n)) ++ " " ++ U32.show(mse()) ++ " " ++ U32.show(emb()) ++ " " ++ U32.show(ce()) ++ " " ++ U32.show(attn_small()) ++ " " ++ U32.show(gn()) ++ " " ++ U32.show(attnf()) ++ " " ++ U32.show(attnf_small()) ++ " " ++ U32.show(conv2d()) ++ " " ++ U32.show(gelue_y()) ++ " " ++ U32.show(gelue_dx()) ++ " " ++ U32.show(tile_y()) ++ " " ++ U32.show(tile_dx()) ++ " " ++ U32.show(rope2_y()) ++ " " ++ U32.show(rope2_dx()) ++ " " ++ U32.show(convnb()))
+  IO.print(U32.show(silu()) ++ " " ++ U32.show(mul2()) ++ " " ++ U32.show(sumdup()) ++ " " ++ U32.show(rms()) ++ " " ++ U32.show(rope()) ++ " " ++ U32.show(attn()) ++ " " ++ U32.show(step(T.SGD{0.01}, 0n)) ++ " " ++ U32.show(step(T.Momentum{0.01, 0.9}, 1n)) ++ " " ++ U32.show(step(T.Opt.at(T.CAdamW{0.001, 0.9, 0.999, 0.00000001, 0.01, 0.1, 0.001}, 0.1, 0.001), 2n)) ++ " " ++ U32.show(mse()) ++ " " ++ U32.show(emb()) ++ " " ++ U32.show(ce()) ++ " " ++ U32.show(attn_small()) ++ " " ++ U32.show(gn()) ++ " " ++ U32.show(attnf()) ++ " " ++ U32.show(attnf_small()) ++ " " ++ U32.show(conv2d()) ++ " " ++ U32.show(gelue_y()) ++ " " ++ U32.show(gelue_dx()) ++ " " ++ U32.show(tile_y()) ++ " " ++ U32.show(tile_dx()) ++ " " ++ U32.show(rope2_y()) ++ " " ++ U32.show(rope2_dx()) ++ " " ++ U32.show(convnb()) ++ " " ++ U32.show(maxpool()))
 
 # case k alone (0 = SiLU .. 11 = CrossEntropy, 12 = attention at small sizes, 13 = GroupNorm, 14 = full attention at
-# SmolLM2's sizes, 15 = full attention at small sizes, 16 = Conv2d, 17 = GELUErf's y, 18 = its dx, 19 = Tile's y, 20 = its dx, 21 = RoPE2d's y, 22 = its dx, 23 = Conv2dNB). In the line above, a case's bangs can follow host work in the same
+# SmolLM2's sizes, 15 = full attention at small sizes, 16 = Conv2d, 17 = GELUErf's y, 18 = its dx, 19 = Tile's y, 20 = its dx, 21 = RoPE2d's y, 22 = its dx, 23 = Conv2dNB, 24 = MaxPool2d). In the line above, a case's bangs can follow host work in the same
 # evaluation and then run on the CPU threads: under nsys, the whole line made 15 bangs on the device, and cross-entropy
 # read 0 ulps there against 4 alone. So make gpu runs each case as its own program (nsys: every case's bangs on the
 # device, 2026-10-21).
+def one_24(k: Nat) -> U32:
+  match k:
+    case 0n: maxpool()
+    case 1n+q: 4294967295
+
 def one_23(k: Nat) -> U32:
   match k:
     case 0n: convnb()
-    case 1n+q: 4294967295
+    case 1n+q: one_24(q)
 
 def one_22(k: Nat) -> U32:
   match k:
