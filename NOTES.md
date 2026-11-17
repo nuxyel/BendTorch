@@ -2672,3 +2672,54 @@ runs it after the merge, and `docs/limitations.md` says so.
 - Gates (Bend 2.0.40, busy machine on battery, pass/fail only): `make laws check-adain` green, which is what `make
   affected` asks for; `make affected-check` and `make check-rts` pass; bend-lint has no finding on the probe. No file
   in `torch/` changed but its README, so no mutants.
+
+## MaxPool2d (#42), and its device twin (2026-11-17)
+
+- #42 (@adeerkhan) adds `MaxPool2d(n, c, h, w, k, s)` for #39: each `k x k` window's maximum at stride `s`, no padding,
+  images channels last. A tie keeps the first cell in row-major order, windows that overlap add their gradients into
+  the same cell, and the state is the input: the backward finds each window's cell again with the forward's scan
+  (`mp_win`). `reference/maxpool_check.py` against `F.max_pool2d(..., return_indices=True)` and its autograd, five
+  cases: y and dX 0.000e+00. Two laws, `mp_count` and `mp_scatter`, 46 in all.
+- The review (2026-11-16) found three things on the first head (974e168), all fixed in 6e4e1f2. The scan started from
+  `-1e38` and index 0, so a window whose cells are all below that gave `-1e38` and kept index 0: six cells at `-2e38`,
+  k 2, s 1, dy [1, 2] gave y [-1e38, -1e38] and dX [3, 0, 0, 0, 0, 0], where PyTorch gives [-2e38, -2e38] and
+  [1, 2, 0, 0, 0, 0]. `mp_win` now takes a `first` flag and keeps the window's first cell whatever its value; that
+  case is the probe's `c4`. `mp_scatter` named five premises its proof never used (it still proves with both checkers
+  without them), and its texts said the write lands inside the window, which it does not show: they now say what it
+  proves, that two spellings of the write's cell are the same number. And the CHANGELOG entry had been written into
+  2.1.0's released section.
+- Merged into devel (8999c69) after `make laws check` on 6e4e1f2 (7 min 21 s).
+- `torch/gpu.bend`'s `MaxPool2d`, `main.bend`'s types and name. The forward is a cell bang over the `n·oh·ow·c` output
+  cells, each running `mp_win`'s scan in `U32` (`mpw`). The backward cannot be the CPU's scatter, since two windows may
+  write one cell: it is a cell bang over the `n·h·w·c` input cells, each walking the windows that read it (up to `k`
+  candidates an axis, as `col2im` does), running each one's scan and adding its `dy` when the scan ended on this cell,
+  in increasing output cell, which is the order `mp_b_go` adds them into its zeros. So both passes give `main.bend`'s
+  bits. `mp_fwd`, `mp_bwd` and `MaxPool2d` reach tensor-gpu and are in `GPU_DEFS`.
+- `demo/gpu_layers_test.bend` case 24: y and dX at four shapes (windows that overlap by one row and column, 2 x 3 x 9
+  x 7 with k 3 and s 2; windows that tile past 2^14 leaves, 4 x 16 x 32 x 32 with k 2 and s 2; every window over its
+  neighbours, 2 x 8 x 32 x 32 with k 3 and s 1; a stride past the kernel, 1 x 5 x 7 x 5 with k 2 and s 3). 0 ulps with
+  `+RTS --gpu off -RTS` on 1 and 16 threads and on the RTX 4050, so `make gpu` bounds it at 0. The Makefile,
+  `scripts/gpu_expcr.sh` and `scripts/mutate.py` expect 25 cases.
+- The first version of case 24 let a mutant live. The test's inputs take 1,000 levels and, as the hash walks them, no
+  window of the four shapes held its maximum twice (0 of 72, 16,384, 14,400 and 20 windows), so a
+  device scan that gave a tie to the later cell printed the same 0. The overlapping shape now reads an input of five
+  levels: 9,569 of its 14,400 windows hold their maximum more than once, and that mutant is caught.
+- Seven mutants, each as expected: on each lane, a later cell that only equals the maximum taking it, and the scan
+  started from 0.0 instead of the window's first cell; on the CPU, a cell two windows chose keeping the last gradient
+  instead of the sum, and `mp_flat` stepping a row by `h` (the law `mp_scatter` fails); on the device, a cell taking
+  the gradient of every window over it. 219 mutants in all, 216 caught and 3 surviving by design; the README's figure
+  is drawn again.
+- Not guarded, and in `docs/limitations.md`: `MaxPool2d(1n, 1n, 2n, 2n, 3n, 1n)`, a kernel larger than its image,
+  type-checks, counts one window and gives 4.0 from cells read past the image (the indexes wrap); `mp_oh(4n, 2n, 0n)`
+  is 1. PyTorch 2.14.1 raises on both ("Output size is too small", "stride should not be zero"). `Conv2d` writes its
+  size as the kernel plus a surplus and its stride as `s - 1`, which rules both out in the type; `MaxPool2d` does not
+  yet. `mp_count` is about the formula `(h - k)/s + 1`, not about the def `mp_oh` that computes it. A window holding
+  a NaN gives a number (the strict `>` skips it) where PyTorch gives NaN.
+- In passing: the README's limits still said a UNet needs RoPE2d (#18) and adaLN (#19), both in 2.1.0.
+- Gates (Bend 2.0.40, the machine in use, pass/fail only): `make laws check` on the PR's head and again on the tree
+  with the twin (7 min 21 s and 7 min 1 s); `make gpu` (6 min 42 s: MaxPool2d 0 ulps on the RTX 4050, every case 0
+  with `exp_cr`, the other device bounds where they were: SiLU 4, cross-entropy 4, attention 176,128, small 7,680,
+  full 172,032, full small 8,192, GELUErf's dX 113); `make smol smol-gpu bits-smol reader` (16 min 38 s); the seven
+  new mutants as expected; `make affected-check` and `make check-rts`; bend-lint with no finding on `main.bend`,
+  `gpu.bend`, the probe and the device test. The other mutants a change to `main.bend` calls for (178 by
+  `make affected`) run in CI on the push, not here.
