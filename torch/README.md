@@ -100,6 +100,13 @@ with the channels last. With the gain at 1 and the bias at 0 its numbers are the
 parameters, so a training step moves them. `demo/instancenorm_probe.bend` and `reference/instancenorm_check.py` check
 both against `F.instance_norm` and its autograd.
 
+AdaIN (#43) is then adaLN's composition with that normalization in `LayerNorm`'s place: `Tile` broadcasts a multiplier
+and a shift per sequence over its steps, and `Mul2` and `Add2` apply them to `GroupNorm(n, len, c, 1n, eps)` at gain 1
+and bias 0. `demo/adain_probe.bend` builds it with the two rows from two `Linear` layers of a style vector, which is
+StyleTTS2's `AdaIN1d` (`(1 + gamma)·norm(x) + beta`, the 1 in a bias and its one `Linear` of width `2c` as two of width
+`c`), and `reference/adain_check.py` checks it against PyTorch and against `AdaIN1d` written as it is. The same two
+pieces as adaLN's are not in the package (`Rewire` and a column split).
+
 `erf(x)` is written in the package with F32 additions, multiplications and comparisons only (Base has no `erf`), so it
 gives the same bits in C and JavaScript: a polynomial in x² below 0.84375, a correction polynomial around one of six
 centres up to 3.92, and 1 from there on. Over all 2^32 inputs it is at most 0.93 ulp from float64's erf (the correctly
