@@ -2154,8 +2154,8 @@ def mp_bwd(+n: Nat, +c: Nat, +h: Nat, +w: Nat, +k: Nat, +s1: Nat, s: TA.Mat<Nat.
 
 # n images of h x w pixels and c channels, each channel's k x k windows at stride s1 to their maximum (main.bend's
 # MaxPool2d): no parameters, and the input as the state
-def MaxPool2d(+n: Nat, +c: Nat, +h: Nat, +w: Nat, +k: Nat, +s1: Nat) -> T.Layer<Unit, TA.Mat<Nat.mul(n, Nat.mul(h, w)), c>, TA.Mat<Nat.mul(n, T.mp_ohw(h, w, k, s1)), c>, TA.Mat<Nat.mul(n, Nat.mul(h, w)), c>>:
-  T.Layer{u => x => mp_fwd(n, c, h, w, k, s1, x), u => s => dy => g => mp_bwd(n, c, h, w, k, s1, s, dy), op => p => g => st => T.no_step(Unit, op, p, g, st), u => Unit{}, p => T.PL{Unit{}, Nil{}}, p => xs => off => T.PA{Unit{}, xs, off}, p => xs => off => T.PA{Unit{}, xs, off}, u => 0}
+def MaxPool2d(+n: Nat, +c: Nat, +hs: Nat, +ws: Nat, +k: Nat, +s1: Nat) -> T.Layer<Unit, TA.Mat<Nat.mul(n, Nat.mul(Nat.add(k, hs), Nat.add(k, ws))), c>, TA.Mat<Nat.mul(n, T.mp_ohw(Nat.add(k, hs), Nat.add(k, ws), k, Nat.add(1n, s1))), c>, TA.Mat<Nat.mul(n, Nat.mul(Nat.add(k, hs), Nat.add(k, ws))), c>>:
+  T.Layer{u => x => mp_fwd(n, c, Nat.add(k, hs), Nat.add(k, ws), k, Nat.add(1n, s1), x), u => s => dy => g => mp_bwd(n, c, Nat.add(k, hs), Nat.add(k, ws), k, Nat.add(1n, s1), s, dy), op => p => g => st => T.no_step(Unit, op, p, g, st), u => Unit{}, p => T.PL{Unit{}, Nil{}}, p => xs => off => T.PA{Unit{}, xs, off}, p => xs => off => T.PA{Unit{}, xs, off}, u => 0}
 
 # ---- main.bend's names for the same layers (#13) ----
 #

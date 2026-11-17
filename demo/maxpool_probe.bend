@@ -36,7 +36,7 @@ def one(~rows: Nat, ~c: Nat, ~orows: Nat, ~k: Nat, ~s1: Nat,
 # ---- c0: 1 x 2 x 4 x 4, k 2, s 2 (oh = 2, ow = 2) ----
 
 def c0_L() -> T.Layer<Unit, TA.Mat<16n, 2n>, TA.Mat<4n, 2n>, TA.Mat<16n, 2n>>:
-  T.MaxPool2d(1n, 2n, 4n, 4n, 2n, 2n)
+  T.MaxPool2d(1n, 2n, 2n, 2n, 2n, 1n)
 
 def c0() -> IO(Unit):
   one(~16n, ~2n, ~4n, ~2n, ~2n, ~c0_L(), "c0",
@@ -47,7 +47,7 @@ def c0() -> IO(Unit):
 # ---- c1: 1 x 2 x 5 x 5, k 3, s 2 (oh = 2, ow = 2) ----
 
 def c1_L() -> T.Layer<Unit, TA.Mat<25n, 2n>, TA.Mat<4n, 2n>, TA.Mat<25n, 2n>>:
-  T.MaxPool2d(1n, 2n, 5n, 5n, 3n, 2n)
+  T.MaxPool2d(1n, 2n, 2n, 2n, 3n, 1n)
 
 def c1() -> IO(Unit):
   one(~25n, ~2n, ~4n, ~3n, ~2n, ~c1_L(), "c1",
@@ -58,7 +58,7 @@ def c1() -> IO(Unit):
 # ---- c2: 2 x 1 x 4 x 3, k 3, s 1 (oh = 2, ow = 1; every output overlaps) ----
 
 def c2_L() -> T.Layer<Unit, TA.Mat<24n, 1n>, TA.Mat<4n, 1n>, TA.Mat<24n, 1n>>:
-  T.MaxPool2d(2n, 1n, 4n, 3n, 3n, 1n)
+  T.MaxPool2d(2n, 1n, 1n, 0n, 3n, 0n)
 
 def c2() -> IO(Unit):
   one(~24n, ~1n, ~4n, ~3n, ~1n, ~c2_L(), "c2",
@@ -69,7 +69,7 @@ def c2() -> IO(Unit):
 # ---- c3: the tie, 1 x 1 x 2 x 2, k 2, s 1, [1, 1, 0, 0]: the first max wins ----
 
 def c3_L() -> T.Layer<Unit, TA.Mat<4n, 1n>, TA.Mat<1n, 1n>, TA.Mat<4n, 1n>>:
-  T.MaxPool2d(1n, 1n, 2n, 2n, 2n, 1n)
+  T.MaxPool2d(1n, 1n, 0n, 0n, 2n, 0n)
 
 def c3() -> IO(Unit):
   one(~4n, ~1n, ~1n, ~2n, ~1n, ~c3_L(), "c3",
@@ -82,7 +82,7 @@ def c3() -> IO(Unit):
 # y is [-2e38, -2e38] and the two windows' gradients land on cells 0/1 and 1/2.
 
 def c4_L() -> T.Layer<Unit, TA.Mat<6n, 1n>, TA.Mat<2n, 1n>, TA.Mat<6n, 1n>>:
-  T.MaxPool2d(1n, 1n, 2n, 3n, 2n, 1n)
+  T.MaxPool2d(1n, 1n, 0n, 1n, 2n, 0n)
 
 def c4() -> IO(Unit):
   one(~6n, ~1n, ~2n, ~2n, ~1n, ~c4_L(), "c4",

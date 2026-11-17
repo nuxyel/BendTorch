@@ -7,6 +7,21 @@ with a fourth digit (`2.0.0.0`). The engineering log behind each entry, measurem
 
 ## Unreleased
 
+### MaxPool2d: guard the geometry the way Conv2d does
+
+- `MaxPool2d(n, c, h, w, k, s)` becomes `MaxPool2d(n, c, h-k, w-k, k, s-1)`
+  in both `main.bend` and `gpu.bend`. The image is the kernel plus a surplus
+  and the stride is passed minus one, so a kernel larger than its image and
+  a stride of zero cannot be expressed as calls — the two gaps left in
+  `docs/limitations.md` after #42. All probe and GPU-lane call sites were
+  moved to the new convention; the numbers are unchanged.
+- `make check-maxpool2d` PASS (c0-c2 0.000e+00, c3 tie, c4 below `-1e38`);
+  `make check-gpu-layers` PASS on 1 and 16 CPU threads. `make laws` reaches
+  the verdict (ALL PROOFS CHECK) but this lane's `torch/fast.bend` fails on
+  `Array.get_unchecked` — reproduced unmodified on upstream devel, an
+  environment/toolchain mismatch, not this change.
+
+
 ### New
 
 - **InstanceNorm by `GroupNorm`** (#43): no new layer. `GroupNorm(n, len, c, 1n, eps)`, one channel per group, is
