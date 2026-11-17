@@ -172,6 +172,12 @@ Numbers marked "busy machine" were taken with other jobs running and are a first
 - `Conv2dNB` (`Conv2d` without the bias, #39) is in `main.bend` and `gpu.bend`, as `Conv2d` is. On the GPU both passes
   give `main.bend`'s bits (`demo/gpu_layers_test.bend`, case 23), and the CPU lane's numbers are
   `reference/conv2dnb_check.py`'s.
+- `MaxPool2d` (#42) is in `main.bend` and `gpu.bend`, not in `fast.bend`. On the GPU both passes give `main.bend`'s
+  bits (`demo/gpu_layers_test.bend`, case 24), and the CPU lane's numbers are `reference/maxpool_check.py`'s. One square
+  kernel, no padding and no dilation. Its sizes are not guarded as `Conv2d`'s are: a kernel larger than the image
+  (`MaxPool2d(1n, 1n, 2n, 2n, 3n, 1n)`) type-checks, counts one window and reads past the image, where the indexes wrap
+  around, and a stride of 0 counts one window too; PyTorch refuses both. The law `mp_count` is about the formula
+  `(h - k)/s + 1`, not about the def `mp_oh` that computes it.
 - Gradient accumulation (`Train.accumulate`, `Train.flush`, #36) relies on every backward pass adding into the
   gradient it receives, the layer protocol. It is tested against PyTorch on a 7-6-3 MLP (`reference/test_accum.py`),
   and over the three lanes on five small models (`demo/accum_lanes.bend`: LinearFirst, Linear, LinearNB, RMSNorm,
