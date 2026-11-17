@@ -2723,3 +2723,20 @@ runs it after the merge, and `docs/limitations.md` says so.
   new mutants as expected; `make affected-check` and `make check-rts`; bend-lint with no finding on `main.bend`,
   `gpu.bend`, the probe and the device test. The other mutants a change to `main.bend` calls for (178 by
   `make affected`) run in CI on the push, not here.
+
+## MaxPool2d takes Conv2d's sizes (#44, 2026-11-17)
+
+- #44 (@adeerkhan) closes the first of the two gaps the entry above left: the layer is now called as
+  `MaxPool2d(n, c, h - k, w - k, k, s - 1)` in `main.bend` and `gpu.bend`, `Conv2d`'s convention, so a kernel larger
+  than its image and a stride of 0 cannot be written. Only the two `MaxPool2d` defs changed; `mp_oh` .. `mp_bwd` still
+  take `h`, `w` and the stride. The five cases of the probe and the four shapes of case 24 are the same sizes written
+  the new way, and no number moved.
+- Still writable: a kernel of 0. `MaxPool2d(1n, 1n, 2n, 2n, 0n, 0n)` type-checks and gives nine cells of 0.0 from a
+  2 x 2 image; PyTorch 2.14.1 raises ("kernel size should be greater than zero"). In `docs/limitations.md`. `mp_count`
+  is as it was, about the formula.
+- On the merge I rewrote the CHANGELOG entry into #42's section (the layer is not released yet, so there is one entry
+  for it) and left out its line about `torch/fast.bend` failing on `Array.get_unchecked`: with the pinned Bend 2.0.40
+  `make laws` passes here and on CI, on the PR's head too.
+- Gates (Bend 2.0.40, the machine in use, pass/fail only): on the PR's head, `make laws check-maxpool2d
+  check-gpu-layers`, the seven MaxPool2d mutants (7 as expected) and `make gpu` (case 24 at 0 ulps on the RTX 4050);
+  its CI run passed too.
