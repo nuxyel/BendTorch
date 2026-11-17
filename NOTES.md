@@ -2638,3 +2638,13 @@ runs it after the merge, and `docs/limitations.md` says so.
 - Gates (Bend 2.0.40, busy machine on battery, pass/fail only): `make laws check-instancenorm` green, which is what
   `make affected` asks for; `make affected-check` and `make check-rts` pass; bend-lint has no finding on the probe. No
   file in `torch/` changed but its README, so no mutants.
+
+## Tile is nearest upsampling when the rows are time steps (2026-11-16, #43)
+
+- #43 also lists nearest temporal upsampling. `Tile(b, t, c)` sends row i to rows i·t .. i·t + t - 1, so over a
+  sequence's rows it repeats every time step t times, which is `F.interpolate(scale_factor=t, mode="nearest")`.
+- `reference/tile_check.py` compares `demo/tile_probe.bend`'s y and dX with it too, one sequence of 2 steps and 4
+  channels in PyTorch's (N, C, L) layout: `0.000e+00` forward and backward. The probe did not change.
+- A factor that is not whole, and the other modes, are not this layer.
+- Gates (busy machine on battery, pass/fail only): `make check-tile` green and `Tile`'s two mutants caught by the
+  changed check, which is what `make affected` asks for.
