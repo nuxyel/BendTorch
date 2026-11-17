@@ -2648,3 +2648,27 @@ runs it after the merge, and `docs/limitations.md` says so.
 - A factor that is not whole, and the other modes, are not this layer.
 - Gates (busy machine on battery, pass/fail only): `make check-tile` green and `Tile`'s two mutants caught by the
   changed check, which is what `make affected` asks for.
+
+## AdaIN as a composition (2026-11-16, #43)
+
+- #43 lists AdaIN next to InstanceNorm. With InstanceNorm as `GroupNorm` at one channel per group (above), AdaIN is
+  adaLN's composition (#19) with that layer in `LayerNorm`'s place, so no layer is added to `torch/`.
+  `demo/adain_probe.bend` builds, over 2 sequences of 5 steps and 4 channels: the modulation
+  `Tile(sh) + Tile(m)·InstanceNorm(x)` (`Both(Tile, Both(Tile, GroupNorm))`, then `Mul2` and `Add2`), and the whole
+  thing with `m` and `sh` from two `Linear(3, 4)` of a style vector (`Both(Fork(Lm, Lsh), Id)`, a regrouping, then the
+  modulation). Its helpers are the adaLN probe's.
+- `reference/adain_check.py` (`make check-adain`): y, the gradients of `x`, the style, `m`, `sh` and every parameter's
+  against PyTorch, 406 numbers, 270 bit-identical, the worst 0.163 of the tolerance. The y of the whole thing is also
+  held to StyleTTS2's `AdaIN1d` written as it is (`nn.InstanceNorm1d(4, affine=False)`, one `nn.Linear(3, 8)` cut by
+  `chunk`, `(1 + gamma)·norm(x) + beta`, from the same weights): 0.087 of the tolerance. The modulation with `m = 1`,
+  `sh = 0` gives `GroupNorm`'s numbers, forward, `dx` and both parameter gradients.
+- Two planted probes fail it: the gradients of `m` and `sh` swapped in the regrouping's inverse, at 2,754,282 times
+  the tolerance (y still right), and one group of four channels in place of four groups of one, at 1,716,964.
+- What it takes from outside the package is what adaLN took: `Rewire`, and two `Linear` layers where `AdaIN1d` has one
+  cut in two. `m` is `1 + gamma`, with the 1 in its bias. `GroupNorm`'s gain and bias sit at 1 and 0 and are still
+  parameters.
+- Left: the GPU lane (`gpu.bend` has `GroupNorm`, `Tile`, `Mul2`, `Add2` and `Linear`; the probe uses `main.bend`'s);
+  AdaLayerNorm, which is adaLN's own probe with a style in the condition's place.
+- Gates (Bend 2.0.40, busy machine on battery, pass/fail only): `make laws check-adain` green, which is what `make
+  affected` asks for; `make affected-check` and `make check-rts` pass; bend-lint has no finding on the probe. No file
+  in `torch/` changed but its README, so no mutants.
