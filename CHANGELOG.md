@@ -15,6 +15,9 @@ with a fourth digit (`2.0.0.0`). The engineering log behind each entry, measurem
   gain 1 and bias 0 (`affine=False`) and with a gain and a bias per channel: y, dX and both parameter gradients, 132
   numbers, the worst 0.06 of the tolerance. One group of all the channels and the statistics of the whole batch would be
   off by 0.57 and 0.47. The gain and the bias stay parameters, so a training step moves them (`docs/limitations.md`).
+- **`Tile` as nearest upsampling** (#43): with the rows read as time steps, `Tile(len, f, c)` is
+  `F.interpolate(scale_factor=f, mode="nearest")`. `reference/tile_check.py` now compares the probe with it as well,
+  forward and backward (`0.000e+00`). No change to the layer.
 
 ## 2.1.0 (2026-11-11)
 
