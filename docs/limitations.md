@@ -160,8 +160,12 @@ Numbers marked "busy machine" were taken with other jobs running and are a first
 - InstanceNorm (#43) has no layer: it is `GroupNorm` with one channel per group, `GroupNorm(n, len, c, 1n, eps)`
   (`demo/instancenorm_probe.bend`, against `F.instance_norm`). Its gain and bias stay parameters: at 1 and 0 the numbers
   are `affine=False`'s, but a training step moves them, and the package has no combinator that holds a layer's
-  parameters still. No running statistics (`track_running_stats`). AdaIN was not built; it would be adaLN's composition
-  with this normalization in `LayerNorm`'s place.
+  parameters still. No running statistics (`track_running_stats`).
+- AdaIN (#43) has no layer either: `demo/adain_probe.bend` composes it as adaLN is composed, with that `GroupNorm` in
+  `LayerNorm`'s place, and it needs the same two pieces from outside the package (`Rewire`, and two `Linear` layers
+  where `AdaIN1d` cuts one of width `2c` in two). `AdaIN1d`'s `1 + gamma` is written as `m`, with the 1 in its
+  `Linear`'s bias. The CPU lane only, and the probe's sequences have one length: a length that changes with the data
+  is not a type this package has.
 - `Conv2dNB` (`Conv2d` without the bias, #39) is in `main.bend` and `gpu.bend`, as `Conv2d` is. On the GPU both passes
   give `main.bend`'s bits (`demo/gpu_layers_test.bend`, case 23), and the CPU lane's numbers are
   `reference/conv2dnb_check.py`'s.
