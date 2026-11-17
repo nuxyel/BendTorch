@@ -1776,7 +1776,7 @@ def Laws.mp_count(q, r, a, s, sr):
 
 # MaxPool2d's scatter (BendTorch#39): the write cell is base + plane·c with base = image·h·w·c + ch,
 # which is mp_flat's (image·h·w + plane)·c + ch once the product is distributed and regrouped.
-def Laws.mp_scatter(c, h, w, ch, image, row, col, ky, kx, k, a, b, ky_lt, kx_lt):
+def Laws.mp_scatter(c, h, w, ch, image, row, col, ky, kx):
   +A = Nat.mul(Nat.mul(image, h), w)
   +B = Nat.add(Nat.mul(Nat.add(row, ky), w), Nat.add(col, kx))
   +AC = Nat.mul(A, c)

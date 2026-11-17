@@ -3786,17 +3786,18 @@ type MPM is Type:
 
 # the window's maximum and the plane index (row*w + col) of the first cell that reached it
 def mp_win(+left: Nat, +row: Nat, +col: Nat, +w: Nat, +k: Nat, +base: Nat, +c: Nat,
-    +ky: Nat, +kx: Nat, +best: F32, +bi: Nat, r: Array<F32> & F32) -> MPM:
+    +ky: Nat, +kx: Nat, +first: Bool, +best: F32, +bi: Nat,
+    r: Array<F32> & F32) -> MPM:
   match left r:
     case 0n Tuple{d, v}:
       MPM{d, best, bi}
     case 1n Tuple{d, +v}:
       +idx = Nat.add(Nat.mul(Nat.add(row, ky), w), Nat.add(col, kx))
-      +gt = F32.is_gt(v, best)
+      +gt = Bool.or(first, F32.is_gt(v, best))
       MPM{d, Bool.pick(F32, gt, v, best), Bool.pick(Nat, gt, idx, bi)}
     case 1n+q Tuple{d, +v}:
       +idx = Nat.add(Nat.mul(Nat.add(row, ky), w), Nat.add(col, kx))
-      +gt = F32.is_gt(v, best)
+      +gt = Bool.or(first, F32.is_gt(v, best))
       +nb = Bool.pick(F32, gt, v, best)
       +ni = Bool.pick(Nat, gt, idx, bi)
       +kx2 = Nat.add(kx, 1n)
@@ -3804,7 +3805,7 @@ def mp_win(+left: Nat, +row: Nat, +col: Nat, +w: Nat, +k: Nat, +base: Nat, +c: N
       +ky2 = Bool.pick(Nat, wrap, Nat.add(ky, 1n), ky)
       +kx3 = Bool.pick(Nat, wrap, 0n, kx2)
       +nidx = Nat.add(Nat.mul(Nat.add(row, ky2), w), Nat.add(col, kx3))
-      mp_win(q, row, col, w, k, base, c, ky2, kx3, nb, ni,
+      mp_win(q, row, col, w, k, base, c, ky2, kx3, False{}, nb, ni,
         Array.get(F32, d, U32.from_nat(Nat.add(base, Nat.mul(nidx, c)))))
 
 type MPF is Type:
@@ -3833,7 +3834,7 @@ def mp_f_go(+fuel: Nat, +left: Nat, +t: Nat, +c: Nat, +h: Nat, +w: Nat, +k: Nat,
                   +col = mp_col(c, ohw, ow, s1, t)
                   +base = mp_base(c, h, w, ohw, t)
                   mp_f_go(f, 1n, t, c, h, w, k, s1, ohw, ow, False{},
-                    mp_win(Nat.mul(k, k), row, col, w, k, base, c, 0n, 0n, (0.0 - 1.0e38 : F32), 0n,
+                    mp_win(Nat.mul(k, k), row, col, w, k, base, c, 0n, 0n, True{}, 0.0, 0n,
                       Array.get(F32, d, U32.from_nat(mp_first(c, h, w, ohw, ow, k, s1, t)))), ys)
             case False{}:
               match m:
@@ -3848,7 +3849,7 @@ def mp_f_go(+fuel: Nat, +left: Nat, +t: Nat, +c: Nat, +h: Nat, +w: Nat, +k: Nat,
                   +col = mp_col(c, ohw, ow, s1, t)
                   +base = mp_base(c, h, w, ohw, t)
                   mp_f_go(f, 2n+q, t, c, h, w, k, s1, ohw, ow, False{},
-                    mp_win(Nat.mul(k, k), row, col, w, k, base, c, 0n, 0n, (0.0 - 1.0e38 : F32), 0n,
+                    mp_win(Nat.mul(k, k), row, col, w, k, base, c, 0n, 0n, True{}, 0.0, 0n,
                       Array.get(F32, d, U32.from_nat(mp_first(c, h, w, ohw, ow, k, s1, t)))), ys)
             case False{}:
               match m:
@@ -3858,7 +3859,7 @@ def mp_f_go(+fuel: Nat, +left: Nat, +t: Nat, +c: Nat, +h: Nat, +w: Nat, +k: Nat,
                   +col2 = mp_col(c, ohw, ow, s1, t2)
                   +base2 = mp_base(c, h, w, ohw, t2)
                   mp_f_go(f, 1n+q, t2, c, h, w, k, s1, ohw, ow, False{},
-                    mp_win(Nat.mul(k, k), row2, col2, w, k, base2, c, 0n, 0n, (0.0 - 1.0e38 : F32), 0n,
+                    mp_win(Nat.mul(k, k), row2, col2, w, k, base2, c, 0n, 0n, True{}, 0.0, 0n,
                       Array.get(F32, d2, U32.from_nat(mp_first(c, h, w, ohw, ow, k, s1, t2)))),
                     Con{best, ys})
 
@@ -3923,7 +3924,7 @@ def mp_b_go(+fuel: Nat, +left: Nat, +t: Nat, +c: Nat, +h: Nat, +w: Nat, +k: Nat,
                   +col = mp_col(c, ohw, ow, s1, t)
                   +base = mp_base(c, h, w, ohw, t)
                   mp_b_go(f, 1n, t, c, h, w, k, s1, ohw, ow, False{},
-                    mp_win(Nat.mul(k, k), row, col, w, k, base, c, 0n, 0n, (0.0 - 1.0e38 : F32), 0n,
+                    mp_win(Nat.mul(k, k), row, col, w, k, base, c, 0n, 0n, True{}, 0.0, 0n,
                       Array.get(F32, d, U32.from_nat(mp_first(c, h, w, ohw, ow, k, s1, t)))),
                     ry, dxa)
             case False{}:
@@ -3943,7 +3944,7 @@ def mp_b_go(+fuel: Nat, +left: Nat, +t: Nat, +c: Nat, +h: Nat, +w: Nat, +k: Nat,
                   +col = mp_col(c, ohw, ow, s1, t)
                   +base = mp_base(c, h, w, ohw, t)
                   mp_b_go(f, 2n+q, t, c, h, w, k, s1, ohw, ow, False{},
-                    mp_win(Nat.mul(k, k), row, col, w, k, base, c, 0n, 0n, (0.0 - 1.0e38 : F32), 0n,
+                    mp_win(Nat.mul(k, k), row, col, w, k, base, c, 0n, 0n, True{}, 0.0, 0n,
                       Array.get(F32, d, U32.from_nat(mp_first(c, h, w, ohw, ow, k, s1, t)))),
                     ry, dxa)
             case False{}:
@@ -3959,7 +3960,7 @@ def mp_b_go(+fuel: Nat, +left: Nat, +t: Nat, +c: Nat, +h: Nat, +w: Nat, +k: Nat,
                       +col2 = mp_col(c, ohw, ow, s1, t2)
                       +base2 = mp_base(c, h, w, ohw, t2)
                       mp_b_go(f, 1n+q, t2, c, h, w, k, s1, ohw, ow, False{},
-                        mp_win(Nat.mul(k, k), row2, col2, w, k, base2, c, 0n, 0n, (0.0 - 1.0e38 : F32), 0n,
+                        mp_win(Nat.mul(k, k), row2, col2, w, k, base2, c, 0n, 0n, True{}, 0.0, 0n,
                           Array.get(F32, d2, U32.from_nat(mp_first(c, h, w, ohw, ow, k, s1, t2)))),
                         Array.get(F32, dyd, U32.from_nat(t2)), dx3)
 

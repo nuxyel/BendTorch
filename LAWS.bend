@@ -553,9 +553,10 @@ law mp_count:
   for +sr: {s == Nat.add(1n, Nat.add(r, a)) : Nat}
   {Nat.add(Nat.div(Nat.add(Nat.mul(q, s), r), s), 1n) == Nat.add(q, 1n) : Nat}
 
-# LAW (mp_scatter): the backward's write for output (row, col) at window offset (ky, kx) is the cell
-# the forward read there — the image's base plus that window's plane index, not another output's
-# cell. ky < k and kx < k (written as k = 1 + ky + a) keep the offset inside the kernel.
+# LAW (mp_scatter): the two spellings of the backward's write cell name the same number:
+# mp_flat's (image·h·w + plane)·c + ch is the image base image·h·w·c + ch plus plane·c, with
+# plane = (row + ky)·w + (col + kx), the cell the forward's window entry reads. The proof uses
+# no bound on ky or kx; that the write stays inside its window is a test, not this law.
 law mp_scatter:
   for +c: Nat
   for +h: Nat
@@ -566,11 +567,6 @@ law mp_scatter:
   for +col: Nat
   for +ky: Nat
   for +kx: Nat
-  for +k: Nat
-  for +a: Nat
-  for +b: Nat
-  for +ky_lt: {k == Nat.add(1n, Nat.add(ky, a)) : Nat}
-  for +kx_lt: {k == Nat.add(1n, Nat.add(kx, b)) : Nat}
   {T.mp_flat(c, h, w, ch, image, Nat.add(row, ky), Nat.add(col, kx)) ==
    Nat.add(Nat.add(Nat.mul(Nat.mul(Nat.mul(image, h), w), c), ch),
      Nat.mul(Nat.add(Nat.mul(Nat.add(row, ky), w), Nat.add(col, kx)), c)) : Nat}

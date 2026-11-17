@@ -25,6 +25,26 @@ with a fourth digit (`2.0.0.0`). The engineering log behind each entry, measurem
   `F.interpolate(scale_factor=f, mode="nearest")`. `reference/tile_check.py` now compares the probe with it as well,
   forward and backward (`0.000e+00`). No change to the layer.
 
+### MaxPool2d (BendTorch#39)
+
+- **`MaxPool2d`**: general `(n, c, h, w, k, s)` max pooling, no padding. Ties keep the first
+  cell in row-major order and overlapping windows (`s < k`) add their gradients into the same
+  input cell. The state is the input, so the backward recomputes the arg-max with the same strict
+  `>` rule. `y` and `dX` are **0.000e+00** against `F.max_pool2d(..., return_indices=True)`
+  and its autograd on the tiled, overlapped and two-image cases (`reference/maxpool_check.py`).
+  The window scan starts from the window's own first cell: a window whose cells are all below
+  `-1e38` now returns the cell value, and each window's gradient lands inside that window
+  (the new `c4` case matches PyTorch exactly). A window holding a NaN is a separate limitation,
+  noted in `docs/limitations.md`. Not in this change: the device lane (the `gpu.bend` twin comes
+  after the merge).
+- **Two new laws** in `LAWS.bend`, proved in `PROOF.bend` and checked by `bend PROOF.bend --verdict`,
+  **46 laws in all** (with `dtype.bend`'s `unpair_pair`):
+  - `mp_count`: with a surplus `h - k = q·s + r` and `r < s` (written `s = 1 + r + a`), the output
+    count `(h - k)/s + 1` is `q + 1` — `div_blocks` then `div_rest`.
+  - `mp_scatter`: the two spellings of the backward's write cell name the same number —
+    `mp_flat`'s `(image·h·w + plane)·c + ch` is the image base plus `plane·c`. The proof uses no
+    bound on `ky` or `kx`; that the write stays inside its window is a test, not a claim of the law.
+
 ## 2.1.0 (2026-11-11)
 
 A minor release: three layers for image models (`Conv2dNB`, `Tile`, `RoPE2d`, each on the CPU and the GPU lane),
@@ -84,16 +104,8 @@ attention: an infinity or a NaN at a position a row cannot see no longer reaches
 
 ### Laws
 
-Six new laws in `LAWS.bend`, proved in `PROOF.bend` and checked again by `bend PROOF.bend --verdict`,
-**46 laws in all** (with `dtype.bend`'s `unpair_pair`): two for attention's sums, two for `MaxPool2d` (#39),
-and two by @adeerkhan (#32).
-
-- `mp_count`: with a surplus `h - k = q·s + r` and `r < s` (written `s = 1 + r + a`), the output count
-  `(h - k)/s + 1` is `q + 1` — `div_blocks` for the `q` whole windows, `div_rest` for the `r` left over.
-- `mp_scatter`: the backward's write for output `(row, col)` at window offset `(ky, kx)` is the cell the
-  forward's window entry reads — `(image·h·w + plane)·c + ch` is the image base plus `plane·c` — so the
-  scatter lands on that output's window, with `ky < k` and `kx < k` the bounds inside the kernel. The proof
-  is distributivity and regrouping.
+Four new laws in `LAWS.bend`, proved in `PROOF.bend` and checked again by `bend PROOF.bend --verdict`, 39 laws in all
+(with `dtype.bend`'s `unpair_pair`). Two by @adeerkhan (#32), and two for attention's sums:
 
 
 - `causal_pv`: every number of row `i` of attention's `O = P·V` (and `dQ = G·K`) is a sum of exactly `i + 1` products,
@@ -134,13 +146,6 @@ Three more in the same file, proved the same way, **44 laws in all** (with `dtyp
   `(r mod th)·half + j`.
 
 ### New
-
-- **`MaxPool2d`**: general `(n, c, h, w, k, s)` max pooling, no padding (BendTorch#39). Ties keep the first
-  cell in row-major order and overlapping windows (`s < k`) add their gradients into the same input cell. The
-  probe and check cover tiling, overlap, two images and an explicit tie; `y` and `dX` are **0.000e+00** against
-  `F.max_pool2d(..., return_indices=True)` and its autograd (`reference/maxpool_check.py`). The state is the
-  input, so the backward recomputes the arg-max with the same rule; two laws (`mp_count`, `mp_scatter`) are
-  below. Not in this change: the device lane (the `gpu.bend` twin comes after the merge).
 
 - **`Conv2dNB`**: `Conv2d` without the bias, for the image reference's no-bias convolutions (BendTorch#39). The same
   `im2col` and `col2im` around `LinearNB`'s forward, backward and optimizer step; `P` is the `co x c*k*k` weight

@@ -11,6 +11,7 @@ compares both:
   c1  1 x 2 x 5 x 5, k 3, s 2   — windows overlap by one row and column
   c2  2 x 1 x 4 x 3, k 3, s 1   — every output overlaps its neighbours; two
       outputs can send gradient to the same input cell, and the backward adds
+  c4  1 x 1 x 2 x 3, k 2, s 1   — every cell -2e38, below a scan start constant
 
 The tie case is c2's value sequence plus the check's own: where two cells of a
 window are equal, PyTorch's index is the first in row-major order and the
@@ -89,6 +90,21 @@ def main():
     tie_ok = float(y.item()) == 1.0 and int(idx.item()) == 0 and x.grad[0, 0].flatten().tolist() == [1.0, 0.0, 0.0, 0.0]
     print(f"tie  torch index {int(idx.item())}, grad {x.grad[0, 0].flatten().tolist()}  {'ok' if tie_ok else 'FAIL'}")
     ok &= tie_ok
+
+    # c4: a window whose cells are all below the old -1e38 scan start.
+    # The maximum must be the cell value, never the constant, and each
+    # window's gradient must land inside that window.
+    c4_y, c4_dx = blocks["c4.y"], blocks["c4.dx"]
+    x4 = torch.full((1, 1, 2, 3), -2e38, requires_grad=True)
+    y4, i4 = F.max_pool2d(x4, kernel_size=2, stride=1, return_indices=True)
+    y4.backward(torch.tensor([[[[1.0, 2.0]]]]))
+    want_y4 = y4.permute(0, 2, 3, 1).reshape(-1).detach().numpy()
+    want_dx4 = x4.grad.permute(0, 2, 3, 1).reshape(-1).numpy()
+    c4_ok = (np.array_equal(c4_y, want_y4) and np.array_equal(c4_dx, want_dx4)
+             and want_dx4.tolist() == [1.0, 2.0, 0.0, 0.0, 0.0, 0.0])
+    print(f"c4   all cells -2e38  y {c4_y.tolist()}  dx {c4_dx.tolist()}  "
+          f"{'ok' if c4_ok else 'FAIL'}")
+    ok &= c4_ok
 
     print("PASS" if ok else "FAIL")
     sys.exit(0 if ok else 1)

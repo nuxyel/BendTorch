@@ -52,6 +52,9 @@ Numbers marked "busy machine" were taken with other jobs running and are a first
     positions a row can see (#28), so this holds for the output and dQ too, not only for dQ through the softmax's
     backward pass; on finite numbers nothing changed, bit for bit;
   - RMSNorm's dX and LayerNorm's output and dX stay finite where the squares overflow F32, where PyTorch gives NaN.
+  - `MaxPool2d` gives a number for a window holding a NaN: its scan compares with strict `>` and skips the NaN,
+    while PyTorch's `max_pool2d` returns NaN for that window. Matching PyTorch would need NaN propagation in
+    the scan, not a one-line change; recorded here instead.
 - Cross-entropy is log-softmax as PyTorch computes it since 2026-10-18; before, it took log(max(p, 1e-12)) and a row's
   loss stopped at 27.63 where PyTorch's kept growing (the gradient was right).
 - On the GPU, CUDA takes the float overload of `exp`, whose last bit differs from the host's on some inputs: SiLU

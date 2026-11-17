@@ -1,4 +1,4 @@
-# MaxPool2d probe: three shapes, each printing y and the backward's dX as raw words.
+# MaxPool2d probe: shapes and edge cases, each printing y and the backward's dX as raw words.
 # reference/maxpool_check.py compares both against F.max_pool2d(..., return_indices=True)
 # and its autograd, including a ties case and overlapping windows (s < k).
 #
@@ -77,9 +77,25 @@ def c3() -> IO(Unit):
     T.Layer.fwd(Unit, TA.Mat<4n, 1n>, TA.Mat<1n, 1n>, TA.Mat<4n, 1n>, c3_L(), Unit{},
       TA.Mat.from_list(4n, 1n, [1.0, 1.0, 0.0, 0.0])))
 
+# ---- c4: every cell is -2e38, 1 x 1 x 2 x 3, k 2, s 1 ----
+# The scan must start from the window's first cell, not a -1e38 constant:
+# y is [-2e38, -2e38] and the two windows' gradients land on cells 0/1 and 1/2.
+
+def c4_L() -> T.Layer<Unit, TA.Mat<6n, 1n>, TA.Mat<2n, 1n>, TA.Mat<6n, 1n>>:
+  T.MaxPool2d(1n, 1n, 2n, 3n, 2n, 1n)
+
+def c4() -> IO(Unit):
+  one(~6n, ~1n, ~2n, ~2n, ~1n, ~c4_L(), "c4",
+    TA.Mat.from_list(2n, 1n, [1.0, 2.0]),
+    T.Layer.fwd(Unit, TA.Mat<6n, 1n>, TA.Mat<2n, 1n>, TA.Mat<6n, 1n>, c4_L(), Unit{},
+      TA.Mat.from_list(6n, 1n, [(0.0 - 2.0e38 : F32), (0.0 - 2.0e38 : F32),
+        (0.0 - 2.0e38 : F32), (0.0 - 2.0e38 : F32),
+        (0.0 - 2.0e38 : F32), (0.0 - 2.0e38 : F32)])))
+
 def main() -> IO(Unit):
   do IO<Unit>:
     Unit <- c0()
     Unit <- c1()
     Unit <- c2()
-    c3()
+    Unit <- c3()
+    c4()
