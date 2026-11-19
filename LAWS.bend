@@ -570,3 +570,42 @@ law mp_scatter:
   {T.mp_flat(c, h, w, ch, image, Nat.add(row, ky), Nat.add(col, kx)) ==
    Nat.add(Nat.add(Nat.mul(Nat.mul(Nat.mul(image, h), w), c), ch),
      Nat.mul(Nat.add(Nat.mul(Nat.add(row, ky), w), Nat.add(col, kx)), c)) : Nat}
+
+# LAW (im2col1d_rows): im2col1d's gathered matrix has g·n·ot rows and cg·k columns, so its flat list holds
+# g·n·ot·cg·k numbers, every one of them the value of a sequence cell or 0 outside a padded window, for every
+# batch size, length, group count, channels per group, kernel, padding, stride and dilation.
+law im2col1d_rows:
+  for +n: Nat
+  for +t: Nat
+  for +g: Nat
+  for +cg: Nat
+  for +k1: Nat
+  for +p: Nat
+  for +s: Nat
+  for +d1: Nat
+  for arr: Array<F32>
+  {List.length(&2, F32, T.im2col1d_n(n, t, g, cg, k1, p, s, d1, arr)) ==
+    Nat.mul(Nat.mul(g, Nat.mul(n, T.ocount(t, p, T.c1eff(k1, d1), s))), Nat.mul(cg, Nat.add(1n, k1))) : Nat}
+
+# LAW (conv1d_roundtrip_window): the 1D round trip at any group, stride, dilation and padding, per cell.
+# Slot (lc, kt) of group gr at output position (b, ox) reads sequence cell (b, ox·s + kt·d - p), channel gr·cg + lc:
+# im2col1d reads that cell and col2im1d writes the gradient back into it, because both address it with p1_src.
+law conv1d_roundtrip_window:
+  for +gr: Nat
+  for +b: Nat
+  for +ox: Nat
+  for +lc: Nat
+  for +kt: Nat
+  for +t: Nat
+  for +g: Nat
+  for +cg: Nat
+  for +k: Nat
+  for +p: Nat
+  for +s: Nat
+  for +d: Nat
+  for +a: Nat
+  for +tx: Nat
+  for +kt_lt: {k == Nat.add(1n, Nat.add(kt, a)) : Nat}
+  for +pos_in: {Nat.add(Nat.mul(ox, s), Nat.mul(kt, d)) == Nat.add(p, tx) : Nat}
+  {T.p1_src(Nat.add(Nat.mul(lc, k), kt), gr, b, ox, t, g, cg, k, p, s, d) ==
+    U32.from_nat(Nat.add(Nat.mul(Nat.add(Nat.mul(b, t), tx), Nat.mul(g, cg)), Nat.add(Nat.mul(gr, cg), lc))) : U32}

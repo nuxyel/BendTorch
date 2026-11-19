@@ -1807,3 +1807,80 @@ def Laws.mp_scatter(c, h, w, ch, image, row, col, ky, kx):
           Equal.cong(Nat, Nat, z => Nat.add(AC, z), Nat.add(BC, ch), Nat.add(ch, BC),
             NL.add_comm(BC, ch)),
           NL.add_assoc(AC, ch, BC)))))
+
+# =====================================================================================================
+# Conv1d's laws (BendTorch#43): gathered element count and window round trip with groups and dilation
+# =====================================================================================================
+
+def gather1d_len(+left: Nat, +j: Nat, +n: Nat, +t: Nat, +g: Nat, +cg: Nat, +k: Nat, +p: Nat, +s: Nat, +d: Nat, +ot: Nat, +cgk: Nat, rc: Array<F32> & F32, +acc: List<&2, F32>) -> {List.length(&2, F32, T.gl_out(T.gather1d(left, j, n, t, g, cg, k, p, s, d, ot, cgk, rc, acc))) == Nat.add(left, List.length(&2, F32, acc)) : Nat}:
+  match left rc:
+    case 0n Tuple{arr, v}:
+      rev_len(acc)
+    case 1n Tuple{arr, v}:
+      rev_len(Con{v, acc})
+    case 2n+rest Tuple{arr, +v}:
+      +j2 = Nat.add(j, 1n)
+      +row = Nat.div(j2, cgk)
+      +i = Nat.mod(j2, cgk)
+      +m = Nat.mul(n, ot)
+      +gr = Nat.div(row, m)
+      +pos = Nat.mod(row, m)
+      +b = Nat.div(pos, ot)
+      +ox = Nat.mod(pos, ot)
+      Equal.trans(Nat,
+        List.length(&2, F32, T.gl_out(T.gather1d(1n+rest, j2, n, t, g, cg, k, p, s, d, ot, cgk,
+          T.p_rc(Bool.and(Nat.is_lt(gr, g), T.p1_ok(i, ox, t, k, p, s, d)), arr, T.p1_src(i, gr, b, ox, t, g, cg, k, p, s, d)), Con{v, acc}))),
+        Nat.add(1n+rest, Nat.add(1n, List.length(&2, F32, acc))),
+        Nat.add(2n+rest, List.length(&2, F32, acc)),
+        gather1d_len(1n+rest, j2, n, t, g, cg, k, p, s, d, ot, cgk,
+          T.p_rc(Bool.and(Nat.is_lt(gr, g), T.p1_ok(i, ox, t, k, p, s, d)), arr, T.p1_src(i, gr, b, ox, t, g, cg, k, p, s, d)), Con{v, acc}),
+        Equal.trans(Nat,
+          Nat.add(1n+rest, Nat.add(1n, List.length(&2, F32, acc))),
+          Nat.add(1n, Nat.add(1n+rest, List.length(&2, F32, acc))),
+          Nat.add(Nat.add(1n, 1n+rest), List.length(&2, F32, acc)),
+          Equal.sym(Nat, Nat.add(1n, Nat.add(1n+rest, List.length(&2, F32, acc))), Nat.add(1n+rest, Nat.add(1n, List.length(&2, F32, acc))), NL.add_succ(1n+rest, List.length(&2, F32, acc))),
+          Equal.sym(Nat, Nat.add(Nat.add(1n, 1n+rest), List.length(&2, F32, acc)), Nat.add(1n, Nat.add(1n+rest, List.length(&2, F32, acc))), NL.add_assoc(1n, 1n+rest, List.length(&2, F32, acc)))))
+
+# PROOF (im2col1d_rows): im2col1d_n gathers one number per step over the flat count g·n·ot·cg·k.
+def Laws.im2col1d_rows(n, t, g, cg, k1, p, s, d1, arr):
+  +k = Nat.add(1n, k1)
+  +d = Nat.add(1n, d1)
+  +ot = T.ocount(t, p, T.c1eff(k1, d1), s)
+  +cgk = Nat.mul(cg, k)
+  +tot = Nat.mul(Nat.mul(g, Nat.mul(n, ot)), cgk)
+  Equal.trans(Nat, List.length(&2, F32, T.im2col1d_n(n, t, g, cg, k1, p, s, d1, arr)), Nat.add(tot, 0n), tot,
+    gather1d_len(tot, 0n, n, t, g, cg, k, p, s, d, ot, cgk,
+      T.p_rc(Bool.and(Nat.is_lt(0n, g), T.p1_ok(0n, 0n, t, k, p, s, d)), arr, T.p1_src(0n, 0n, 0n, 0n, t, g, cg, k, p, s, d)), Nil{}),
+    NL.add_zero(tot))
+
+def p1_ix_win(+lc: Nat, +kt: Nat, +a: Nat, +k: Nat, +ox: Nat, +s: Nat, +d: Nat, +p: Nat, +tx: Nat,
+  +e1: {k == Nat.add(1n, Nat.add(kt, a)) : Nat},
+  +ex: {Nat.add(Nat.mul(ox, s), Nat.mul(kt, d)) == Nat.add(p, tx) : Nat}) ->
+  {T.p1_ix(Nat.add(Nat.mul(lc, k), kt), ox, k, p, s, d) == tx : Nat}:
+  Equal.trans(Nat,
+    Nat.sub(Nat.add(Nat.mul(ox, s), Nat.mul(T.p1_kt(Nat.add(Nat.mul(lc, k), kt), k), d)), p),
+    Nat.sub(Nat.add(Nat.mul(ox, s), Nat.mul(kt, d)), p),
+    tx,
+    Equal.cong(Nat, Nat, z => Nat.sub(Nat.add(Nat.mul(ox, s), Nat.mul(z, d)), p),
+      T.p1_kt(Nat.add(Nat.mul(lc, k), kt), k), kt, inner_mod(lc, kt, a, k, e1)),
+    Equal.trans(Nat,
+      Nat.sub(Nat.add(Nat.mul(ox, s), Nat.mul(kt, d)), p),
+      Nat.sub(Nat.add(p, tx), p),
+      tx,
+      Equal.cong(Nat, Nat, z => Nat.sub(z, p), Nat.add(Nat.mul(ox, s), Nat.mul(kt, d)), Nat.add(p, tx), ex),
+      sub_self_add(p, tx)))
+
+# PROOF (conv1d_roundtrip_window): p1_lc and p1_kt decode lc·k + kt back to lc and kt, and p1_ix subtracts p from ox·s + kt·d.
+def Laws.conv1d_roundtrip_window(gr, b, ox, lc, kt, t, g, cg, k, p, s, d, a, tx, kt_lt, pos_in):
+  +slot = Nat.add(Nat.mul(lc, k), kt)
+  Equal.cong(Nat, U32, z => U32.from_nat(z),
+    Nat.add(Nat.mul(Nat.add(Nat.mul(b, t), T.p1_ix(slot, ox, k, p, s, d)), Nat.mul(g, cg)), Nat.add(Nat.mul(gr, cg), T.p1_lc(slot, k))),
+    Nat.add(Nat.mul(Nat.add(Nat.mul(b, t), tx), Nat.mul(g, cg)), Nat.add(Nat.mul(gr, cg), lc)),
+    Equal.trans(Nat,
+      Nat.add(Nat.mul(Nat.add(Nat.mul(b, t), T.p1_ix(slot, ox, k, p, s, d)), Nat.mul(g, cg)), Nat.add(Nat.mul(gr, cg), T.p1_lc(slot, k))),
+      Nat.add(Nat.mul(Nat.add(Nat.mul(b, t), tx), Nat.mul(g, cg)), Nat.add(Nat.mul(gr, cg), T.p1_lc(slot, k))),
+      Nat.add(Nat.mul(Nat.add(Nat.mul(b, t), tx), Nat.mul(g, cg)), Nat.add(Nat.mul(gr, cg), lc)),
+      Equal.cong(Nat, Nat, z => Nat.add(Nat.mul(Nat.add(Nat.mul(b, t), z), Nat.mul(g, cg)), Nat.add(Nat.mul(gr, cg), T.p1_lc(slot, k))),
+        T.p1_ix(slot, ox, k, p, s, d), tx, p1_ix_win(lc, kt, a, k, ox, s, d, p, tx, kt_lt, pos_in)),
+      Equal.cong(Nat, Nat, z => Nat.add(Nat.mul(Nat.add(Nat.mul(b, t), tx), Nat.mul(g, cg)), Nat.add(Nat.mul(gr, cg), z)),
+        T.p1_lc(slot, k), lc, inner_div(lc, kt, a, k, kt_lt))))

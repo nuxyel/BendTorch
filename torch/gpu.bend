@@ -12,6 +12,7 @@
 # - SiLU, GELUErf, Mul2, Add2, Residual, Mat.dup and Mat.sum2: their element-wise loops.
 # - RMSNorm, RoPE, RoPE2d and Attention (main.bend's names; fast.bend's are main.bend's, on the CPU).
 # - im2col, col2im and Conv2d: the gather and its scatter as cell bangs, then the linear layer's three products.
+# - im2col1d, col2im1d, c1_fwd, c1_bwd and Conv1d: 1D gather/scatter and grouped forward/backward as cell bangs.
 # - Tile: its broadcast and the sum of its rows as cell bangs.
 # - MaxPool2d: its windows' maxima, and the sum of the gradients each input cell receives, as cell bangs.
 # - MSE, CrossEntropy and Embedding (its rows, its gradient and its step), so that a training step's work, the loss
@@ -2156,6 +2157,292 @@ def mp_bwd(+n: Nat, +c: Nat, +h: Nat, +w: Nat, +k: Nat, +s1: Nat, s: TA.Mat<Nat.
 # MaxPool2d): no parameters, and the input as the state
 def MaxPool2d(+n: Nat, +c: Nat, +hs: Nat, +ws: Nat, +k: Nat, +s1: Nat) -> T.Layer<Unit, TA.Mat<Nat.mul(n, Nat.mul(Nat.add(k, hs), Nat.add(k, ws))), c>, TA.Mat<Nat.mul(n, T.mp_ohw(Nat.add(k, hs), Nat.add(k, ws), k, Nat.add(1n, s1))), c>, TA.Mat<Nat.mul(n, Nat.mul(Nat.add(k, hs), Nat.add(k, ws))), c>>:
   T.Layer{u => x => mp_fwd(n, c, Nat.add(k, hs), Nat.add(k, ws), k, Nat.add(1n, s1), x), u => s => dy => g => mp_bwd(n, c, Nat.add(k, hs), Nat.add(k, ws), k, Nat.add(1n, s1), s, dy), op => p => g => st => T.no_step(Unit, op, p, g, st), u => Unit{}, p => T.PL{Unit{}, Nil{}}, p => xs => off => T.PA{Unit{}, xs, off}, p => xs => off => T.PA{Unit{}, xs, off}, u => 0}
+
+# ---- Conv1d on the device (main.bend's Conv1d) ----
+#
+# Device im2col1d, grouped forward/backward (exact main.bend dot/sum order, 0 ULPs on CPU and CUDA GPU) and device
+# col2im1d (per-input-cell gather in strictly increasing ox order). Parameters are Lin<cg·k, g·cog>, so lin_step and
+# main.bend's Lin helpers serve Conv1d unchanged for every group count g >= 1.
+
+type EIC1 is Data:
+  EIC1{n: U32, t: U32, g: U32, cg: U32, k: U32, p: U32, s: U32, d: U32, ek: U32, ot: U32, m: U32, cgk: U32}
+
+def eic1(+n: Nat, +t: Nat, +g: Nat, +cg: Nat, +k1: Nat, +p: Nat, +s: Nat, +d1: Nat) -> EIC1:
+  +k = Nat.add(1n, k1)
+  +d = Nat.add(1n, d1)
+  +ek = T.c1eff(k1, d1)
+  +ot = T.ocount(t, p, ek, s)
+  EIC1{U32.from_nat(n), U32.from_nat(t), U32.from_nat(g), U32.from_nat(cg), U32.from_nat(k), U32.from_nat(p), U32.from_nat(s), U32.from_nat(d), U32.from_nat(ek), U32.from_nat(ot), U32.from_nat(Nat.mul(n, ot)), U32.from_nat(Nat.mul(cg, k))}
+
+def eic1_n(+cfg: EIC1) -> U32:
+  match cfg:
+    case EIC1{+n, +t, +g, +cg, +k, +p, +s, +d, +ek, +ot, +m, +cgk}: ((g * m : U32) * cgk : U32)
+
+def i2c1_cell(+e: U32, +cfg: EIC1, st: CIC) -> CIC:
+  match cfg st:
+    case EIC1{+n, +t, +g, +cg, +k, +p, +s, +d, +ek, +ot, +m, +cgk} CIC{arr, o}:
+      +row = U32.div(e, cgk)
+      +i = U32.mod(e, cgk)
+      +gr = U32.div(row, m)
+      +pos = U32.mod(row, m)
+      +b = U32.div(pos, ot)
+      +ox = U32.mod(pos, ot)
+      +lc = U32.div(i, k)
+      +kt = U32.mod(i, k)
+      +raw = ((ox * s : U32) + (kt * d : U32) : U32)
+      +ix = (raw - p : U32)
+      +ci = (g * cg : U32)
+      +src = ((((b * t : U32) + ix : U32) * ci : U32) + ((gr * cg : U32) + lc : U32) : U32)
+      +ok = Bool.and(U32.is_lt(gr, g), Bool.and(U32.is_le(p, raw), U32.is_lt(ix, t)))
+      i2c_put(e, ok, src, CIC{arr, o})
+
+def i2c1_loop(k: Nat, +e: U32, +l: U32, +cfg: EIC1, st: CIC) -> CIC:
+  match k:
+    case 0n: st
+    case 1n+q: i2c1_loop(q, (e + l : U32), l, cfg, i2c1_cell(e, cfg, st))
+
+def lf_i2c1(+t: U32, +l: U32, +cfg: EIC1, x1: Array<F32>, x2: Array<F32>, x3: Array<F32>, x4: Array<F32>, o: Array<F32>) -> Array<F32>:
+  cic_o(i2c1_loop(TG.share(t, eic1_n(cfg), l), t, l, cfg, CIC{x1, o}))
+
+def i2c1_fin(-n: Nat, -t: Nat, -g: Nat, -cg: Nat, -k1: Nat, -p: Nat, -s: Nat, -d1: Nat, r: TG.R1) -> TA.Mat<Nat.mul(g, Nat.mul(n, T.ocount(t, p, T.c1eff(k1, d1), s))), Nat.mul(cg, Nat.add(1n, k1))>:
+  match r:
+    case TG.R1{x1, x2, x3, x4, a}: TA.Mat{a}
+
+def im2col1d(+n: Nat, +t: Nat, +g: Nat, +cg: Nat, +k1: Nat, +p: Nat, +s: Nat, +d1: Nat, x: TA.Mat<Nat.mul(n, t), Nat.mul(g, cg)>) -> TA.Mat<Nat.mul(g, Nat.mul(n, T.ocount(t, p, T.c1eff(k1, d1), s))), Nat.mul(cg, Nat.add(1n, k1))>:
+  match x:
+    case TA.Mat{arr}:
+      +tot = Nat.mul(Nat.mul(g, Nat.mul(n, T.ocount(t, p, T.c1eff(k1, d1), s))), Nat.mul(cg, Nat.add(1n, k1)))
+      i2c1_fin(n, t, g, cg, k1, p, s, d1, TG.run1_new(~EIC1, ~lf_i2c1, TG.depth(tot), eic1(n, t, g, cg, k1, p, s, d1), arr, nn(Unit{}), nn(Unit{}), nn(Unit{}), TA.cap_depth(tot)))
+
+# col2im1d on device: for input cell (b, ix, gr, lc), scan ox in [ox0 .. ox0 + ek - 1] in strictly increasing order
+def gi1_scan(k: Nat, +q: U32, +ox0: U32, +ix: U32, +b: U32, +gr: U32, +lc: U32, +cfg: EIC1, r: GIS) -> GIS:
+  match k cfg:
+    case 0n _: r
+    case 1n+rest EIC1{+n, +t, +g, +cg, +kn, +p, +s, +d, +ek, +ot, +m, +cgk}:
+      +ox = (ox0 + q : U32)
+      +mx = (ox * s : U32)
+      +mt = (ix + p : U32)
+      +rem = (mt - mx : U32)
+      +ok = Bool.and(Bool.and(U32.is_lt(ox, ot), U32.is_le(mx, mt)), Bool.and(U32.is_lt(rem, ek), U32.is_eq(U32.mod(rem, d), 0)))
+      +kt = U32.div(rem, d)
+      +row = ((gr * m : U32) + ((b * ot : U32) + ox : U32) : U32)
+      +j = ((row * cgk : U32) + ((lc * kn : U32) + kt : U32) : U32)
+      gi1_scan(rest, (q + 1 : U32), ox0, ix, b, gr, lc, cfg, gi_add(ok, j, r))
+
+def gi1_cell(+e: U32, +cfg: EIC1, st: CIC) -> CIC:
+  match cfg st:
+    case EIC1{+n, +t, +g, +cg, +k, +p, +s, +d, +ek, +ot, +m, +cgk} CIC{arr, o}:
+      +ci = (g * cg : U32)
+      +ch = U32.mod(e, ci)
+      +q = U32.div(e, ci)
+      +ix = U32.mod(q, t)
+      +b = U32.div(q, t)
+      +gr = U32.div(ch, cg)
+      +lc = U32.mod(ch, cg)
+      +mt = (ix + p : U32)
+      +ox0 = Bool.pick(U32, U32.is_lt(mt, ek), 0, U32.div(((mt + s : U32) - ek : U32), s))
+      gis_set(e, gi1_scan(U32.to_nat(ek), 0, ox0, ix, b, gr, lc, cfg, GIS{arr, o, 0.0}))
+
+def gi1_loop(k: Nat, +e: U32, +l: U32, +cfg: EIC1, st: CIC) -> CIC:
+  match k:
+    case 0n: st
+    case 1n+q: gi1_loop(q, (e + l : U32), l, cfg, gi1_cell(e, cfg, st))
+
+def gi1_n(+cfg: EIC1) -> U32:
+  match cfg:
+    case EIC1{+n, +t, +g, +cg, +k, +p, +s, +d, +ek, +ot, +m, +cgk}: (((n * t : U32) * g : U32) * cg : U32)
+
+def lf_gi1(+t: U32, +l: U32, +cfg: EIC1, x1: Array<F32>, x2: Array<F32>, x3: Array<F32>, x4: Array<F32>, o: Array<F32>) -> Array<F32>:
+  cic_o(gi1_loop(TG.share(t, gi1_n(cfg), l), t, l, cfg, CIC{x1, o}))
+
+def gi1_fin(-n: Nat, -t: Nat, -g: Nat, -cg: Nat, r: TG.R1) -> TA.Mat<Nat.mul(n, t), Nat.mul(g, cg)>:
+  match r:
+    case TG.R1{x1, x2, x3, x4, a}: TA.Mat{a}
+
+def col2im1d(+n: Nat, +t: Nat, +g: Nat, +cg: Nat, +k1: Nat, +p: Nat, +s: Nat, +d1: Nat, dp: TA.Mat<Nat.mul(g, Nat.mul(n, T.ocount(t, p, T.c1eff(k1, d1), s))), Nat.mul(cg, Nat.add(1n, k1))>) -> TA.Mat<Nat.mul(n, t), Nat.mul(g, cg)>:
+  match dp:
+    case TA.Mat{arr}:
+      +sz = Nat.mul(Nat.mul(n, t), Nat.mul(g, cg))
+      gi1_fin(n, t, g, cg, TG.run1_new(~EIC1, ~lf_gi1, TG.depth(sz), eic1(n, t, g, cg, k1, p, s, d1), arr, nn(Unit{}), nn(Unit{}), nn(Unit{}), TA.cap_depth(sz)))
+
+# Grouped forward and backward kernels on device
+type EC1G is Data:
+  EC1G{m: U32, g: U32, cgk: U32, cog: U32, co: U32}
+
+def ec1g(+m: Nat, +g: Nat, +cgk: Nat, +cog: Nat) -> EC1G:
+  EC1G{U32.from_nat(m), U32.from_nat(g), U32.from_nat(cgk), U32.from_nat(cog), U32.from_nat(Nat.mul(g, cog))}
+
+def gc1f_cell(+e: U32, +cfg: EC1G, st: T.C1F) -> T.C1F:
+  match cfg st:
+    case EC1G{+m, +g, +cgk, +cog, +co} T.C1F{p, w, b, o}:
+      +pos = U32.div(e, co)
+      +oc = U32.mod(e, co)
+      +gr = U32.div(oc, cog)
+      +p0 = (((gr * m : U32) + pos : U32) * cgk : U32)
+      +w0 = (oc * cgk : U32)
+      T.c1_f_put(e, Array.get(F32, b, oc), T.c1_dot(U32.to_nat(cgk), p0, 1, w0, 1, T.C1Dot{p, w, 0.0}), o)
+
+def gc1f_loop(k: Nat, +e: U32, +l: U32, +cfg: EC1G, st: T.C1F) -> T.C1F:
+  match k:
+    case 0n: st
+    case 1n+q: gc1f_loop(q, (e + l : U32), l, cfg, gc1f_cell(e, cfg, st))
+
+def gc1f_o(st: T.C1F) -> Array<F32>:
+  match st:
+    case T.C1F{p, w, b, o}: o
+
+def ec1g_fn(+cfg: EC1G) -> U32:
+  match cfg:
+    case EC1G{+m, +g, +cgk, +cog, +co}: (m * co : U32)
+
+def lf_c1f(+t: U32, +l: U32, +cfg: EC1G, x1: Array<F32>, x2: Array<F32>, x3: Array<F32>, x4: Array<F32>, o: Array<F32>) -> Array<F32>:
+  gc1f_o(gc1f_loop(TG.share(t, ec1g_fn(cfg), l), t, l, cfg, T.C1F{x1, x2, x3, o}))
+
+def gc1f_fin(-m: Nat, -g: Nat, -cgk: Nat, -cog: Nat, r: TG.R1) -> T.Fwd<T.Lin<cgk, Nat.mul(g, cog)>, TA.Mat<m, Nat.mul(g, cog)>, TA.Mat<Nat.mul(g, m), cgk>>:
+  match r:
+    case TG.R1{p, w, b, x4, y}: T.Fwd{T.Lin{TA.Mat{w}, TA.Mat{b}}, TA.Mat{y}, TA.Mat{p}}
+
+def c1_fwd(+m: Nat, +g: Nat, +cgk: Nat, +cog: Nat, prm: T.Lin<cgk, Nat.mul(g, cog)>, patches: TA.Mat<Nat.mul(g, m), cgk>) -> T.Fwd<T.Lin<cgk, Nat.mul(g, cog)>, TA.Mat<m, Nat.mul(g, cog)>, TA.Mat<Nat.mul(g, m), cgk>>:
+  match prm patches:
+    case T.Lin{TA.Mat{w}, TA.Mat{b}} TA.Mat{p}:
+      +out_n = Nat.mul(m, Nat.mul(g, cog))
+      gc1f_fin(m, g, cgk, cog, TG.run1_new(~EC1G, ~lf_c1f, TG.depth(out_n), ec1g(m, g, cgk, cog), p, w, b, nn(Unit{}), TA.cap_depth(out_n)))
+
+# dP kernel
+def gc1dp_cell(+e: U32, +cfg: EC1G, st: T.C1S3) -> T.C1S3:
+  match cfg st:
+    case EC1G{+m, +g, +cgk, +cog, +co} T.C1S3{dy, w, o}:
+      +row = U32.div(e, cgk)
+      +i = U32.mod(e, cgk)
+      +gr = U32.div(row, m)
+      +pos = U32.mod(row, m)
+      +dy0 = ((pos * co : U32) + (gr * cog : U32) : U32)
+      +w0 = (((gr * cog : U32) * cgk : U32) + i : U32)
+      T.c1_dp_put(e, T.c1_dot(U32.to_nat(cog), dy0, 1, w0, cgk, T.C1Dot{dy, w, 0.0}), o)
+
+def gc1dp_loop(k: Nat, +e: U32, +l: U32, +cfg: EC1G, st: T.C1S3) -> T.C1S3:
+  match k:
+    case 0n: st
+    case 1n+q: gc1dp_loop(q, (e + l : U32), l, cfg, gc1dp_cell(e, cfg, st))
+
+def gc1s3_o(st: T.C1S3) -> Array<F32>:
+  match st:
+    case T.C1S3{a, b, o}: o
+
+def ec1g_dpn(+cfg: EC1G) -> U32:
+  match cfg:
+    case EC1G{+m, +g, +cgk, +cog, +co}: ((g * m : U32) * cgk : U32)
+
+def lf_c1dp(+t: U32, +l: U32, +cfg: EC1G, x1: Array<F32>, x2: Array<F32>, x3: Array<F32>, x4: Array<F32>, o: Array<F32>) -> Array<F32>:
+  gc1s3_o(gc1dp_loop(TG.share(t, ec1g_dpn(cfg), l), t, l, cfg, T.C1S3{x1, x2, o}))
+
+# dW kernel (reads old gw from x3, writes gw + dW into o)
+type GC1DW is Type:
+  GC1DW{dy: Array<F32>, p: Array<F32>, gw: Array<F32>, o: Array<F32>}
+
+def gc1dw_put(+e: U32, rg: Array<F32> & F32, d: T.C1Dot, o: Array<F32>) -> GC1DW:
+  match rg d:
+    case Tuple{gw, +old} T.C1Dot{dy, p, +acc}:
+      GC1DW{dy, p, gw, Array.set(F32, o, e, (old + acc : F32))}
+
+def gc1dw_cell(+e: U32, +cfg: EC1G, st: GC1DW) -> GC1DW:
+  match cfg st:
+    case EC1G{+m, +g, +cgk, +cog, +co} GC1DW{dy, p, gw, o}:
+      +oc = U32.div(e, cgk)
+      +i = U32.mod(e, cgk)
+      +gr = U32.div(oc, cog)
+      +p0 = (((gr * m : U32) * cgk : U32) + i : U32)
+      gc1dw_put(e, Array.get(F32, gw, e), T.c1_dot(U32.to_nat(m), oc, co, p0, cgk, T.C1Dot{dy, p, 0.0}), o)
+
+def gc1dw_loop(k: Nat, +e: U32, +l: U32, +cfg: EC1G, st: GC1DW) -> GC1DW:
+  match k:
+    case 0n: st
+    case 1n+q: gc1dw_loop(q, (e + l : U32), l, cfg, gc1dw_cell(e, cfg, st))
+
+def gc1dw_o(st: GC1DW) -> Array<F32>:
+  match st:
+    case GC1DW{dy, p, gw, o}: o
+
+def ec1g_dwn(+cfg: EC1G) -> U32:
+  match cfg:
+    case EC1G{+m, +g, +cgk, +cog, +co}: (co * cgk : U32)
+
+def lf_c1dw(+t: U32, +l: U32, +cfg: EC1G, x1: Array<F32>, x2: Array<F32>, x3: Array<F32>, x4: Array<F32>, o: Array<F32>) -> Array<F32>:
+  gc1dw_o(gc1dw_loop(TG.share(t, ec1g_dwn(cfg), l), t, l, cfg, GC1DW{x1, x2, x3, o}))
+
+# db kernel (reads old gb from x2, writes gb + db into o)
+type GC1DB is Type:
+  GC1DB{dy: Array<F32>, gb: Array<F32>, o: Array<F32>}
+
+def gc1db_put(+oc: U32, rg: Array<F32> & F32, c: T.C1Col, o: Array<F32>) -> GC1DB:
+  match rg c:
+    case Tuple{gb, +old} T.C1Col{dy, +acc}:
+      GC1DB{dy, gb, Array.set(F32, o, oc, (old + acc : F32))}
+
+def gc1db_cell(+oc: U32, +cfg: EC1G, st: GC1DB) -> GC1DB:
+  match cfg st:
+    case EC1G{+m, +g, +cgk, +cog, +co} GC1DB{dy, gb, o}:
+      gc1db_put(oc, Array.get(F32, gb, oc), T.c1_col_sum(U32.to_nat(m), oc, co, T.C1Col{dy, 0.0}), o)
+
+def gc1db_loop(k: Nat, +e: U32, +l: U32, +cfg: EC1G, st: GC1DB) -> GC1DB:
+  match k:
+    case 0n: st
+    case 1n+q: gc1db_loop(q, (e + l : U32), l, cfg, gc1db_cell(e, cfg, st))
+
+def gc1db_o(st: GC1DB) -> Array<F32>:
+  match st:
+    case GC1DB{dy, gb, o}: o
+
+def ec1g_dbn(+cfg: EC1G) -> U32:
+  match cfg:
+    case EC1G{+m, +g, +cgk, +cog, +co}: co
+
+def lf_c1db(+t: U32, +l: U32, +cfg: EC1G, x1: Array<F32>, x2: Array<F32>, x3: Array<F32>, x4: Array<F32>, o: Array<F32>) -> Array<F32>:
+  gc1db_o(gc1db_loop(TG.share(t, ec1g_dbn(cfg), l), t, l, cfg, GC1DB{x1, x2, o}))
+
+def gc1_b4(-m: Nat, -g: Nat, -cgk: Nat, -cog: Nat, w: Array<F32>, b: Array<F32>, dp: Array<F32>, gw: Array<F32>, r: TG.R1) -> T.Bwd<T.Lin<cgk, Nat.mul(g, cog)>, TA.Mat<Nat.mul(g, m), cgk>>:
+  match r:
+    case TG.R1{dy, old_gb, x3, x4, gb}:
+      T.Bwd{T.Lin{TA.Mat{w}, TA.Mat{b}}, TA.Mat{dp}, T.Lin{TA.Mat{gw}, TA.Mat{gb}}}
+
+def gc1_b3(+m: Nat, +g: Nat, +cgk: Nat, +cog: Nat, w: Array<F32>, b: Array<F32>, dp: Array<F32>, gb: Array<F32>, r: TG.R1) -> T.Bwd<T.Lin<cgk, Nat.mul(g, cog)>, TA.Mat<Nat.mul(g, m), cgk>>:
+  match r:
+    case TG.R1{dy, p, old_gw, x4, gw}:
+      +co = Nat.mul(g, cog)
+      gc1_b4(m, g, cgk, cog, w, b, dp, gw,
+        TG.run1_new(~EC1G, ~lf_c1db, TG.depth(co), ec1g(m, g, cgk, cog), dy, gb, nn(Unit{}), nn(Unit{}), TA.cap_depth(co)))
+
+def gc1_b2(+m: Nat, +g: Nat, +cgk: Nat, +cog: Nat, b: Array<F32>, p: Array<F32>, gw: Array<F32>, gb: Array<F32>, r: TG.R1) -> T.Bwd<T.Lin<cgk, Nat.mul(g, cog)>, TA.Mat<Nat.mul(g, m), cgk>>:
+  match r:
+    case TG.R1{dy, w, x3, x4, dp}:
+      +dw_n = Nat.mul(Nat.mul(g, cog), cgk)
+      gc1_b3(m, g, cgk, cog, w, b, dp, gb,
+        TG.run1_new(~EC1G, ~lf_c1dw, TG.depth(dw_n), ec1g(m, g, cgk, cog), dy, p, gw, nn(Unit{}), TA.cap_depth(dw_n)))
+
+def c1_bwd(+m: Nat, +g: Nat, +cgk: Nat, +cog: Nat, prm: T.Lin<cgk, Nat.mul(g, cog)>, patches: TA.Mat<Nat.mul(g, m), cgk>, dy: TA.Mat<m, Nat.mul(g, cog)>, gg: T.Lin<cgk, Nat.mul(g, cog)>) -> T.Bwd<T.Lin<cgk, Nat.mul(g, cog)>, TA.Mat<Nat.mul(g, m), cgk>>:
+  match prm patches dy gg:
+    case T.Lin{TA.Mat{w}, TA.Mat{b}} TA.Mat{p} TA.Mat{dya} T.Lin{TA.Mat{gw}, TA.Mat{gb}}:
+      +dp_n = Nat.mul(Nat.mul(g, m), cgk)
+      gc1_b2(m, g, cgk, cog, b, p, gw, gb,
+        TG.run1_new(~EC1G, ~lf_c1dp, TG.depth(dp_n), ec1g(m, g, cgk, cog), dya, w, nn(Unit{}), nn(Unit{}), TA.cap_depth(dp_n)))
+
+def conv1d_b2(+n: Nat, +g1: Nat, +cg: Nat, +cog: Nat, +k1: Nat, +ts: Nat, +p: Nat, +s1: Nat, +d1: Nat, b: T.Bwd<T.Lin<T.c1k(cg, k1), T.c1ch(g1, cog)>, TA.Mat<Nat.mul(Nat.add(1n, g1), Nat.mul(n, T.c1out(k1, d1, ts, p, s1))), T.c1k(cg, k1)>>) -> T.Bwd<T.Lin<T.c1k(cg, k1), T.c1ch(g1, cog)>, TA.Mat<Nat.mul(n, T.c1len(k1, d1, ts, p)), T.c1ch(g1, cg)>>:
+  match b:
+    case T.Bwd{prm, dx, gg}:
+      T.Bwd{prm, col2im1d(n, T.c1len(k1, d1, ts, p), Nat.add(1n, g1), cg, k1, p, Nat.add(1n, s1), d1, dx), gg}
+
+def Conv1d(+n: Nat, +g1: Nat, +cg: Nat, +cog: Nat, +k1: Nat, +ts: Nat, +p: Nat, +s1: Nat, +d1: Nat, +par: Nat) -> T.Layer<T.Lin<T.c1k(cg, k1), T.c1ch(g1, cog)>, TA.Mat<Nat.mul(n, T.c1len(k1, d1, ts, p)), T.c1ch(g1, cg)>, TA.Mat<Nat.mul(n, T.c1out(k1, d1, ts, p, s1)), T.c1ch(g1, cog)>, TA.Mat<Nat.mul(Nat.add(1n, g1), Nat.mul(n, T.c1out(k1, d1, ts, p, s1))), T.c1k(cg, k1)>>:
+  T.Layer{
+    prm => x => c1_fwd(Nat.mul(n, T.c1out(k1, d1, ts, p, s1)), Nat.add(1n, g1), T.c1k(cg, k1), cog, prm,
+      im2col1d(n, T.c1len(k1, d1, ts, p), Nat.add(1n, g1), cg, k1, p, Nat.add(1n, s1), d1, x)),
+    prm => st => dy => gg => conv1d_b2(n, g1, cg, cog, k1, ts, p, s1, d1,
+      c1_bwd(Nat.mul(n, T.c1out(k1, d1, ts, p, s1)), Nat.add(1n, g1), T.c1k(cg, k1), cog, prm, st, dy, gg)),
+    op => prm => gg => st => lin_step(T.c1k(cg, k1), T.c1ch(g1, cog), op, prm, gg, st),
+    u => T.lin_zeros(T.c1k(cg, k1), T.c1ch(g1, cog)),
+    prm => T.lin_dump(T.c1k(cg, k1), T.c1ch(g1, cog), prm),
+    prm => xs => off => T.lin_load(T.c1k(cg, k1), T.c1ch(g1, cog), prm, xs, off),
+    prm => xs => off => T.lin_store(T.c1k(cg, k1), T.c1ch(g1, cog), prm, xs, off),
+    u => U32.from_nat(Nat.mul(T.c1ch(g1, cog), Nat.add(1n, T.c1k(cg, k1))))}
 
 # ---- main.bend's names for the same layers (#13) ----
 #

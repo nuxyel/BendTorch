@@ -3729,6 +3729,273 @@ def Conv2dNB(+n: Nat, +c: Nat, +co: Nat, +k: Nat, +hs: Nat, +ws: Nat, +p: Nat, +
     prm => xs => off => Mat.store(co, ckk(c, k), prm, xs, off),
     u => U32.from_nat(Nat.mul(co, ckk(c, k)))}
 
+# ---- Conv1d ----
+#
+# General 1D convolution with groups, stride, dilation and symmetric zero padding, built the way Conv2d is:
+# im2col1d gathers each group's windows into a patch matrix [g·n·ot, cg·k], the grouped linear step computes
+# forward / backward over P = Lin<cg·k, g·cog> (PyTorch's [C_out, C_in/groups, K] weight layout and [C_out] bias),
+# and col2im1d scatters the patch gradient back into [n·t, g·cg]. Keeping P = Lin<cg·k, g·cog> means lin_step,
+# lin_zeros, lin_dump, lin_load, lin_store, gradient accumulation and checkpoints serve Conv1d unchanged for every
+# group count g >= 1 (g = 1 standard, 1 < g < C grouped, cg = cog = 1 depthwise).
+#
+# Sizes are positive by construction: g = 1 + g1, k = 1 + k1, s = 1 + s1, d = 1 + d1. The effective dilated
+# kernel span is eff_k = 1 + d·k1, and the sequence length follows from the padded surplus ts: t = eff_k + ts - 2p,
+# so a dilated window wider than the padded sequence cannot be written.
+
+def c1eff(+k1: Nat, +d1: Nat) -> Nat:
+  Nat.add(1n, Nat.mul(Nat.add(1n, d1), k1))
+
+def c1len(+k1: Nat, +d1: Nat, +ts: Nat, +p: Nat) -> Nat:
+  Nat.sub(Nat.add(c1eff(k1, d1), ts), Nat.mul(2n, p))
+
+def c1out(+k1: Nat, +d1: Nat, +ts: Nat, +p: Nat, +s1: Nat) -> Nat:
+  ocount(c1len(k1, d1, ts, p), p, c1eff(k1, d1), Nat.add(1n, s1))
+
+def c1ch(+g1: Nat, +cg: Nat) -> Nat:
+  Nat.mul(Nat.add(1n, g1), cg)
+
+def c1k(+cg: Nat, +k1: Nat) -> Nat:
+  Nat.mul(cg, Nat.add(1n, k1))
+
+# Patch slot i in 0..cg·k-1: local channel lc = i / k, kernel tap kt = i mod k.
+def p1_lc(+i: Nat, +k: Nat) -> Nat:
+  Nat.div(i, k)
+
+def p1_kt(+i: Nat, +k: Nat) -> Nat:
+  Nat.mod(i, k)
+
+def p1_ix(+i: Nat, +ox: Nat, +k: Nat, +p: Nat, +s: Nat, +d: Nat) -> Nat:
+  Nat.sub(Nat.add(Nat.mul(ox, s), Nat.mul(p1_kt(i, k), d)), p)
+
+def p1_ok(+i: Nat, +ox: Nat, +t: Nat, +k: Nat, +p: Nat, +s: Nat, +d: Nat) -> Bool:
+  Bool.and(Nat.is_le(p, Nat.add(Nat.mul(ox, s), Nat.mul(p1_kt(i, k), d))), Nat.is_lt(p1_ix(i, ox, k, p, s, d), t))
+
+def p1_src(+i: Nat, +gr: Nat, +b: Nat, +ox: Nat, +t: Nat, +g: Nat, +cg: Nat, +k: Nat, +p: Nat, +s: Nat, +d: Nat) -> U32:
+  U32.from_nat(Nat.add(Nat.mul(Nat.add(Nat.mul(b, t), p1_ix(i, ox, k, p, s, d)), Nat.mul(g, cg)), Nat.add(Nat.mul(gr, cg), p1_lc(i, k))))
+
+def gather1d(+left: Nat, +j: Nat, +n: Nat, +t: Nat, +g: Nat, +cg: Nat, +k: Nat, +p: Nat, +s: Nat, +d: Nat, +ot: Nat, +cgk: Nat, rc: Array<F32> & F32, +acc: List<&2, F32>) -> GL:
+  match left rc:
+    case 0n Tuple{arr, v}:
+      GL{arr, acc}
+    case 1n Tuple{arr, +v}:
+      GL{arr, Con{v, acc}}
+    case 1n+rest Tuple{arr, +v}:
+      +j2 = Nat.add(j, 1n)
+      +row = Nat.div(j2, cgk)
+      +i = Nat.mod(j2, cgk)
+      +m = Nat.mul(n, ot)
+      +gr = Nat.div(row, m)
+      +pos = Nat.mod(row, m)
+      +b = Nat.div(pos, ot)
+      +ox = Nat.mod(pos, ot)
+      gather1d(rest, j2, n, t, g, cg, k, p, s, d, ot, cgk,
+        p_rc(Bool.and(Nat.is_lt(gr, g), p1_ok(i, ox, t, k, p, s, d)), arr,
+          p1_src(i, gr, b, ox, t, g, cg, k, p, s, d)), Con{v, acc})
+
+def im2col1d_n(+n: Nat, +t: Nat, +g: Nat, +cg: Nat, +k1: Nat, +p: Nat, +s: Nat, +d1: Nat, arr: Array<F32>) -> List<&2, F32>:
+  +k = Nat.add(1n, k1)
+  +d = Nat.add(1n, d1)
+  +ot = ocount(t, p, c1eff(k1, d1), s)
+  +cgk = Nat.mul(cg, k)
+  gl_out(gather1d(Nat.mul(Nat.mul(g, Nat.mul(n, ot)), cgk), 0n, n, t, g, cg, k, p, s, d, ot, cgk,
+    p_rc(Bool.and(Nat.is_lt(0n, g), p1_ok(0n, 0n, t, k, p, s, d)), arr, p1_src(0n, 0n, 0n, 0n, t, g, cg, k, p, s, d)), Nil{}))
+
+def im2col1d(+n: Nat, +t: Nat, +g: Nat, +cg: Nat, +k1: Nat, +p: Nat, +s: Nat, +d1: Nat, x: TA.Mat<Nat.mul(n, t), Nat.mul(g, cg)>) -> TA.Mat<Nat.mul(g, Nat.mul(n, ocount(t, p, c1eff(k1, d1), s))), Nat.mul(cg, Nat.add(1n, k1))>:
+  match x:
+    case TA.Mat{arr}:
+      TA.Mat.from_list(Nat.mul(g, Nat.mul(n, ocount(t, p, c1eff(k1, d1), s))), Nat.mul(cg, Nat.add(1n, k1)), im2col1d_n(n, t, g, cg, k1, p, s, d1, arr))
+
+def c1_c2_go(+left: Nat, +j: Nat, +n: Nat, +t: Nat, +g: Nat, +cg: Nat, +k: Nat, +p: Nat, +s: Nat, +d: Nat, +ot: Nat, +m: Nat, +cgk: Nat, +total: Nat, dp: Array<F32> & F32, acc: Array<F32>) -> Array<F32>:
+  match left dp:
+    case 0n Tuple{arr, v}:
+      acc
+    case 1n+rest Tuple{dp2, +v}:
+      +row = Nat.div(j, cgk)
+      +i = Nat.mod(j, cgk)
+      +gr = Nat.div(row, m)
+      +pos = Nat.mod(row, m)
+      +b = Nat.div(pos, ot)
+      +ox = Nat.mod(pos, ot)
+      +j2 = Nat.add(j, 1n)
+      c1_c2_go(rest, j2, n, t, g, cg, k, p, s, d, ot, m, cgk, total,
+        Array.get(F32, dp2, U32.from_nat(Nat.mod(j2, total))),
+        add_if(Bool.and(Nat.is_lt(gr, g), p1_ok(i, ox, t, k, p, s, d)),
+          p1_src(i, gr, b, ox, t, g, cg, k, p, s, d), v, acc))
+
+def col2im1d(+n: Nat, +t: Nat, +g: Nat, +cg: Nat, +k1: Nat, +p: Nat, +s: Nat, +d1: Nat, dp: TA.Mat<Nat.mul(g, Nat.mul(n, ocount(t, p, c1eff(k1, d1), s))), Nat.mul(cg, Nat.add(1n, k1))>) -> TA.Mat<Nat.mul(n, t), Nat.mul(g, cg)>:
+  match dp:
+    case TA.Mat{arr}:
+      +k = Nat.add(1n, k1)
+      +d = Nat.add(1n, d1)
+      +ot = ocount(t, p, c1eff(k1, d1), s)
+      +m = Nat.mul(n, ot)
+      +cgk = Nat.mul(cg, k)
+      +total = Nat.mul(Nat.mul(g, m), cgk)
+      +size = Nat.mul(Nat.mul(n, t), Nat.mul(g, cg))
+      TA.Mat{c1_c2_go(total, 0n, n, t, g, cg, k, p, s, d, ot, m, cgk, total,
+        Array.get(F32, arr, 0),
+        Array.new(F32, TA.cap_depth(size), 0.0))}
+
+# Grouped linear forward and backward over patches [g·m, cgk], W [g·cog, cgk], b [1, g·cog].
+type C1Dot is Type:
+  C1Dot{a: Array<F32>, b: Array<F32>, acc: F32}
+
+def c1_dot_step(ra: Array<F32> & F32, rb: Array<F32> & F32, +acc: F32) -> C1Dot:
+  match ra rb:
+    case Tuple{a, +va} Tuple{b, +vb}:
+      C1Dot{a, b, (acc + (va * vb : F32) : F32)}
+
+def c1_dot(left: Nat, +ia: U32, +sa: U32, +ib: U32, +sb: U32, r: C1Dot) -> C1Dot:
+  match left r:
+    case 0n st: st
+    case 1n+q C1Dot{a, b, +acc}:
+      c1_dot(q, (ia + sa : U32), sa, (ib + sb : U32), sb,
+        c1_dot_step(Array.get(F32, a, ia), Array.get(F32, b, ib), acc))
+
+type C1F is Type:
+  C1F{p: Array<F32>, w: Array<F32>, b: Array<F32>, o: Array<F32>}
+
+def c1_f_put(+e: U32, rb: Array<F32> & F32, d: C1Dot, o: Array<F32>) -> C1F:
+  match rb d:
+    case Tuple{b, +bv} C1Dot{p, w, +acc}:
+      C1F{p, w, b, Array.set(F32, o, e, (acc + bv : F32))}
+
+def c1_f_loop(left: Nat, +e: U32, +m: U32, +co: U32, +cog: U32, +cgk: Nat, +cgku: U32, st: C1F) -> C1F:
+  match left st:
+    case 0n s: s
+    case 1n+q C1F{p, w, b, o}:
+      +pos = U32.div(e, co)
+      +oc = U32.mod(e, co)
+      +gr = U32.div(oc, cog)
+      +p0 = (((gr * m : U32) + pos : U32) * cgku : U32)
+      +w0 = (oc * cgku : U32)
+      c1_f_loop(q, (e + 1 : U32), m, co, cog, cgk, cgku,
+        c1_f_put(e, Array.get(F32, b, oc), c1_dot(cgk, p0, 1, w0, 1, C1Dot{p, w, 0.0}), o))
+
+def c1_f_fin(-m: Nat, -g: Nat, -cgk: Nat, -cog: Nat, st: C1F) -> Fwd<Lin<cgk, Nat.mul(g, cog)>, TA.Mat<m, Nat.mul(g, cog)>, TA.Mat<Nat.mul(g, m), cgk>>:
+  match st:
+    case C1F{p, w, b, o}:
+      Fwd{Lin{TA.Mat{w}, TA.Mat{b}}, TA.Mat{o}, TA.Mat{p}}
+
+def c1_fwd(+m: Nat, +g: Nat, +cgk: Nat, +cog: Nat, prm: Lin<cgk, Nat.mul(g, cog)>, patches: TA.Mat<Nat.mul(g, m), cgk>) -> Fwd<Lin<cgk, Nat.mul(g, cog)>, TA.Mat<m, Nat.mul(g, cog)>, TA.Mat<Nat.mul(g, m), cgk>>:
+  match prm patches:
+    case Lin{TA.Mat{w}, TA.Mat{b}} TA.Mat{p}:
+      +co = Nat.mul(g, cog)
+      +out_n = Nat.mul(m, co)
+      c1_f_fin(m, g, cgk, cog,
+        c1_f_loop(out_n, 0, U32.from_nat(m), U32.from_nat(co), U32.from_nat(cog), cgk, U32.from_nat(cgk),
+          C1F{p, w, b, Array.new(F32, TA.cap_depth(out_n), 0.0)}))
+
+type C1S3 is Type:
+  C1S3{a: Array<F32>, b: Array<F32>, o: Array<F32>}
+
+def c1_dp_put(+e: U32, d: C1Dot, o: Array<F32>) -> C1S3:
+  match d:
+    case C1Dot{dy, w, +acc}:
+      C1S3{dy, w, Array.set(F32, o, e, acc)}
+
+def c1_dp_loop(left: Nat, +e: U32, +m: U32, +co: U32, +cog: Nat, +cogu: U32, +cgku: U32, st: C1S3) -> C1S3:
+  match left st:
+    case 0n s: s
+    case 1n+q C1S3{dy, w, o}:
+      +row = U32.div(e, cgku)
+      +i = U32.mod(e, cgku)
+      +gr = U32.div(row, m)
+      +pos = U32.mod(row, m)
+      +dy0 = ((pos * co : U32) + (gr * cogu : U32) : U32)
+      +w0 = (((gr * cogu : U32) * cgku : U32) + i : U32)
+      c1_dp_loop(q, (e + 1 : U32), m, co, cog, cogu, cgku,
+        c1_dp_put(e, c1_dot(cog, dy0, 1, w0, cgku, C1Dot{dy, w, 0.0}), o))
+
+def c1_dw_put(+e: U32, rg: Array<F32> & F32, d: C1Dot) -> C1S3:
+  match rg d:
+    case Tuple{gw, +old} C1Dot{dy, p, +acc}:
+      C1S3{dy, p, Array.set(F32, gw, e, (old + acc : F32))}
+
+def c1_dw_loop(left: Nat, +e: U32, +m: Nat, +mu: U32, +co: U32, +cog: U32, +cgku: U32, st: C1S3) -> C1S3:
+  match left st:
+    case 0n s: s
+    case 1n+q C1S3{dy, p, gw}:
+      +oc = U32.div(e, cgku)
+      +i = U32.mod(e, cgku)
+      +gr = U32.div(oc, cog)
+      +p0 = (((gr * mu : U32) * cgku : U32) + i : U32)
+      c1_dw_loop(q, (e + 1 : U32), m, mu, co, cog, cgku,
+        c1_dw_put(e, Array.get(F32, gw, e), c1_dot(m, oc, co, p0, cgku, C1Dot{dy, p, 0.0})))
+
+type C1Col is Type:
+  C1Col{dy: Array<F32>, acc: F32}
+
+def c1_col_step(r: Array<F32> & F32, +acc: F32) -> C1Col:
+  match r:
+    case Tuple{dy, +v}: C1Col{dy, (acc + v : F32)}
+
+def c1_col_sum(left: Nat, +idx: U32, +step: U32, st: C1Col) -> C1Col:
+  match left st:
+    case 0n s: s
+    case 1n+q C1Col{dy, +acc}:
+      c1_col_sum(q, (idx + step : U32), step, c1_col_step(Array.get(F32, dy, idx), acc))
+
+type C1B is Type:
+  C1B{dy: Array<F32>, gb: Array<F32>}
+
+def c1_db_put(+oc: U32, rg: Array<F32> & F32, c: C1Col) -> C1B:
+  match rg c:
+    case Tuple{gb, +old} C1Col{dy, +acc}:
+      C1B{dy, Array.set(F32, gb, oc, (old + acc : F32))}
+
+def c1_db_loop(left: Nat, +oc: U32, +m: Nat, +co: U32, st: C1B) -> C1B:
+  match left st:
+    case 0n s: s
+    case 1n+q C1B{dy, gb}:
+      c1_db_loop(q, (oc + 1 : U32), m, co,
+        c1_db_put(oc, Array.get(F32, gb, oc), c1_col_sum(m, oc, co, C1Col{dy, 0.0})))
+
+def c1_b4(-m: Nat, -g: Nat, -cgk: Nat, -cog: Nat, w: Array<F32>, b: Array<F32>, dp: Array<F32>, gw: Array<F32>, r: C1B) -> Bwd<Lin<cgk, Nat.mul(g, cog)>, TA.Mat<Nat.mul(g, m), cgk>>:
+  match r:
+    case C1B{dy, gb}:
+      Bwd{Lin{TA.Mat{w}, TA.Mat{b}}, TA.Mat{dp}, Lin{TA.Mat{gw}, TA.Mat{gb}}}
+
+def c1_b3(+m: Nat, +g: Nat, -cgk: Nat, +cog: Nat, w: Array<F32>, b: Array<F32>, dp: Array<F32>, gb: Array<F32>, r: C1S3) -> Bwd<Lin<cgk, Nat.mul(g, cog)>, TA.Mat<Nat.mul(g, m), cgk>>:
+  match r:
+    case C1S3{dy, p, gw}:
+      +co = Nat.mul(g, cog)
+      c1_b4(m, g, cgk, cog, w, b, dp, gw, c1_db_loop(co, 0, m, U32.from_nat(co), C1B{dy, gb}))
+
+def c1_b2(+m: Nat, +g: Nat, +cgk: Nat, +cog: Nat, b: Array<F32>, p: Array<F32>, gw: Array<F32>, gb: Array<F32>, r: C1S3) -> Bwd<Lin<cgk, Nat.mul(g, cog)>, TA.Mat<Nat.mul(g, m), cgk>>:
+  match r:
+    case C1S3{dy, w, dp}:
+      +co = Nat.mul(g, cog)
+      c1_b3(m, g, cgk, cog, w, b, dp, gb,
+        c1_dw_loop(Nat.mul(co, cgk), 0, m, U32.from_nat(m), U32.from_nat(co), U32.from_nat(cog), U32.from_nat(cgk), C1S3{dy, p, gw}))
+
+def c1_bwd(+m: Nat, +g: Nat, +cgk: Nat, +cog: Nat, prm: Lin<cgk, Nat.mul(g, cog)>, patches: TA.Mat<Nat.mul(g, m), cgk>, dy: TA.Mat<m, Nat.mul(g, cog)>, gg: Lin<cgk, Nat.mul(g, cog)>) -> Bwd<Lin<cgk, Nat.mul(g, cog)>, TA.Mat<Nat.mul(g, m), cgk>>:
+  match prm patches dy gg:
+    case Lin{TA.Mat{w}, TA.Mat{b}} TA.Mat{p} TA.Mat{dya} Lin{TA.Mat{gw}, TA.Mat{gb}}:
+      +co = Nat.mul(g, cog)
+      +dp_n = Nat.mul(Nat.mul(g, m), cgk)
+      c1_b2(m, g, cgk, cog, b, p, gw, gb,
+        c1_dp_loop(dp_n, 0, U32.from_nat(m), U32.from_nat(co), cog, U32.from_nat(cog), U32.from_nat(cgk),
+          C1S3{dya, w, Array.new(F32, TA.cap_depth(dp_n), 0.0)}))
+
+def conv1d_b2(+n: Nat, +g1: Nat, +cg: Nat, +cog: Nat, +k1: Nat, +ts: Nat, +p: Nat, +s1: Nat, +d1: Nat, b: Bwd<Lin<c1k(cg, k1), c1ch(g1, cog)>, TA.Mat<Nat.mul(Nat.add(1n, g1), Nat.mul(n, c1out(k1, d1, ts, p, s1))), c1k(cg, k1)>>) -> Bwd<Lin<c1k(cg, k1), c1ch(g1, cog)>, TA.Mat<Nat.mul(n, c1len(k1, d1, ts, p)), c1ch(g1, cg)>>:
+  match b:
+    case Bwd{prm, dx, gg}:
+      Bwd{prm, col2im1d(n, c1len(k1, d1, ts, p), Nat.add(1n, g1), cg, k1, p, Nat.add(1n, s1), d1, dx), gg}
+
+def Conv1d(+n: Nat, +g1: Nat, +cg: Nat, +cog: Nat, +k1: Nat, +ts: Nat, +p: Nat, +s1: Nat, +d1: Nat, +par: Nat) -> Layer<Lin<c1k(cg, k1), c1ch(g1, cog)>, TA.Mat<Nat.mul(n, c1len(k1, d1, ts, p)), c1ch(g1, cg)>, TA.Mat<Nat.mul(n, c1out(k1, d1, ts, p, s1)), c1ch(g1, cog)>, TA.Mat<Nat.mul(Nat.add(1n, g1), Nat.mul(n, c1out(k1, d1, ts, p, s1))), c1k(cg, k1)>>:
+  Layer{
+    prm => x => c1_fwd(Nat.mul(n, c1out(k1, d1, ts, p, s1)), Nat.add(1n, g1), c1k(cg, k1), cog, prm,
+      im2col1d(n, c1len(k1, d1, ts, p), Nat.add(1n, g1), cg, k1, p, Nat.add(1n, s1), d1, x)),
+    prm => st => dy => gg => conv1d_b2(n, g1, cg, cog, k1, ts, p, s1, d1,
+      c1_bwd(Nat.mul(n, c1out(k1, d1, ts, p, s1)), Nat.add(1n, g1), c1k(cg, k1), cog, prm, st, dy, gg)),
+    op => prm => gg => st => lin_step(c1k(cg, k1), c1ch(g1, cog), op, prm, gg, st),
+    u => lin_zeros(c1k(cg, k1), c1ch(g1, cog)),
+    prm => lin_dump(c1k(cg, k1), c1ch(g1, cog), prm),
+    prm => xs => off => lin_load(c1k(cg, k1), c1ch(g1, cog), prm, xs, off),
+    prm => xs => off => lin_store(c1k(cg, k1), c1ch(g1, cog), prm, xs, off),
+    u => U32.from_nat(Nat.mul(c1ch(g1, cog), Nat.add(1n, c1k(cg, k1))))}
+
 # ---- MaxPool2d ----
 #
 # The layer takes its sizes as Conv2d does: the image as the kernel plus a surplus (h = k + hs, w = k + ws) and the

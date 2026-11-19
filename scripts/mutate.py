@@ -47,6 +47,7 @@ TILE = numeric("tile_probe", "tile_check.py")
 ROPE2 = numeric("rope2d_probe", "rope2d_check.py")
 CNB = numeric("conv2dnb_probe", "conv2dnb_check.py")
 MP = numeric("maxpool_probe", "maxpool_check.py")
+CONV1 = numeric("conv1d_probe", "conv1d_check.py")
 
 
 ST135 = Path(os.environ.get("LLAMA_BEND", "../llama.bend")) / "data/smollm2-135m/hf/model.safetensors"
@@ -94,12 +95,12 @@ GPU = gpu
 
 def gpu_layers():
     # torch/gpu.bend's other layers, optimizer step, losses and embedding must keep main.bend's bits with +RTS --gpu off -RTS:
-    # demo/gpu_layers_test.bend prints 25 zeros (the last ones Conv2d's case, GELUErf's y and dx, Tile's y and dx, RoPE2d's
-    # y and dx, Conv2dNB and MaxPool2d)
+    # demo/gpu_layers_test.bend prints 26 zeros (the last ones Conv2d's case, GELUErf's y and dx, Tile's y and dx, RoPE2d's
+    # y and dx, Conv2dNB, MaxPool2d and Conv1d)
     b = subprocess.run(["bend", "demo/gpu_layers_test.bend", "-o", ".scratch/mut_gpu_layers"], capture_output=True, env=ENV)
     if b.returncode != 0:
         return False
-    return subprocess.run([".scratch/mut_gpu_layers", "+RTS", "--gpu", "off", "--threads", "16", "-RTS"], capture_output=True, text=True).stdout.split() == ["0"] * 25
+    return subprocess.run([".scratch/mut_gpu_layers", "+RTS", "--gpu", "off", "--threads", "16", "-RTS"], capture_output=True, text=True).stdout.split() == ["0"] * 26
 
 
 GPUL = gpu_layers
@@ -107,9 +108,9 @@ GPUL = gpu_layers
 
 def gpu_expcr():
     # make gpu's exactness check: with exp_cr in place of F32.exp, every GPU layer case gives main.bend's bits on the
-    # device (scripts/gpu_expcr.sh prints 25 zeros); needs CUDA, and make mutate runs under the heavy-run lock
+    # device (scripts/gpu_expcr.sh prints 26 zeros); needs CUDA, and make mutate runs under the heavy-run lock
     r = subprocess.run(["scripts/gpu_expcr.sh"], capture_output=True, text=True, env=ENV)
-    return r.returncode == 0 and r.stdout.strip().splitlines()[-1].split() == ["0"] * 25
+    return r.returncode == 0 and r.stdout.strip().splitlines()[-1].split() == ["0"] * 26
 
 
 EXPCR = gpu_expcr
@@ -560,6 +561,30 @@ MUTANTS = [
     ("gpu col2im: the candidates along y start one row late", "torch/gpu.bend",
      "      gis_set(e, gi_qy(U32.to_nat(k), 0, oy0, ox0, iy, ix, b, ch, g, GIS{d, o, 0.0}))",
      "      gis_set(e, gi_qy(U32.to_nat(k), 1, oy0, ox0, iy, ix, b, ch, g, GIS{d, o, 0.0}))", GPUL, "caught"),
+    ("conv1d: the gather reads the padding cells (no window check)", "torch/main.bend",
+     "        p_rc(Bool.and(Nat.is_lt(gr, g), p1_ok(i, ox, t, k, p, s, d)), arr,",
+     "        p_rc(Nat.is_lt(gr, g), arr,", CONV1, "caught"),
+    ("conv1d: dilation ignored in p1_ix (law)", "torch/main.bend",
+     "  Nat.sub(Nat.add(Nat.mul(ox, s), Nat.mul(p1_kt(i, k), d)), p)",
+     "  Nat.sub(Nat.add(Nat.mul(ox, s), p1_kt(i, k)), p)", laws, "caught"),
+    ("conv1d: dilation ignored in p1_ix (numbers)", "torch/main.bend",
+     "  Nat.sub(Nat.add(Nat.mul(ox, s), Nat.mul(p1_kt(i, k), d)), p)",
+     "  Nat.sub(Nat.add(Nat.mul(ox, s), p1_kt(i, k)), p)", CONV1, "caught"),
+    ("conv1d: every group reads group 0's channels", "torch/main.bend",
+     "Nat.add(Nat.mul(gr, cg), p1_lc(i, k))))",
+     "Nat.add(Nat.mul(0n, cg), p1_lc(i, k))))", CONV1, "caught"),
+    ("col2im1d: a patch cell over the padding adds into the signal", "torch/main.bend",
+     "        add_if(Bool.and(Nat.is_lt(gr, g), p1_ok(i, ox, t, k, p, s, d)),",
+     "        add_if(Nat.is_lt(gr, g),", CONV1, "caught"),
+    ("gpu im2col1d: the device gather reads the padding cells", "torch/gpu.bend",
+     "      +ok = Bool.and(U32.is_lt(gr, g), Bool.and(U32.is_le(p, raw), U32.is_lt(ix, t)))",
+     "      +ok = U32.is_lt(gr, g)", GPUL, "caught"),
+    ("gpu col2im1d: a cell's sum skips its last candidate", "torch/gpu.bend",
+     "      gis_set(e, gi1_scan(U32.to_nat(ek), 0, ox0, ix, b, gr, lc, cfg, GIS{arr, o, 0.0}))",
+     "      gis_set(e, gi1_scan(Nat.sub(U32.to_nat(ek), 1n), 0, ox0, ix, b, gr, lc, cfg, GIS{arr, o, 0.0}))", GPUL, "caught"),
+    ("gpu Conv1d: the weight gradient overwrites gw instead of accumulating", "torch/gpu.bend",
+     "      GC1DW{dy, p, gw, Array.set(F32, o, e, (old + acc : F32))}",
+     "      GC1DW{dy, p, gw, Array.set(F32, o, e, acc)}", GPUL, "caught"),
     ("guard law: a NoMom state takes a configuration of another kind", "torch/main.bend",
      "    case _ NoMom{}: Guarded{SGD{nan()}, NoMom{}}", "    case _ NoMom{}: Guarded{Opt.at(cfg, q1, q2), NoMom{}}", laws,
      "caught"),
