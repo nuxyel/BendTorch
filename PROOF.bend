@@ -1807,3 +1807,271 @@ def Laws.mp_scatter(c, h, w, ch, image, row, col, ky, kx):
           Equal.cong(Nat, Nat, z => Nat.add(AC, z), Nat.add(BC, ch), Nat.add(ch, BC),
             NL.add_comm(BC, ch)),
           NL.add_assoc(AC, ch, BC)))))
+
+# =====================================================================================================
+# Conv1d's laws (BendTorch#43): gathered element count and window round trip with groups and dilation
+# =====================================================================================================
+
+def gather1d_len(+left: Nat, +j: Nat, +n: Nat, +t: Nat, +g: Nat, +cg: Nat, +k: Nat, +p: Nat, +s: Nat, +d: Nat, +ot: Nat, +cgk: Nat, rc: Array<F32> & F32, +acc: List<&2, F32>) -> {List.length(&2, F32, T.gl_out(T.gather1d(left, j, n, t, g, cg, k, p, s, d, ot, cgk, rc, acc))) == Nat.add(left, List.length(&2, F32, acc)) : Nat}:
+  match left rc:
+    case 0n Tuple{arr, v}:
+      rev_len(acc)
+    case 1n Tuple{arr, v}:
+      rev_len(Con{v, acc})
+    case 2n+rest Tuple{arr, +v}:
+      +j2 = Nat.add(j, 1n)
+      +row = Nat.div(j2, cgk)
+      +i = Nat.mod(j2, cgk)
+      +m = Nat.mul(n, ot)
+      +gr = Nat.div(row, m)
+      +pos = Nat.mod(row, m)
+      +b = Nat.div(pos, ot)
+      +ox = Nat.mod(pos, ot)
+      Equal.trans(Nat,
+        List.length(&2, F32, T.gl_out(T.gather1d(1n+rest, j2, n, t, g, cg, k, p, s, d, ot, cgk,
+          T.p_rc(Bool.and(Nat.is_lt(gr, g), T.p1_ok(i, ox, t, k, p, s, d)), arr, T.p1_src(i, gr, b, ox, t, g, cg, k, p, s, d)), Con{v, acc}))),
+        Nat.add(1n+rest, Nat.add(1n, List.length(&2, F32, acc))),
+        Nat.add(2n+rest, List.length(&2, F32, acc)),
+        gather1d_len(1n+rest, j2, n, t, g, cg, k, p, s, d, ot, cgk,
+          T.p_rc(Bool.and(Nat.is_lt(gr, g), T.p1_ok(i, ox, t, k, p, s, d)), arr, T.p1_src(i, gr, b, ox, t, g, cg, k, p, s, d)), Con{v, acc}),
+        Equal.trans(Nat,
+          Nat.add(1n+rest, Nat.add(1n, List.length(&2, F32, acc))),
+          Nat.add(1n, Nat.add(1n+rest, List.length(&2, F32, acc))),
+          Nat.add(Nat.add(1n, 1n+rest), List.length(&2, F32, acc)),
+          Equal.sym(Nat, Nat.add(1n, Nat.add(1n+rest, List.length(&2, F32, acc))), Nat.add(1n+rest, Nat.add(1n, List.length(&2, F32, acc))), NL.add_succ(1n+rest, List.length(&2, F32, acc))),
+          Equal.sym(Nat, Nat.add(Nat.add(1n, 1n+rest), List.length(&2, F32, acc)), Nat.add(1n, Nat.add(1n+rest, List.length(&2, F32, acc))), NL.add_assoc(1n, 1n+rest, List.length(&2, F32, acc)))))
+
+# PROOF (im2col1d_rows): im2col1d_n gathers one number per step over the flat count g·n·ot·cg·k.
+def Laws.im2col1d_rows(n, t, g, cg, k1, p, s, d1, arr):
+  +k = Nat.add(1n, k1)
+  +d = Nat.add(1n, d1)
+  +ot = T.ocount(t, p, T.c1eff(k1, d1), s)
+  +cgk = Nat.mul(cg, k)
+  +tot = Nat.mul(Nat.mul(g, Nat.mul(n, ot)), cgk)
+  Equal.trans(Nat, List.length(&2, F32, T.im2col1d_n(n, t, g, cg, k1, p, s, d1, arr)), Nat.add(tot, 0n), tot,
+    gather1d_len(tot, 0n, n, t, g, cg, k, p, s, d, ot, cgk,
+      T.p_rc(Bool.and(Nat.is_lt(0n, g), T.p1_ok(0n, 0n, t, k, p, s, d)), arr, T.p1_src(0n, 0n, 0n, 0n, t, g, cg, k, p, s, d)), Nil{}),
+    NL.add_zero(tot))
+
+def p1_ix_win(+lc: Nat, +kt: Nat, +a: Nat, +k: Nat, +ox: Nat, +s: Nat, +d: Nat, +p: Nat, +tx: Nat,
+  +e1: {k == Nat.add(1n, Nat.add(kt, a)) : Nat},
+  +ex: {Nat.add(Nat.mul(ox, s), Nat.mul(kt, d)) == Nat.add(p, tx) : Nat}) ->
+  {T.p1_ix(Nat.add(Nat.mul(lc, k), kt), ox, k, p, s, d) == tx : Nat}:
+  Equal.trans(Nat,
+    Nat.sub(Nat.add(Nat.mul(ox, s), Nat.mul(T.p1_kt(Nat.add(Nat.mul(lc, k), kt), k), d)), p),
+    Nat.sub(Nat.add(Nat.mul(ox, s), Nat.mul(kt, d)), p),
+    tx,
+    Equal.cong(Nat, Nat, z => Nat.sub(Nat.add(Nat.mul(ox, s), Nat.mul(z, d)), p),
+      T.p1_kt(Nat.add(Nat.mul(lc, k), kt), k), kt, inner_mod(lc, kt, a, k, e1)),
+    Equal.trans(Nat,
+      Nat.sub(Nat.add(Nat.mul(ox, s), Nat.mul(kt, d)), p),
+      Nat.sub(Nat.add(p, tx), p),
+      tx,
+      Equal.cong(Nat, Nat, z => Nat.sub(z, p), Nat.add(Nat.mul(ox, s), Nat.mul(kt, d)), Nat.add(p, tx), ex),
+      sub_self_add(p, tx)))
+
+# PROOF (conv1d_roundtrip_window): p1_lc and p1_kt decode lc·k + kt back to lc and kt, and p1_ix subtracts p from ox·s + kt·d.
+def Laws.conv1d_roundtrip_window(gr, b, ox, lc, kt, t, g, cg, k, p, s, d, a, tx, kt_lt, pos_in):
+  +slot = Nat.add(Nat.mul(lc, k), kt)
+  Equal.cong(Nat, U32, z => U32.from_nat(z),
+    Nat.add(Nat.mul(Nat.add(Nat.mul(b, t), T.p1_ix(slot, ox, k, p, s, d)), Nat.mul(g, cg)), Nat.add(Nat.mul(gr, cg), T.p1_lc(slot, k))),
+    Nat.add(Nat.mul(Nat.add(Nat.mul(b, t), tx), Nat.mul(g, cg)), Nat.add(Nat.mul(gr, cg), lc)),
+    Equal.trans(Nat,
+      Nat.add(Nat.mul(Nat.add(Nat.mul(b, t), T.p1_ix(slot, ox, k, p, s, d)), Nat.mul(g, cg)), Nat.add(Nat.mul(gr, cg), T.p1_lc(slot, k))),
+      Nat.add(Nat.mul(Nat.add(Nat.mul(b, t), tx), Nat.mul(g, cg)), Nat.add(Nat.mul(gr, cg), T.p1_lc(slot, k))),
+      Nat.add(Nat.mul(Nat.add(Nat.mul(b, t), tx), Nat.mul(g, cg)), Nat.add(Nat.mul(gr, cg), lc)),
+      Equal.cong(Nat, Nat, z => Nat.add(Nat.mul(Nat.add(Nat.mul(b, t), z), Nat.mul(g, cg)), Nat.add(Nat.mul(gr, cg), T.p1_lc(slot, k))),
+        T.p1_ix(slot, ox, k, p, s, d), tx, p1_ix_win(lc, kt, a, k, ox, s, d, p, tx, kt_lt, pos_in)),
+      Equal.cong(Nat, Nat, z => Nat.add(Nat.mul(Nat.add(Nat.mul(b, t), tx), Nat.mul(g, cg)), Nat.add(Nat.mul(gr, cg), z)),
+        T.p1_lc(slot, k), lc, inner_div(lc, kt, a, k, kt_lt))))
+
+# ---- Conv1d geometry guard and runtime-mask witness bridges ----
+
+def c1_lt_sub_add(+a: Nat, +b: Nat, e: {True{} == Nat.is_lt(a, b) : Bool}) -> {Nat.add(Nat.sub(b, a), a) == b : Nat}:
+  match a b:
+    case 0n 0n:
+      Empty.absurd({Nat.add(Nat.sub(0n, 0n), 0n) == 0n : Nat}, false_true(Equal.sym(Bool, True{}, False{}, e)))
+    case 0n 1n+bp:
+      NL.add_zero(1n+bp)
+    case 1n+ap 0n:
+      Empty.absurd({Nat.add(Nat.sub(0n, 1n+ap), 1n+ap) == 0n : Nat}, false_true(Equal.sym(Bool, True{}, False{}, e)))
+    case 1n+ap 1n+bp:
+      +d = Nat.sub(bp, ap)
+      Equal.trans(Nat, Nat.add(d, 1n+ap), 1n+Nat.add(d, ap), 1n+bp,
+        Equal.sym(Nat, 1n+Nat.add(d, ap), Nat.add(d, 1n+ap), NL.add_succ(d, ap)),
+        Equal.cong(Nat, Nat, z => 1n+z, Nat.add(d, ap), bp, c1_lt_sub_add(ap, bp, e)))
+
+def c1_lt_sub_pos(+a: Nat, +b: Nat, e: {True{} == Nat.is_lt(a, b) : Bool}) -> {Nat.is_lt(0n, Nat.sub(b, a)) == True{} : Bool}:
+  match a b:
+    case 0n 0n:
+      Empty.absurd({Nat.is_lt(0n, Nat.sub(0n, 0n)) == True{} : Bool}, false_true(Equal.sym(Bool, True{}, False{}, e)))
+    case 0n 1n+bp:
+      {==}
+    case 1n+ap 0n:
+      Empty.absurd({Nat.is_lt(0n, Nat.sub(0n, 1n+ap)) == True{} : Bool}, false_true(Equal.sym(Bool, True{}, False{}, e)))
+    case 1n+ap 1n+bp:
+      c1_lt_sub_pos(ap, bp, e)
+
+# PROOF (conv1d_c1len_exact): a < b implies (b - a) + a == b, so c1len + 2p == eff_k + ts.
+def Laws.conv1d_c1len_exact(k1, d1, ts, p, e):
+  c1_lt_sub_add(Nat.mul(2n, p), Nat.add(T.c1eff(k1, d1), ts), e)
+
+# PROOF (conv1d_c1len_pos): a < b implies 0 < b - a, so c1len >= 1.
+def Laws.conv1d_c1len_pos(k1, d1, ts, p, e):
+  c1_lt_sub_pos(Nat.mul(2n, p), Nat.add(T.c1eff(k1, d1), ts), e)
+
+# PROOF (conv1d_c1out_exact): substituting c1len + 2p == eff_k + ts into ocount cancels eff_k by sub_self_add.
+def Laws.conv1d_c1out_exact(k1, d1, ts, p, s1, e):
+  +ek = T.c1eff(k1, d1)
+  +s = Nat.add(1n, s1)
+  Equal.cong(Nat, Nat, z => Nat.add(Nat.div(z, s), 1n),
+    Nat.sub(Nat.add(T.c1len(k1, d1, ts, p), Nat.mul(2n, p)), ek), ts,
+    Equal.trans(Nat,
+      Nat.sub(Nat.add(T.c1len(k1, d1, ts, p), Nat.mul(2n, p)), ek),
+      Nat.sub(Nat.add(ek, ts), ek), ts,
+      Equal.cong(Nat, Nat, z => Nat.sub(z, ek),
+        Nat.add(T.c1len(k1, d1, ts, p), Nat.mul(2n, p)), Nat.add(ek, ts),
+        Laws.conv1d_c1len_exact(k1, d1, ts, p, e)),
+      sub_self_add(ek, ts)))
+
+# Slack left in Nat.divmod.go's current block at the end of the scan.
+def c1_slack(+n: Nat, +m: Nat, +r: Nat) -> Nat:
+  match n:
+    case 0n: m
+    case 1n+np:
+      match m:
+        case 0n: c1_slack(np, r, 0n)
+        case 1n+mp: c1_slack(np, mp, 1n+r)
+
+def c1_divmod_inv(+n: Nat, +m: Nat, +d: Nat, +r: Nat) ->
+  {Nat.add(r, m) == Nat.add(Pair.snd(Nat, Nat, Nat.divmod.go(n, m, d, r)), c1_slack(n, m, r)) : Nat}:
+  match n:
+    case 0n: {==}
+    case 1n+np:
+      match m:
+        case 0n:
+          Equal.trans(Nat, Nat.add(r, 0n), r,
+            Nat.add(Pair.snd(Nat, Nat, Nat.divmod.go(np, r, 1n+d, 0n)), c1_slack(np, r, 0n)),
+            NL.add_zero(r), c1_divmod_inv(np, r, 1n+d, 0n))
+        case 1n+mp:
+          Equal.trans(Nat, Nat.add(r, 1n+mp), Nat.add(1n+r, mp),
+            Nat.add(Pair.snd(Nat, Nat, Nat.divmod.go(np, mp, d, 1n+r)), c1_slack(np, mp, 1n+r)),
+            Equal.sym(Nat, Nat.add(1n+r, mp), Nat.add(r, 1n+mp), NL.add_succ(r, mp)),
+            c1_divmod_inv(np, mp, d, 1n+r))
+
+# Exact kt_lt witness for conv1d_roundtrip_window: 1 + k1 == 1 + (p1_kt(i, 1+k1) + slack).
+def c1_kt_lt(+i: Nat, +k1: Nat) ->
+  {1n+k1 == Nat.add(1n, Nat.add(T.p1_kt(i, 1n+k1), c1_slack(i, k1, 0n))) : Nat}:
+  Equal.cong(Nat, Nat, z => 1n+z, k1, Nat.add(T.p1_kt(i, 1n+k1), c1_slack(i, k1, 0n)),
+    c1_divmod_inv(i, k1, 0n, 0n))
+
+def c1_lt_add_succ(+x: Nat, +y: Nat) -> {Nat.is_lt(x, 1n+Nat.add(x, y)) == True{} : Bool}:
+  match x:
+    case 0n: {==}
+    case 1n+xp: c1_lt_add_succ(xp, y)
+
+# PROOF (conv1d_kt_lt): c1_kt_lt supplies slack with 1 + k1 == 1 + (p1_kt + slack), so p1_kt < 1 + k1.
+def Laws.conv1d_kt_lt(i, k1):
+  Equal.trans(Bool,
+    Nat.is_lt(T.p1_kt(i, 1n+k1), 1n+k1),
+    Nat.is_lt(T.p1_kt(i, 1n+k1), 1n+Nat.add(T.p1_kt(i, 1n+k1), c1_slack(i, k1, 0n))),
+    True{},
+    Equal.cong(Nat, Bool, z => Nat.is_lt(T.p1_kt(i, 1n+k1), z),
+      1n+k1, 1n+Nat.add(T.p1_kt(i, 1n+k1), c1_slack(i, k1, 0n)), c1_kt_lt(i, k1)),
+    c1_lt_add_succ(T.p1_kt(i, 1n+k1), c1_slack(i, k1, 0n)))
+
+# Block rollover step for Nat.divmod.go conservation: v + (r + (1 + n)) == (k + v) + n when k == 1 + r.
+def c1_rollover(+v: Nat, +r: Nat, +n: Nat, +k: Nat, kr: {k == 1n+r : Nat}) ->
+  {Nat.add(v, Nat.add(r, 1n+n)) == Nat.add(Nat.add(k, v), n) : Nat}:
+  Equal.trans(Nat, Nat.add(v, Nat.add(r, 1n+n)), Nat.add(v, Nat.add(1n+r, n)), Nat.add(Nat.add(k, v), n),
+    Equal.cong(Nat, Nat, z => Nat.add(v, z), Nat.add(r, 1n+n), Nat.add(1n+r, n),
+      Equal.sym(Nat, Nat.add(1n+r, n), Nat.add(r, 1n+n), NL.add_succ(r, n))),
+    Equal.trans(Nat, Nat.add(v, Nat.add(1n+r, n)), Nat.add(Nat.add(v, 1n+r), n), Nat.add(Nat.add(k, v), n),
+      NL.add_assoc(v, 1n+r, n),
+      Equal.cong(Nat, Nat, z => Nat.add(z, n), Nat.add(v, 1n+r), Nat.add(k, v),
+        Equal.trans(Nat, Nat.add(v, 1n+r), Nat.add(1n+r, v), Nat.add(k, v),
+          NL.add_comm(v, 1n+r), Equal.cong(Nat, Nat, z => Nat.add(z, v), 1n+r, k, Equal.sym(Nat, k, 1n+r, kr))))))
+
+def c1_combine(+k: Nat, dm: Nat & Nat) -> Nat:
+  match dm:
+    case Tuple{q, r}: Nat.add(Nat.mul(q, k), r)
+
+def c1_conserve(+n: Nat, +m: Nat, +d: Nat, +r: Nat, +k1: Nat, +e: {k1 == Nat.add(r, m) : Nat}) ->
+  {Nat.add(Nat.mul(d, 1n+k1), Nat.add(r, n)) == c1_combine(1n+k1, Nat.divmod.go(n, m, d, r)) : Nat}:
+  match n:
+    case 0n:
+      Equal.cong(Nat, Nat, z => Nat.add(Nat.mul(d, 1n+k1), z), Nat.add(r, 0n), r, NL.add_zero(r))
+    case 1n+np:
+      match m:
+        case 0n:
+          +kr = Equal.trans(Nat, k1, Nat.add(r, 0n), r, e, NL.add_zero(r))
+          Equal.trans(Nat, Nat.add(Nat.mul(d, 1n+k1), Nat.add(r, 1n+np)), Nat.add(Nat.mul(1n+d, 1n+k1), np),
+            c1_combine(1n+k1, Nat.divmod.go(np, r, 1n+d, 0n)),
+            c1_rollover(Nat.mul(d, 1n+k1), r, np, 1n+k1, Equal.cong(Nat, Nat, z => 1n+z, k1, r, kr)),
+            c1_conserve(np, r, 1n+d, 0n, k1, kr))
+        case 1n+mp:
+          Equal.trans(Nat, Nat.add(Nat.mul(d, 1n+k1), Nat.add(r, 1n+np)), Nat.add(Nat.mul(d, 1n+k1), Nat.add(1n+r, np)),
+            c1_combine(1n+k1, Nat.divmod.go(np, mp, d, 1n+r)),
+            Equal.cong(Nat, Nat, z => Nat.add(Nat.mul(d, 1n+k1), z), Nat.add(r, 1n+np), Nat.add(1n+r, np),
+              Equal.sym(Nat, Nat.add(1n+r, np), Nat.add(r, 1n+np), NL.add_succ(r, np))),
+            c1_conserve(np, mp, d, 1n+r, k1, Equal.trans(Nat, k1, Nat.add(r, 1n+mp), Nat.add(1n+r, mp), e,
+              Equal.sym(Nat, Nat.add(1n+r, mp), Nat.add(r, 1n+mp), NL.add_succ(r, mp)))))
+
+def c1_components(+k: Nat, dm: Nat & Nat) ->
+  {c1_combine(k, dm) == Nat.add(Nat.mul(Pair.fst(Nat, Nat, dm), k), Pair.snd(Nat, Nat, dm)) : Nat}:
+  match dm:
+    case Tuple{q, r}: {==}
+
+# PROOF (conv1d_slot_decode): Nat.divmod.go conserves d·k + r + n, so i == p1_lc(i, 1+k1)·(1+k1) + p1_kt(i, 1+k1).
+def Laws.conv1d_slot_decode(i, k1):
+  +k = Nat.add(1n, k1)
+  Equal.trans(Nat, i, c1_combine(k, Nat.divmod.go(i, k1, 0n, 0n)),
+    Nat.add(Nat.mul(T.p1_lc(i, k), k), T.p1_kt(i, k)),
+    c1_conserve(i, k1, 0n, 0n, k1, {==}), c1_components(k, Nat.divmod.go(i, k1, 0n, 0n)))
+
+def c1_and_l(+a: Bool, +b: Bool, e: {Bool.and(a, b) == True{} : Bool}) -> {a == True{} : Bool}:
+  match a:
+    case False{}: e
+    case True{}: {==}
+
+def c1_and_r(+a: Bool, +b: Bool, e: {Bool.and(a, b) == True{} : Bool}) -> {b == True{} : Bool}:
+  match a:
+    case False{}: Empty.absurd({b == True{} : Bool}, false_true(e))
+    case True{}: e
+
+def c1_undo_sub(+p: Nat, +x: Nat, e: {Nat.is_le(p, x) == True{} : Bool}) -> {x == Nat.add(p, Nat.sub(x, p)) : Nat}:
+  match p x:
+    case 0n 0n: {==}
+    case 0n 1n+xp: {==}
+    case 1n+pp 0n: Empty.absurd({0n == Nat.add(1n+pp, Nat.sub(0n, 1n+pp)) : Nat}, false_true(e))
+    case 1n+pp 1n+xp:
+      Equal.cong(Nat, Nat, z => 1n+z, xp, Nat.add(pp, Nat.sub(xp, pp)), c1_undo_sub(pp, xp, e))
+
+def c1_pos(+i: Nat, +ox: Nat, +k: Nat, +s: Nat, +d: Nat) -> Nat:
+  Nat.add(Nat.mul(ox, s), Nat.mul(T.p1_kt(i, k), d))
+
+# PROOF (conv1d_ok_pos_in): the left conjunct of p1_ok gives p <= ox·s + p1_kt·d, so subtraction cancels cleanly.
+def Laws.conv1d_ok_pos_in(i, ox, t, k, p, s, d, ok):
+  +x = c1_pos(i, ox, k, s, d)
+  c1_undo_sub(p, x, c1_and_l(Nat.is_le(p, x), Nat.is_lt(T.p1_ix(i, ox, k, p, s, d), t), ok))
+
+# PROOF (conv1d_ok_tx_in): the right conjunct of p1_ok is directly p1_ix < t.
+def Laws.conv1d_ok_tx_in(i, ox, t, k, p, s, d, ok):
+  c1_and_r(Nat.is_le(p, c1_pos(i, ox, k, s, d)), Nat.is_lt(T.p1_ix(i, ox, k, p, s, d), t), ok)
+
+# Type-checked witness-composition check: conv1d_slot_decode, c1_kt_lt and conv1d_ok_pos_in supply the exact
+# hypotheses conv1d_roundtrip_window asks for from any slot i, positive k = 1 + k1 and true mask p1_ok.
+def c1_window_from_ok(+i: Nat, +gr: Nat, +b: Nat, +ox: Nat, +t: Nat, +g: Nat, +cg: Nat, +k1: Nat, +p: Nat, +s: Nat, +d: Nat,
+  ok: {T.p1_ok(i, ox, t, 1n+k1, p, s, d) == True{} : Bool}) ->
+  {T.p1_src(i, gr, b, ox, t, g, cg, 1n+k1, p, s, d) ==
+    U32.from_nat(Nat.add(Nat.mul(Nat.add(Nat.mul(b, t), T.p1_ix(i, ox, 1n+k1, p, s, d)), Nat.mul(g, cg)),
+      Nat.add(Nat.mul(gr, cg), T.p1_lc(i, 1n+k1)))) : U32}:
+  +k = Nat.add(1n, k1)
+  +kt = T.p1_kt(i, k)
+  +lc = T.p1_lc(i, k)
+  +tx = T.p1_ix(i, ox, k, p, s, d)
+  %Equal.sym(Nat, i, Nat.add(Nat.mul(lc, k), kt), Laws.conv1d_slot_decode(i, k1)) :
+    {T.p1_src(_, gr, b, ox, t, g, cg, k, p, s, d) ==
+      U32.from_nat(Nat.add(Nat.mul(Nat.add(Nat.mul(b, t), tx), Nat.mul(g, cg)), Nat.add(Nat.mul(gr, cg), lc))) : U32}
+  Laws.conv1d_roundtrip_window(gr, b, ox, lc, kt, t, g, cg, k, p, s, d, c1_slack(i, k1, 0n), tx,
+    c1_kt_lt(i, k1), Laws.conv1d_ok_pos_in(i, ox, t, k, p, s, d, ok))
