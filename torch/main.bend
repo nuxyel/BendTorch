@@ -3983,7 +3983,10 @@ def conv1d_b2(+n: Nat, +g1: Nat, +cg: Nat, +cog: Nat, +k1: Nat, +ts: Nat, +p: Na
     case Bwd{prm, dx, gg}:
       Bwd{prm, col2im1d(n, c1len(k1, d1, ts, p), Nat.add(1n, g1), cg, k1, p, Nat.add(1n, s1), d1, dx), gg}
 
-def Conv1d(+n: Nat, +g1: Nat, +cg: Nat, +cog: Nat, +k1: Nat, +ts: Nat, +p: Nat, +s1: Nat, +d1: Nat, +par: Nat) -> Layer<Lin<c1k(cg, k1), c1ch(g1, cog)>, TA.Mat<Nat.mul(n, c1len(k1, d1, ts, p)), c1ch(g1, cg)>, TA.Mat<Nat.mul(n, c1out(k1, d1, ts, p, s1)), c1ch(g1, cog)>, TA.Mat<Nat.mul(Nat.add(1n, g1), Nat.mul(n, c1out(k1, d1, ts, p, s1))), c1k(cg, k1)>>:
+# Conv1d(n, g1, cg, cog, k1, ts, p, s1, d1, par, -e): g=1+g1, k=1+k1, s=1+s1, d=1+d1, eff_k=1+d*k1, t=eff_k+ts-2p.
+# The compile-time proof e requires 2p < eff_k + ts so t >= 1 and Nat.sub never truncates (tests/bad_conv1d.bend).
+def Conv1d(+n: Nat, +g1: Nat, +cg: Nat, +cog: Nat, +k1: Nat, +ts: Nat, +p: Nat, +s1: Nat, +d1: Nat, +par: Nat,
+  -e: {True{} == Nat.is_lt(Nat.mul(2n, p), Nat.add(c1eff(k1, d1), ts)) : Bool}) -> Layer<Lin<c1k(cg, k1), c1ch(g1, cog)>, TA.Mat<Nat.mul(n, c1len(k1, d1, ts, p)), c1ch(g1, cg)>, TA.Mat<Nat.mul(n, c1out(k1, d1, ts, p, s1)), c1ch(g1, cog)>, TA.Mat<Nat.mul(Nat.add(1n, g1), Nat.mul(n, c1out(k1, d1, ts, p, s1))), c1k(cg, k1)>>:
   Layer{
     prm => x => c1_fwd(Nat.mul(n, c1out(k1, d1, ts, p, s1)), Nat.add(1n, g1), c1k(cg, k1), cog, prm,
       im2col1d(n, c1len(k1, d1, ts, p), Nat.add(1n, g1), cg, k1, p, Nat.add(1n, s1), d1, x)),

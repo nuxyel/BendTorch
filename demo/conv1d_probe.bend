@@ -48,7 +48,7 @@ def one(~rows: Nat, ~c: Nat, ~orows: Nat, ~co: Nat, ~cgk: Nat,
 # ---- c0: n=2, t=5, g=1 (g1=0), cg=2, cog=3, k=3 (k1=2), p=1, s=1 (s1=0), d=1 (d1=0), ts=4, ot=5 ----
 
 def c0_L() -> T.Layer<T.Lin<6n, 3n>, TA.Mat<10n, 2n>, TA.Mat<10n, 3n>, TA.Mat<10n, 6n>>:
-  T.Conv1d(2n, 0n, 2n, 3n, 2n, 4n, 1n, 0n, 0n, 0n)
+  T.Conv1d(2n, 0n, 2n, 3n, 2n, 4n, 1n, 0n, 0n, 0n, {==})
 
 def c0() -> IO(Unit):
   one(~10n, ~2n, ~10n, ~3n, ~6n, ~TA.Mat<10n, 6n>, ~c0_L(), "c0",
@@ -61,7 +61,7 @@ def c0() -> IO(Unit):
 # ---- c1: n=1, t=6, g=1 (g1=0), cg=2, cog=3, k=3 (k1=2), p=1, s=2 (s1=1), d=1 (d1=0), ts=5, ot=3 ----
 
 def c1_L() -> T.Layer<T.Lin<6n, 3n>, TA.Mat<6n, 2n>, TA.Mat<3n, 3n>, TA.Mat<3n, 6n>>:
-  T.Conv1d(1n, 0n, 2n, 3n, 2n, 5n, 1n, 1n, 0n, 0n)
+  T.Conv1d(1n, 0n, 2n, 3n, 2n, 5n, 1n, 1n, 0n, 0n, {==})
 
 def c1() -> IO(Unit):
   one(~6n, ~2n, ~3n, ~3n, ~6n, ~TA.Mat<3n, 6n>, ~c1_L(), "c1",
@@ -74,7 +74,7 @@ def c1() -> IO(Unit):
 # ---- c2: n=1, t=7, g=1 (g1=0), cg=2, cog=3, k=3 (k1=2), p=2, s=1 (s1=0), d=2 (d1=1), eff_k=5, ts=6, ot=7 ----
 
 def c2_L() -> T.Layer<T.Lin<6n, 3n>, TA.Mat<7n, 2n>, TA.Mat<7n, 3n>, TA.Mat<7n, 6n>>:
-  T.Conv1d(1n, 0n, 2n, 3n, 2n, 6n, 2n, 0n, 1n, 0n)
+  T.Conv1d(1n, 0n, 2n, 3n, 2n, 6n, 2n, 0n, 1n, 0n, {==})
 
 def c2() -> IO(Unit):
   one(~7n, ~2n, ~7n, ~3n, ~6n, ~TA.Mat<7n, 6n>, ~c2_L(), "c2",
@@ -87,7 +87,7 @@ def c2() -> IO(Unit):
 # ---- c3: n=2, t=8, g=2 (g1=1), cg=2, cog=3, k=3 (k1=2), p=1, s=2 (s1=1), d=2 (d1=1), eff_k=5, ts=5, ot=3 ----
 
 def c3_L() -> T.Layer<T.Lin<6n, 6n>, TA.Mat<16n, 4n>, TA.Mat<6n, 6n>, TA.Mat<12n, 6n>>:
-  T.Conv1d(2n, 1n, 2n, 3n, 2n, 5n, 1n, 1n, 1n, 0n)
+  T.Conv1d(2n, 1n, 2n, 3n, 2n, 5n, 1n, 1n, 1n, 0n, {==})
 
 def c3() -> IO(Unit):
   one(~16n, ~4n, ~6n, ~6n, ~6n, ~TA.Mat<12n, 6n>, ~c3_L(), "c3",
@@ -100,7 +100,7 @@ def c3() -> IO(Unit):
 # ---- c4: n=1, t=9, g=4 (g1=3), cg=1, cog=1, k=7 (k1=6), p=3, s=1 (s1=0), d=1 (d1=0), eff_k=7, ts=8, ot=9 ----
 
 def c4_L() -> T.Layer<T.Lin<7n, 4n>, TA.Mat<9n, 4n>, TA.Mat<9n, 4n>, TA.Mat<36n, 7n>>:
-  T.Conv1d(1n, 3n, 1n, 1n, 6n, 8n, 3n, 0n, 0n, 0n)
+  T.Conv1d(1n, 3n, 1n, 1n, 6n, 8n, 3n, 0n, 0n, 0n, {==})
 
 def c4() -> IO(Unit):
   one(~9n, ~4n, ~9n, ~4n, ~7n, ~TA.Mat<36n, 7n>, ~c4_L(), "c4",

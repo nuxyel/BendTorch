@@ -426,13 +426,13 @@ def c_conv1d(+n: Nat, +g1: Nat, +cg: Nat, +cog: Nat, +k1: Nat, +ts: Nat, +p: Nat
 
 def conv1d_grp() -> U32:
   c_conv1d(2n, 1n, 2n, 3n, 2n, 5n, 1n, 1n, 1n,
-    run(~T.Lin<6n, 6n>, ~TA.Mat<16n, 4n>, ~TA.Mat<6n, 6n>, ~TA.Mat<12n, 6n>, ~T.Conv1d(2n, 1n, 2n, 3n, 2n, 5n, 1n, 1n, 1n, 0n), T.Lin{mat(6n, 6n, 211), mat(1n, 6n, 212)}, mat(16n, 4n, 213), mat(6n, 6n, 214), T.Lin{mat(6n, 6n, 215), mat(1n, 6n, 216)}),
-    run(~T.Lin<6n, 6n>, ~TA.Mat<16n, 4n>, ~TA.Mat<6n, 6n>, ~TA.Mat<12n, 6n>, ~G.Conv1d(2n, 1n, 2n, 3n, 2n, 5n, 1n, 1n, 1n, 0n), T.Lin{mat(6n, 6n, 211), mat(1n, 6n, 212)}, mat(16n, 4n, 213), mat(6n, 6n, 214), T.Lin{mat(6n, 6n, 215), mat(1n, 6n, 216)}))
+    run(~T.Lin<6n, 6n>, ~TA.Mat<16n, 4n>, ~TA.Mat<6n, 6n>, ~TA.Mat<12n, 6n>, ~T.Conv1d(2n, 1n, 2n, 3n, 2n, 5n, 1n, 1n, 1n, 0n, {==}), T.Lin{mat(6n, 6n, 211), mat(1n, 6n, 212)}, mat(16n, 4n, 213), mat(6n, 6n, 214), T.Lin{mat(6n, 6n, 215), mat(1n, 6n, 216)}),
+    run(~T.Lin<6n, 6n>, ~TA.Mat<16n, 4n>, ~TA.Mat<6n, 6n>, ~TA.Mat<12n, 6n>, ~G.Conv1d(2n, 1n, 2n, 3n, 2n, 5n, 1n, 1n, 1n, 0n, {==}), T.Lin{mat(6n, 6n, 211), mat(1n, 6n, 212)}, mat(16n, 4n, 213), mat(6n, 6n, 214), T.Lin{mat(6n, 6n, 215), mat(1n, 6n, 216)}))
 
 def conv1d_dw() -> U32:
   c_conv1d(2n, 7n, 1n, 1n, 6n, 15n, 3n, 0n, 0n,
-    run(~T.Lin<7n, 8n>, ~TA.Mat<32n, 8n>, ~TA.Mat<32n, 8n>, ~TA.Mat<256n, 7n>, ~T.Conv1d(2n, 7n, 1n, 1n, 6n, 15n, 3n, 0n, 0n, 0n), T.Lin{mat(8n, 7n, 221), mat(1n, 8n, 222)}, mat(32n, 8n, 223), mat(32n, 8n, 224), T.Lin{mat(8n, 7n, 225), mat(1n, 8n, 226)}),
-    run(~T.Lin<7n, 8n>, ~TA.Mat<32n, 8n>, ~TA.Mat<32n, 8n>, ~TA.Mat<256n, 7n>, ~G.Conv1d(2n, 7n, 1n, 1n, 6n, 15n, 3n, 0n, 0n, 0n), T.Lin{mat(8n, 7n, 221), mat(1n, 8n, 222)}, mat(32n, 8n, 223), mat(32n, 8n, 224), T.Lin{mat(8n, 7n, 225), mat(1n, 8n, 226)}))
+    run(~T.Lin<7n, 8n>, ~TA.Mat<32n, 8n>, ~TA.Mat<32n, 8n>, ~TA.Mat<256n, 7n>, ~T.Conv1d(2n, 7n, 1n, 1n, 6n, 15n, 3n, 0n, 0n, 0n, {==}), T.Lin{mat(8n, 7n, 221), mat(1n, 8n, 222)}, mat(32n, 8n, 223), mat(32n, 8n, 224), T.Lin{mat(8n, 7n, 225), mat(1n, 8n, 226)}),
+    run(~T.Lin<7n, 8n>, ~TA.Mat<32n, 8n>, ~TA.Mat<32n, 8n>, ~TA.Mat<256n, 7n>, ~G.Conv1d(2n, 7n, 1n, 1n, 6n, 15n, 3n, 0n, 0n, 0n, {==}), T.Lin{mat(8n, 7n, 221), mat(1n, 8n, 222)}, mat(32n, 8n, 223), mat(32n, 8n, 224), T.Lin{mat(8n, 7n, 225), mat(1n, 8n, 226)}))
 
 def conv1d() -> U32:
   u32_max(conv1d_grp(), conv1d_dw())

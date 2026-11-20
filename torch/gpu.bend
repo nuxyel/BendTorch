@@ -2431,7 +2431,8 @@ def conv1d_b2(+n: Nat, +g1: Nat, +cg: Nat, +cog: Nat, +k1: Nat, +ts: Nat, +p: Na
     case T.Bwd{prm, dx, gg}:
       T.Bwd{prm, col2im1d(n, T.c1len(k1, d1, ts, p), Nat.add(1n, g1), cg, k1, p, Nat.add(1n, s1), d1, dx), gg}
 
-def Conv1d(+n: Nat, +g1: Nat, +cg: Nat, +cog: Nat, +k1: Nat, +ts: Nat, +p: Nat, +s1: Nat, +d1: Nat, +par: Nat) -> T.Layer<T.Lin<T.c1k(cg, k1), T.c1ch(g1, cog)>, TA.Mat<Nat.mul(n, T.c1len(k1, d1, ts, p)), T.c1ch(g1, cg)>, TA.Mat<Nat.mul(n, T.c1out(k1, d1, ts, p, s1)), T.c1ch(g1, cog)>, TA.Mat<Nat.mul(Nat.add(1n, g1), Nat.mul(n, T.c1out(k1, d1, ts, p, s1))), T.c1k(cg, k1)>>:
+def Conv1d(+n: Nat, +g1: Nat, +cg: Nat, +cog: Nat, +k1: Nat, +ts: Nat, +p: Nat, +s1: Nat, +d1: Nat, +par: Nat,
+  -e: {True{} == Nat.is_lt(Nat.mul(2n, p), Nat.add(T.c1eff(k1, d1), ts)) : Bool}) -> T.Layer<T.Lin<T.c1k(cg, k1), T.c1ch(g1, cog)>, TA.Mat<Nat.mul(n, T.c1len(k1, d1, ts, p)), T.c1ch(g1, cg)>, TA.Mat<Nat.mul(n, T.c1out(k1, d1, ts, p, s1)), T.c1ch(g1, cog)>, TA.Mat<Nat.mul(Nat.add(1n, g1), Nat.mul(n, T.c1out(k1, d1, ts, p, s1))), T.c1k(cg, k1)>>:
   T.Layer{
     prm => x => c1_fwd(Nat.mul(n, T.c1out(k1, d1, ts, p, s1)), Nat.add(1n, g1), T.c1k(cg, k1), cog, prm,
       im2col1d(n, T.c1len(k1, d1, ts, p), Nat.add(1n, g1), cg, k1, p, Nat.add(1n, s1), d1, x)),
