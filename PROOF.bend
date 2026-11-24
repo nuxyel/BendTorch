@@ -2075,3 +2075,12 @@ def c1_window_from_ok(+i: Nat, +gr: Nat, +b: Nat, +ox: Nat, +t: Nat, +g: Nat, +c
       U32.from_nat(Nat.add(Nat.mul(Nat.add(Nat.mul(b, t), tx), Nat.mul(g, cg)), Nat.add(Nat.mul(gr, cg), lc))) : U32}
   Laws.conv1d_roundtrip_window(gr, b, ox, lc, kt, t, g, cg, k, p, s, d, c1_slack(i, k1, 0n), tx,
     c1_kt_lt(i, k1), Laws.conv1d_ok_pos_in(i, ox, t, k, p, s, d, ok))
+
+# PROOF (conv2d_cimg_h_exact): a < b implies (b - a) + a == b, so cimg + 2p == k + hs.
+def Laws.conv2d_cimg_h_exact(k, hs, p, eh):
+  c1_lt_sub_add(Nat.mul(2n, p), Nat.add(k, hs), eh)
+
+# PROOF (conv2d_cimg_h_pos): a < b implies 0 < b - a, so cimg >= 1.
+def Laws.conv2d_cimg_h_pos(k, hs, p, eh):
+  c1_lt_sub_pos(Nat.mul(2n, p), Nat.add(k, hs), eh)
+

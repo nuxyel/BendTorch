@@ -680,3 +680,21 @@ law conv1d_ok_tx_in:
   for +d: Nat
   for ok: {T.p1_ok(i, ox, t, k, p, s, d) == True{} : Bool}
   {Nat.is_lt(T.p1_ix(i, ox, k, p, s, d), t) == True{} : Bool}
+
+# LAW (conv2d_cimg_h_exact): under Conv2d's height guard 2p < k + hs, cimg's Nat.sub never truncates:
+# cimg + 2p == k + hs, so the padded-surplus invariant h + 2p = k + hs holds exactly.
+law conv2d_cimg_h_exact:
+  for +k: Nat
+  for +hs: Nat
+  for +p: Nat
+  for eh: {True{} == Nat.is_lt(Nat.mul(2n, p), Nat.add(k, hs)) : Bool}
+  {Nat.add(T.cimg(k, hs, p), Nat.mul(2n, p)) == Nat.add(k, hs) : Nat}
+
+# LAW (conv2d_cimg_pos): under both guards, each image dimension is positive, ruling out 0-cell images.
+law conv2d_cimg_h_pos:
+  for +k: Nat
+  for +hs: Nat
+  for +p: Nat
+  for eh: {True{} == Nat.is_lt(Nat.mul(2n, p), Nat.add(k, hs)) : Bool}
+  {Nat.is_lt(0n, T.cimg(k, hs, p)) == True{} : Bool}
+

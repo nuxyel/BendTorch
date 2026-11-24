@@ -1899,7 +1899,9 @@ def conv_b2(+n: Nat, +c: Nat, +co: Nat, +k: Nat, +hs: Nat, +ws: Nat, +p: Nat, +s
 # The parameters are main.bend's Lin<c·k·k, co>, so lin_step, lin_zeros, lin_dump, lin_load and lin_store serve it as
 # they serve Linear. The image's size is the kernel plus a surplus (`hs`/`ws`, main.bend's `cimg`), so a window bigger
 # than its image cannot be written here either.
-def Conv2d(+n: Nat, +c: Nat, +co: Nat, +k: Nat, +hs: Nat, +ws: Nat, +p: Nat, +s1: Nat, +par: Nat) -> T.Layer<T.Lin<T.ckk(c, k), co>, TA.Mat<Nat.mul(n, T.chw(k, hs, ws, p)), c>, TA.Mat<Nat.mul(n, T.cohw(k, hs, ws, p, s1)), co>, TA.Mat<Nat.mul(n, T.cohw(k, hs, ws, p, s1)), T.ckk(c, k)>>:
+def Conv2d(+n: Nat, +c: Nat, +co: Nat, +k: Nat, +hs: Nat, +ws: Nat, +p: Nat, +s1: Nat, +par: Nat,
+  -eh: {True{} == Nat.is_lt(Nat.mul(2n, p), Nat.add(k, hs)) : Bool},
+  -ew: {True{} == Nat.is_lt(Nat.mul(2n, p), Nat.add(k, ws)) : Bool}) -> T.Layer<T.Lin<T.ckk(c, k), co>, TA.Mat<Nat.mul(n, T.chw(k, hs, ws, p)), c>, TA.Mat<Nat.mul(n, T.cohw(k, hs, ws, p, s1)), co>, TA.Mat<Nat.mul(n, T.cohw(k, hs, ws, p, s1)), T.ckk(c, k)>>:
   T.Layer{
     prm => x => lin_fwd(Nat.mul(n, T.cohw(k, hs, ws, p, s1)), T.ckk(c, k), co, prm, im2col(n, T.cimg(k, hs, p), T.cimg(k, ws, p), c, k, p, Nat.add(1n, s1), x)),
     prm => st => dy => gg => conv_b2(n, c, co, k, hs, ws, p, s1, lin_bwd(Nat.mul(n, T.cohw(k, hs, ws, p, s1)), T.ckk(c, k), co, prm, st, dy, gg)),
@@ -1918,7 +1920,9 @@ def convnb_b2(+n: Nat, +c: Nat, +co: Nat, +k: Nat, +hs: Nat, +ws: Nat, +p: Nat, 
 # Conv2dNB (main.bend's Conv2d without the bias): device im2col, then the device LinearNB's products; the backward is
 # the device LinearNB's, then device col2im. The parameters are the co x c·k·k weight alone, so mat_step and
 # main.bend's Mat dump, restore and store serve it as they serve LinearNB.
-def Conv2dNB(+n: Nat, +c: Nat, +co: Nat, +k: Nat, +hs: Nat, +ws: Nat, +p: Nat, +s1: Nat, +par: Nat) -> T.Layer<TA.Mat<co, T.ckk(c, k)>, TA.Mat<Nat.mul(n, T.chw(k, hs, ws, p)), c>, TA.Mat<Nat.mul(n, T.cohw(k, hs, ws, p, s1)), co>, TA.Mat<Nat.mul(n, T.cohw(k, hs, ws, p, s1)), T.ckk(c, k)>>:
+def Conv2dNB(+n: Nat, +c: Nat, +co: Nat, +k: Nat, +hs: Nat, +ws: Nat, +p: Nat, +s1: Nat, +par: Nat,
+  -eh: {True{} == Nat.is_lt(Nat.mul(2n, p), Nat.add(k, hs)) : Bool},
+  -ew: {True{} == Nat.is_lt(Nat.mul(2n, p), Nat.add(k, ws)) : Bool}) -> T.Layer<TA.Mat<co, T.ckk(c, k)>, TA.Mat<Nat.mul(n, T.chw(k, hs, ws, p)), c>, TA.Mat<Nat.mul(n, T.cohw(k, hs, ws, p, s1)), co>, TA.Mat<Nat.mul(n, T.cohw(k, hs, ws, p, s1)), T.ckk(c, k)>>:
   T.Layer{
     prm => x => T.lnb_f2(Nat.mul(n, T.cohw(k, hs, ws, p, s1)), T.ckk(c, k), co, TG.matmul_nt(Nat.mul(n, T.cohw(k, hs, ws, p, s1)), T.ckk(c, k), co, 0n, im2col(n, T.cimg(k, hs, p), T.cimg(k, ws, p), c, k, p, Nat.add(1n, s1), x), prm)),
     prm => st => dy => gg => convnb_b2(n, c, co, k, hs, ws, p, s1, lnb_b2(Nat.mul(n, T.cohw(k, hs, ws, p, s1)), T.ckk(c, k), co, st, gg, TG.matmul_precise(Nat.mul(n, T.cohw(k, hs, ws, p, s1)), co, T.ckk(c, k), 0n, dy, prm))),
