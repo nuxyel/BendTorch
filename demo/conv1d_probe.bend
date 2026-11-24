@@ -5,7 +5,7 @@
 #   c1  n=1, t=6, g=1, cg=2, cog=3, k=3, p=1, s=2, d=1  (odd surplus t+2p-eff_k = 5, last window floors)
 #   c2  n=1, t=7, g=1, cg=2, cog=3, k=3, p=2, s=1, d=2  (dilated eff_k = 5, ot = 7)
 #   c3  n=2, t=8, g=2, cg=2, cog=3, k=3, p=1, s=2, d=2  (grouped + stride + dilation + padding, eff_k = 5, ts = 5, ot = 3)
-#   c4  n=1, t=9, g=4, cg=1, cog=1, k=7, p=3, s=1, d=1  (depthwise k=7, tiny-voca Block pattern)
+#   c4  n=1, t=9, g=4, cg=1, cog=1, k=7, p=3, s=1, d=1  (depthwise k=7, one channel per group)
 import Base
 import bend-ml-tensor-array@0.1.20.0/main.bend as TA
 import ../torch/main.bend as T

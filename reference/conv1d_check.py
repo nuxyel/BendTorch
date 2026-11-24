@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Conv1d (forward and all three gradients) against torch.nn.functional.conv1d on five shapes:
-standard, odd-surplus stride, dilated, grouped+strided+dilated, and depthwise (tiny-voca k=7).
+standard, odd-surplus stride, dilated, grouped+strided+dilated, and depthwise (k=7, one channel per group).
 """
 import os
 import subprocess
