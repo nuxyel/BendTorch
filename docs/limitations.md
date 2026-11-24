@@ -179,6 +179,12 @@ Numbers marked "busy machine" were taken with other jobs running and are a first
   writable, and the stride is passed minus one, so zero is not writable either (#44). A kernel of 0 still is:
   `MaxPool2d(1n, 1n, 2n, 2n, 0n, 0n)` type-checks and gives nine cells of 0.0 from a 2 x 2 image, where PyTorch refuses
   the kernel. The law `mp_count` is about the formula `(h - k)/s + 1`, not about the def `mp_oh` that computes it.
+- `Conv1d` (#45, by @tryingET) is in `main.bend` and `gpu.bend`, not in `fast.bend`. On the GPU both passes give
+  `main.bend`'s bits (`demo/gpu_layers_test.bend`, case 25), and the CPU lane's numbers are `reference/conv1d_check.py`'s.
+  Its sizes carry an erased proof of `2p < eff_k + ts`, so a padding that would leave a sequence of no cells is refused
+  when the program is checked (`tests/bad_conv1d.bend`). `Conv2d` has no such guard yet: its image side `k + hs - 2p` is
+  a `Nat.sub`, so `Conv2d` with `k = 1`, `hs = 0`, `p = 1` type-checks an image of 0 cells with an output of 2 x 2.
+  No transposed convolution yet (`ConvTranspose1d` is next, #43).
 - Gradient accumulation (`Train.accumulate`, `Train.flush`, #36) relies on every backward pass adding into the
   gradient it receives, the layer protocol. It is tested against PyTorch on a 7-6-3 MLP (`reference/test_accum.py`),
   and over the three lanes on five small models (`demo/accum_lanes.bend`: LinearFirst, Linear, LinearNB, RMSNorm,
