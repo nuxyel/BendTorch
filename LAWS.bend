@@ -570,3 +570,113 @@ law mp_scatter:
   {T.mp_flat(c, h, w, ch, image, Nat.add(row, ky), Nat.add(col, kx)) ==
    Nat.add(Nat.add(Nat.mul(Nat.mul(Nat.mul(image, h), w), c), ch),
      Nat.mul(Nat.add(Nat.mul(Nat.add(row, ky), w), Nat.add(col, kx)), c)) : Nat}
+
+# LAW (im2col1d_rows): im2col1d's gathered matrix has g·n·ot rows and cg·k columns, so its flat list holds
+# g·n·ot·cg·k numbers, every one of them the value of a sequence cell or 0 outside a padded window, for every
+# batch size, length, group count, channels per group, kernel, padding, stride and dilation.
+law im2col1d_rows:
+  for +n: Nat
+  for +t: Nat
+  for +g: Nat
+  for +cg: Nat
+  for +k1: Nat
+  for +p: Nat
+  for +s: Nat
+  for +d1: Nat
+  for arr: Array<F32>
+  {List.length(&2, F32, T.im2col1d_n(n, t, g, cg, k1, p, s, d1, arr)) ==
+    Nat.mul(Nat.mul(g, Nat.mul(n, T.ocount(t, p, T.c1eff(k1, d1), s))), Nat.mul(cg, Nat.add(1n, k1))) : Nat}
+
+# LAW (conv1d_roundtrip_window): the 1D round trip at any group, stride, dilation and padding, per cell.
+# Slot (lc, kt) of group gr at output position (b, ox) reads sequence cell (b, ox·s + kt·d - p), channel gr·cg + lc:
+# im2col1d reads that cell and col2im1d writes the gradient back into it, because both address it with p1_src.
+law conv1d_roundtrip_window:
+  for +gr: Nat
+  for +b: Nat
+  for +ox: Nat
+  for +lc: Nat
+  for +kt: Nat
+  for +t: Nat
+  for +g: Nat
+  for +cg: Nat
+  for +k: Nat
+  for +p: Nat
+  for +s: Nat
+  for +d: Nat
+  for +a: Nat
+  for +tx: Nat
+  for +kt_lt: {k == Nat.add(1n, Nat.add(kt, a)) : Nat}
+  for +pos_in: {Nat.add(Nat.mul(ox, s), Nat.mul(kt, d)) == Nat.add(p, tx) : Nat}
+  {T.p1_src(Nat.add(Nat.mul(lc, k), kt), gr, b, ox, t, g, cg, k, p, s, d) ==
+    U32.from_nat(Nat.add(Nat.mul(Nat.add(Nat.mul(b, t), tx), Nat.mul(g, cg)), Nat.add(Nat.mul(gr, cg), lc))) : U32}
+
+# LAW (conv1d_c1len_exact): under Conv1d's compile-time guard 2p < eff_k + ts, c1len's Nat.sub never truncates:
+# c1len + 2p == eff_k + ts, so the padded-surplus invariant t + 2p = eff_k + ts holds exactly.
+law conv1d_c1len_exact:
+  for +k1: Nat
+  for +d1: Nat
+  for +ts: Nat
+  for +p: Nat
+  for e: {True{} == Nat.is_lt(Nat.mul(2n, p), Nat.add(T.c1eff(k1, d1), ts)) : Bool}
+  {Nat.add(T.c1len(k1, d1, ts, p), Nat.mul(2n, p)) == Nat.add(T.c1eff(k1, d1), ts) : Nat}
+
+# LAW (conv1d_c1len_pos): under the same compile-time guard 2p < eff_k + ts, the input length c1len is positive
+# (t >= 1), ruling out degenerate t = 0 layers.
+law conv1d_c1len_pos:
+  for +k1: Nat
+  for +d1: Nat
+  for +ts: Nat
+  for +p: Nat
+  for e: {True{} == Nat.is_lt(Nat.mul(2n, p), Nat.add(T.c1eff(k1, d1), ts)) : Bool}
+  {Nat.is_lt(0n, T.c1len(k1, d1, ts, p)) == True{} : Bool}
+
+# LAW (conv1d_c1out_exact): under the same compile-time guard 2p < eff_k + ts, the output length c1out equals
+# ts / s + 1: the padded surplus ts reaches ocount intact with no truncation in c1len.
+law conv1d_c1out_exact:
+  for +k1: Nat
+  for +d1: Nat
+  for +ts: Nat
+  for +p: Nat
+  for +s1: Nat
+  for e: {True{} == Nat.is_lt(Nat.mul(2n, p), Nat.add(T.c1eff(k1, d1), ts)) : Bool}
+  {T.c1out(k1, d1, ts, p, s1) == Nat.add(Nat.div(ts, Nat.add(1n, s1)), 1n) : Nat}
+
+# LAW (conv1d_slot_decode): for every positive kernel k = 1 + k1 and runtime patch slot i, p1_lc and p1_kt
+# decompose i as p1_lc(i, k)·k + p1_kt(i, k) — the exact input shape conv1d_roundtrip_window expects.
+law conv1d_slot_decode:
+  for +i: Nat
+  for +k1: Nat
+  {i == Nat.add(Nat.mul(T.p1_lc(i, 1n+k1), 1n+k1), T.p1_kt(i, 1n+k1)) : Nat}
+
+# LAW (conv1d_kt_lt): for every positive kernel k = 1 + k1 and runtime patch slot i, the decoded kernel tap
+# p1_kt(i, k) is strictly less than k — establishing conv1d_roundtrip_window's kt_lt hypothesis from k = 1 + k1.
+law conv1d_kt_lt:
+  for +i: Nat
+  for +k1: Nat
+  {Nat.is_lt(T.p1_kt(i, 1n+k1), 1n+k1) == True{} : Bool}
+
+# LAW (conv1d_ok_pos_in): whenever the runtime mask p1_ok accepts a patch slot, ox·s + p1_kt·d == p + p1_ix —
+# establishing conv1d_roundtrip_window's pos_in hypothesis with no subtraction truncation.
+law conv1d_ok_pos_in:
+  for +i: Nat
+  for +ox: Nat
+  for +t: Nat
+  for +k: Nat
+  for +p: Nat
+  for +s: Nat
+  for +d: Nat
+  for ok: {T.p1_ok(i, ox, t, k, p, s, d) == True{} : Bool}
+  {Nat.add(Nat.mul(ox, s), Nat.mul(T.p1_kt(i, k), d)) == Nat.add(p, T.p1_ix(i, ox, k, p, s, d)) : Nat}
+
+# LAW (conv1d_ok_tx_in): whenever the runtime mask p1_ok accepts a patch slot, its decoded input time index p1_ix
+# stays strictly inside 0..t-1.
+law conv1d_ok_tx_in:
+  for +i: Nat
+  for +ox: Nat
+  for +t: Nat
+  for +k: Nat
+  for +p: Nat
+  for +s: Nat
+  for +d: Nat
+  for ok: {T.p1_ok(i, ox, t, k, p, s, d) == True{} : Bool}
+  {Nat.is_lt(T.p1_ix(i, ox, k, p, s, d), t) == True{} : Bool}
