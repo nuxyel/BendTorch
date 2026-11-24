@@ -2763,5 +2763,6 @@ runs it after the merge, and `docs/limitations.md` says so.
 - Found in the review: `Conv2d` has the hole #45 closes for `Conv1d`. `cimg` is `Nat.sub(k + hs, 2p)`, so
   `Conv2d` with `k = 1`, `hs = 0`, `p = 1` type-checks an image of 0 cells with an output of 2 x 2. In
   `docs/limitations.md`; I invited the same guard as a follow-up PR on #45.
-- The Sunday full run on 2026-11-22 was cancelled at its 90-minute `timeout-minutes` in the JavaScript lane, where the
-  three before it took 67, 47 and 46 minutes; Conv1d's mutants make it longer.
+- The Sunday full run on 2026-11-22 was cancelled at its 90-minute `timeout-minutes`, in the JavaScript lane, but the
+  time went to the mutants: 73 minutes for 219, against 53 for 212 a week before (the whole run took 67). With
+  Conv1d's eleven the full run would pass 90 again, so the limit is now 150.
