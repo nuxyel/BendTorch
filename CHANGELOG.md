@@ -25,6 +25,37 @@ with a fourth digit (`2.0.0.0`). The engineering log behind each entry, measurem
   `F.interpolate(scale_factor=f, mode="nearest")`. `reference/tile_check.py` now compares the probe with it as well,
   forward and backward (`0.000e+00`). No change to the layer.
 
+### Conv1d (#45, for #43)
+
+- **`Conv1d`** by @tryingET (#45, reviewed by @adeerkhan): a 1-D convolution with groups, stride, padding and dilation,
+  sequences channels last, `(n·t) x (g·cg)` to `(n·ot) x (g·cog)`, called as
+  `Conv1d(n, g - 1, cg, cog, k - 1, ts, p, s - 1, d - 1, par, {==})` with `t + 2p = eff_k + ts` and
+  `eff_k = 1 + d·(k - 1)`. `im2col1d` gathers each group's windows, one `Lin<cg·k, g·cog>` holds every group's weight
+  and bias (PyTorch's `[C_out, C_in/groups, K]` and `[C_out]`), so the optimizer step, the zero parameters, AdamW's
+  packed moments and the checkpoints serve it unchanged, depthwise (`cg = 1`, `cog = 1`) included. `col2im1d` adds the
+  patch gradient back into the sequence. y, dX, dW and db are `0.000e+00` against `F.conv1d` and its autograd on five
+  shapes: a padded border, an odd strided surplus, a dilation, groups with stride and dilation, and depthwise with
+  `k = 7` (`reference/conv1d_check.py`, `make check-conv1d`).
+- **Its sizes carry a proof**: an erased `2p < eff_k + ts`, so a padding that would leave a sequence of no cells is
+  refused when the program is checked (`tests/bad_conv1d.bend`). `Conv2d` has no such guard yet
+  (`docs/limitations.md`).
+- **Nine new laws** in `LAWS.bend`, proved in `PROOF.bend` and checked by `bend PROOF.bend --verdict`, **55 laws in
+  all**, by @tryingET:
+  - `im2col1d_rows`: the gathered matrix has `g·n·ot` rows of `cg·k` numbers, at any size.
+  - `conv1d_roundtrip_window`: `im2col1d` and `col2im1d` name the same sequence cell for every slot inside the
+    sequence, at any group, stride, dilation and padding.
+  - `conv1d_c1len_exact`, `conv1d_c1len_pos`, `conv1d_c1out_exact`: under the guard, the input length is exact and
+    positive and the output length is `ts/s + 1`.
+  - `conv1d_slot_decode`, `conv1d_kt_lt`, `conv1d_ok_pos_in`, `conv1d_ok_tx_in`: a slot the mask `p1_ok` keeps gives
+    the round trip's hypotheses, so `PROOF.bend` reaches it with no extra assumption.
+- **On the GPU lane**: `torch/gpu.bend`'s `Conv1d` gives `main.bend`'s bits, forward and backward, on the RTX 4050 and
+  on 1 and 16 CPU threads (`demo/gpu_layers_test.bend`, case 25: a grouped, strided and dilated shape and a depthwise
+  one). Not in `fast.bend`.
+- **Eleven mutants**, each caught: the gather reading the padding, dilation ignored (law and numbers), every group
+  reading group 0, the length subtracting `p` for `2p`, the mask losing either bound, the scatter adding a padding cell
+  into the sequence, and on the device lane the gather reading the padding, a cell's sum skipping its last candidate
+  and the weight gradient overwritten instead of accumulated. 230 mutants in all: 227 caught, 3 surviving by design.
+
 ### MaxPool2d (#42, for #39)
 
 - **`MaxPool2d`** by @adeerkhan (#42, #44): max pooling for any `(n, c, h, w, k, s)`, no padding, images channels last,
