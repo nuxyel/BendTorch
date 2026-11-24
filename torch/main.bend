@@ -2213,6 +2213,25 @@ def LinearNB(+n: Nat, +i: Nat, +o: Nat, +par: Nat) -> Layer<TA.Mat<o, i>, TA.Mat
 def Id(~X: Type) -> Layer<Unit, X, X, Unit>:
   Layer{p => x => Fwd{p, x, Unit{}}, p => s => dy => g => Bwd{p, dy, g}, op => p => g => st => no_step(Unit, op, p, g, st), u => Unit{}, p => PL{p, Nil{}}, p => xs => off => PA{p, xs, off}, p => xs => off => PA{p, xs, off}, u => 0}
 
+# ---- Rewire: a parameter-free layer that regroups a pair's halves ----
+# X = Two<A, Two<B, C>>, Y = Two<B, Two<A, C>>. f swaps, b is its own inverse
+# (sw is an involution), so the backward moves the gradient to the right place.
+# This is the one piece the adaLN composition in demo/adaln_probe.bend hand-rolls;
+# promoting it here lets conditioned layers compose from package layers alone.
+
+def sw2(-A: Type, -B: Type, -Cc: Type, a: A, r: Two<B, Cc>) -> Two<B, Two<A, Cc>>:
+  match r:
+    case Two{b, c}:
+      Two{b, Two{a, c}}
+
+def sw(-A: Type, -B: Type, -Cc: Type, x: Two<A, Two<B, Cc>>) -> Two<B, Two<A, Cc>>:
+  match x:
+    case Two{a, r}:
+      sw2(A, B, Cc, a, r)
+
+def Rewire(~X: Type, ~Y: Type, ~f: X -> Y, ~b: Y -> X) -> Layer<Unit, X, Y, Unit>:
+  Layer{p => x => Fwd{p, f(x), Unit{}}, p => s => dy => g => Bwd{p, b(dy), g}, op => p => g => st => no_step(Unit, op, p, g, st), u => Unit{}, p => PL{p, Nil{}}, p => xs => off => PA{p, xs, off}, p => xs => off => PA{p, xs, off}, u => 0}
+
 # one optimizer step on two layers' parameters, of any types
 def pair_step2(~P1: Type, ~X1: Type, ~Y1: Type, ~S1: Type, ~P2: Type, ~X2: Type, ~Y2: Type, ~S2: Type, ~la: Layer<P1, X1, Y1, S1>, ~lb: Layer<P2, X2, Y2, S2>, +op: Opt, p: Two<P1, P2>, g: Two<P1, P2>, st: Two<OptState<P1>, OptState<P2>>) -> Step<Two<P1, P2>>:
   match p g st:

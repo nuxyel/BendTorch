@@ -17,3 +17,7 @@ __pycache__/
 
 # bend-lint (make lint)
 node_modules/
+
+# local setup symlinks
+.bend
+reference/.venv

@@ -50,11 +50,6 @@ def tag(+t: String, +name: String) -> String:
 def M(r: Nat, c: Nat) -> Type:
   TA.Mat<r, c>
 
-# ---- Rewire: a layer that moves the parts of its input, f forward and b (its inverse) on the gradient ----
-
-def Rewire(~X: Type, ~Y: Type, ~f: X -> Y, ~b: Y -> X) -> T.Layer<Unit, X, Y, Unit>:
-  T.Layer{p => x => T.Fwd{p, f(x), Unit{}}, p => s => dy => g => T.Bwd{p, b(dy), g}, op => p => g => st => T.no_step(Unit, op, p, g, st), u => Unit{}, p => T.PL{p, Nil{}}, p => xs => off => T.PA{p, xs, off}, p => xs => off => T.PA{p, xs, off}, u => 0}
-
 def sw2(-A: Type, -B: Type, -C: Type, a: A, r: T.Two<B, C>) -> T.Two<B, T.Two<A, C>>:
   match r:
     case T.Two{b, c}:
@@ -88,7 +83,7 @@ def MAA(~n: Nat) -> T.Layer<T.Two<T.Two<Unit, Unit>, Unit>, X3(n), M(n, 4n), T.T
 
 def Fma(~n: Nat) -> T.Layer<FmaP, X3(n), M(n, 4n), FmaS(n)>:
   T.Seq(~Unit, ~T.Two<T.Two<Unit, Unit>, Unit>, ~X3(n), ~X3(n), ~M(n, 4n), ~Unit, ~T.Two<T.Two<Unit, MulS(n)>, Unit>,
-    ~Rewire(~X3(n), ~X3(n), ~(x => sw(M(n, 4n), M(n, 4n), M(n, 4n), x)), ~(x => sw(M(n, 4n), M(n, 4n), M(n, 4n), x))),
+    ~T.Rewire(~X3(n), ~X3(n), ~(x => sw(M(n, 4n), M(n, 4n), M(n, 4n), x)), ~(x => sw(M(n, 4n), M(n, 4n), M(n, 4n), x))),
     ~MAA(~n))
 
 def unitsF() -> FmaP:
@@ -442,7 +437,7 @@ def B4S() -> Type:
   T.Two<Unit, B3S>
 
 def B4() -> T.Layer<B4P, B1Y, M(6n, 4n), B4S>:
-  T.Seq(~Unit, ~B3P, ~B1Y, ~B2X, ~M(6n, 4n), ~Unit, ~B3S, ~Rewire(~B1Y, ~B2X, ~(x => rw(x)), ~(x => un(x))), ~B3)
+  T.Seq(~Unit, ~B3P, ~B1Y, ~B2X, ~M(6n, 4n), ~Unit, ~B3S, ~T.Rewire(~B1Y, ~B2X, ~(x => rw(x)), ~(x => un(x))), ~B3)
 
 def BP() -> Type:
   T.Two<B1P, B4P>
