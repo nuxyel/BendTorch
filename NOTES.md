@@ -2740,3 +2740,28 @@ runs it after the merge, and `docs/limitations.md` says so.
 - Gates (Bend 2.0.40, the machine in use, pass/fail only): on the PR's head, `make laws check-maxpool2d
   check-gpu-layers`, the seven MaxPool2d mutants (7 as expected) and `make gpu` (case 24 at 0 ulps on the RTX 4050);
   its CI run passed too.
+
+## Conv1d (#45, for #43, 2026-11-23)
+
+- #45 (@tryingET, reviewed by @adeerkhan) adds `Conv1d` with groups, stride, padding and dilation, the first layer
+  #43's text-to-speech model asked for, built as `Conv2d` is: `im2col1d`, one `Lin<cg·k, g·cog>` for every group, and
+  `col2im1d`. Adeer's review asked for two things, and the PR's second commit (715bcb9) did both: an erased proof of
+  `2p < eff_k + ts` in the constructor, so `c1len`'s `Nat.sub` cannot truncate the input to no cells
+  (`tests/bad_conv1d.bend` is refused), and the window law's hypotheses derived from the mask `p1_ok` instead of
+  assumed. Nine laws in all (55 with the rest), eleven mutants.
+- CI did not start on the PR for three days: GitHub holds the workflow runs of a first-time contributor until I approve
+  them, and that is what the "UNSTABLE" Adeer asked about was. Approved on 2026-11-23; the run of the stale first head
+  was cancelled by the workflow's concurrency, and 715bcb9's selected gates passed (2026-11-24 01:54 UTC), with all
+  eleven Conv1d mutants caught among 189 of the 230. Merged as 8412dfc.
+- Gates on 715bcb9 here (Bend 2.0.40, the machine in use, pass/fail only): `make laws check-conv1d check-gpu-layers
+  check-rts` (the five probe cases at `0.000e+00` on y, dX, dW and db; the 26 layer cases at zero on 1 and 16 CPU
+  threads), and `demo/gpu_layers_test.bend` built with CUDA on the RTX 4050, Conv1d's case at 0 ulps and the others
+  with the numbers Adeer listed from his RTX 5060. `make check-conv1d` and `make laws` again on devel after the merge.
+  Not run: the whole `make gpu`, `make check` and `make mutate`.
+- On the merge I added the CHANGELOG entry, the claims table and the limitations, the README's counts and the mutants
+  chart, and reworded the two comments that named the depthwise case after a model by its shape.
+- Found in the review: `Conv2d` has the hole #45 closes for `Conv1d`. `cimg` is `Nat.sub(k + hs, 2p)`, so
+  `Conv2d` with `k = 1`, `hs = 0`, `p = 1` type-checks an image of 0 cells with an output of 2 x 2. In
+  `docs/limitations.md`; I invited the same guard as a follow-up PR on #45.
+- The Sunday full run on 2026-11-22 was cancelled at its 90-minute `timeout-minutes` in the JavaScript lane, where the
+  three before it took 67, 47 and 46 minutes; Conv1d's mutants make it longer.
