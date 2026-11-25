@@ -2766,3 +2766,20 @@ runs it after the merge, and `docs/limitations.md` says so.
 - The Sunday full run on 2026-11-22 was cancelled at its 90-minute `timeout-minutes`, in the JavaScript lane, but the
   time went to the mutants: 73 minutes for 219, against 53 for 212 a week before (the whole run took 67). With
   Conv1d's eleven the full run would pass 90 again, so the limit is now 150.
+
+## Conv2d's padding guards (#46, 2026-11-25)
+
+- The review asked for the local `.gitignore` hunk to be dropped, the law comment to say that the height law covers
+  the width through the shared `cimg`, and the signature migration to be documented. All three are done. The
+  CHANGELOG has the old nine-argument and new eleven-argument forms; the limitations, API, design and law docs and
+  the README's badge are updated (57 laws including `dtype.bend`'s `unpair_pair`).
+- `tests/bad_conv2d.bend` now violates only the height guard and `tests/bad_conv2d_width.bend` only the width guard,
+  each with the other guard true. Both are rejected with `expected: True{}`, `observed: False{}`, so neither proof
+  can be dropped while the other still rejects the fixture.
+- Gates on the review head (Bend 2.0.40, Lean 4.34.0, 2.5 GB memory guard): `make check` and `make affected-check`
+  pass; `make check-js` passes; `make check-conv2d` and `make check-conv2dnb` give `0.000e+00` on every case;
+  `make check-gpu-layers` gives `main.bend`'s bits for all 26 cases on 1 and 16 CPU threads; `make check-rts` passes.
+- `make mutate`: 230 mutants, 227 as expected, 3 skipped because `../llama.bend/data/smollm2-135m/hf/model.safetensors`
+  is absent. The three survivors are the documented equivalent/accidental ones: GPU cross-entropy's block size,
+  packed AdamW's spare half-word, and the 1-cell whole-tensor sum (whose bounds mutant is caught). The full CUDA
+  `make gpu` was not run for this change; the focused GPU-layer gate is the CPU-thread lane.

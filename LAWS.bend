@@ -690,7 +690,8 @@ law conv2d_cimg_h_exact:
   for eh: {True{} == Nat.is_lt(Nat.mul(2n, p), Nat.add(k, hs)) : Bool}
   {Nat.add(T.cimg(k, hs, p), Nat.mul(2n, p)) == Nat.add(k, hs) : Nat}
 
-# LAW (conv2d_cimg_pos): under both guards, each image dimension is positive, ruling out 0-cell images.
+# LAW (conv2d_cimg_h_pos): under the height guard 2p < k + hs, cimg is positive.
+# cimg is the same function for the width (2p < k + ws), so one law covers both dimensions.
 law conv2d_cimg_h_pos:
   for +k: Nat
   for +hs: Nat

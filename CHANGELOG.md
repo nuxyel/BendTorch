@@ -25,6 +25,19 @@ with a fourth digit (`2.0.0.0`). The engineering log behind each entry, measurem
   `F.interpolate(scale_factor=f, mode="nearest")`. `reference/tile_check.py` now compares the probe with it as well,
   forward and backward (`0.000e+00`). No change to the layer.
 
+### Conv2d padding guards (#46)
+
+- **`Conv2d` and `Conv2dNB` require positive image sides**: their signatures gain two erased proofs,
+  `2p < k + hs` and `2p < k + ws`, in `main.bend` and `gpu.bend`. `cimg` is `Nat.sub(k + hs, 2p)`, so without them
+  an excessive padding could truncate an image side to 0 cells. `tests/bad_conv2d.bend` and
+  `tests/bad_conv2d_width.bend` reject height-only and width-only violations independently.
+- **Migration**: `Conv2d(n, c, co, k, hs, ws, p, s1, par)` becomes
+  `Conv2d(n, c, co, k, hs, ws, p, s1, par, {==}, {==})`; `Conv2dNB` gains the same two arguments. Existing call
+  sites add `{==}, {==}`. The arithmetic and parameter layout are unchanged.
+- **Two new laws**, `conv2d_cimg_h_exact` and `conv2d_cimg_h_pos`, proved in `PROOF.bend` and checked by
+  `bend PROOF.bend --verdict`: under the height guard, `cimg + 2p = k + hs` and `0 < cimg`. The same `cimg` covers
+  the width. **57 laws in all.**
+
 ### Conv1d (#45, for #43)
 
 - **`Conv1d`** by @tryingET (#45, reviewed by @adeerkhan): a 1-D convolution with groups, stride, padding and dilation,
@@ -37,8 +50,7 @@ with a fourth digit (`2.0.0.0`). The engineering log behind each entry, measurem
   shapes: a padded border, an odd strided surplus, a dilation, groups with stride and dilation, and depthwise with
   `k = 7` (`reference/conv1d_check.py`, `make check-conv1d`).
 - **Its sizes carry a proof**: an erased `2p < eff_k + ts`, so a padding that would leave a sequence of no cells is
-  refused when the program is checked (`tests/bad_conv1d.bend`). `Conv2d` has no such guard yet
-  (`docs/limitations.md`).
+  refused when the program is checked (`tests/bad_conv1d.bend`). `Conv2d` now has the matching 2-D guards (#46).
 - **Nine new laws** in `LAWS.bend`, proved in `PROOF.bend` and checked by `bend PROOF.bend --verdict`, **55 laws in
   all**, by @tryingET:
   - `im2col1d_rows`: the gathered matrix has `g·n·ot` rows of `cg·k` numbers, at any size.

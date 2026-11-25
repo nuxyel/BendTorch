@@ -3668,10 +3668,9 @@ def im2col(+n: Nat, +h: Nat, +w: Nat, +c: Nat, +k: Nat, +p: Nat, +s: Nat, x: TA.
 # needs, and it is not rebuilt.
 #
 # The image's size is written as the kernel plus a surplus: the caller passes `hs`/`ws` with h + 2p = k + hs and
-# w + 2p = k + ws, and the image follows, h = k + hs - 2p (cimg). A window bigger than its image is therefore
-# unwritable: k <= h + 2p holds by construction, and no call site needs a lemma (the UNet's k = 3, s = 2, p = 1 at
-# 64 x 64 writes hs = ws = 63). The one condition left is the padding's, 2p <= k + hs; a caller that breaks it gets a
-# smaller image than it asked for, and its own Mat's size refuses the mismatch.
+# w + 2p = k + ws, and the image follows, h = k + hs - 2p (cimg). The erased guards 2p < k + hs and 2p < k + ws
+# keep both sides positive, so Nat.sub cannot truncate either to 0 cells. The UNet's k = 3, s = 2, p = 1 at 64 x 64
+# writes hs = ws = 63.
 
 # the image's shape from the surplus: h = k + hs - 2p, and the output count, (h + 2p - k)/s + 1, which is hs/s + 1 once
 # the surplus is the padded image's

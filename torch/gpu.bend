@@ -1897,8 +1897,8 @@ def conv_b2(+n: Nat, +c: Nat, +co: Nat, +k: Nat, +hs: Nat, +ws: Nat, +p: Nat, +s
 
 # Conv2d: device im2col, then the device Linear's products; the backward is the device Linear's, then device col2im.
 # The parameters are main.bend's Lin<c·k·k, co>, so lin_step, lin_zeros, lin_dump, lin_load and lin_store serve it as
-# they serve Linear. The image's size is the kernel plus a surplus (`hs`/`ws`, main.bend's `cimg`), so a window bigger
-# than its image cannot be written here either.
+# they serve Linear. The image's size is the kernel plus a surplus (`hs`/`ws`, main.bend's `cimg`), and the erased
+# guards 2p < k + hs and 2p < k + ws keep both sides positive, here as in main.bend.
 def Conv2d(+n: Nat, +c: Nat, +co: Nat, +k: Nat, +hs: Nat, +ws: Nat, +p: Nat, +s1: Nat, +par: Nat,
   -eh: {True{} == Nat.is_lt(Nat.mul(2n, p), Nat.add(k, hs)) : Bool},
   -ew: {True{} == Nat.is_lt(Nat.mul(2n, p), Nat.add(k, ws)) : Bool}) -> T.Layer<T.Lin<T.ckk(c, k), co>, TA.Mat<Nat.mul(n, T.chw(k, hs, ws, p)), c>, TA.Mat<Nat.mul(n, T.cohw(k, hs, ws, p, s1)), co>, TA.Mat<Nat.mul(n, T.cohw(k, hs, ws, p, s1)), T.ckk(c, k)>>:
