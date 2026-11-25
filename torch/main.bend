@@ -2213,21 +2213,16 @@ def LinearNB(+n: Nat, +i: Nat, +o: Nat, +par: Nat) -> Layer<TA.Mat<o, i>, TA.Mat
 def Id(~X: Type) -> Layer<Unit, X, X, Unit>:
   Layer{p => x => Fwd{p, x, Unit{}}, p => s => dy => g => Bwd{p, dy, g}, op => p => g => st => no_step(Unit, op, p, g, st), u => Unit{}, p => PL{p, Nil{}}, p => xs => off => PA{p, xs, off}, p => xs => off => PA{p, xs, off}, u => 0}
 
-# ---- Rewire: a parameter-free layer that regroups a pair's halves ----
-# X = Two<A, Two<B, C>>, Y = Two<B, Two<A, C>>. f swaps, b is its own inverse
-# (sw is an involution), so the backward moves the gradient to the right place.
-# This is the one piece the adaLN composition in demo/adaln_probe.bend hand-rolls;
-# promoting it here lets conditioned layers compose from package layers alone.
-
-def sw2(-A: Type, -B: Type, -Cc: Type, a: A, r: Two<B, Cc>) -> Two<B, Two<A, Cc>>:
-  match r:
-    case Two{b, c}:
-      Two{b, Two{a, c}}
-
-def sw(-A: Type, -B: Type, -Cc: Type, x: Two<A, Two<B, Cc>>) -> Two<B, Two<A, Cc>>:
+# ---- Rewire: a parameter-free layer with a caller-supplied forward and gradient map ----
+# The caller supplies b: Y -> X to move the output gradient back to the input. For an inverse backward, b must be
+# the inverse of f on the gradient; the type checks only the shapes, and nothing checks that relation.
+# two_swap is one such involution: (a, (b, c)) to (b, (a, c)), useful when Fork and Both cannot regroup a pair.
+def two_swap(-A: Type, -B: Type, -C: Type, x: Two<A, Two<B, C>>) -> Two<B, Two<A, C>>:
   match x:
     case Two{a, r}:
-      sw2(A, B, Cc, a, r)
+      match r:
+        case Two{b, c}:
+          Two{b, Two{a, c}}
 
 def Rewire(~X: Type, ~Y: Type, ~f: X -> Y, ~b: Y -> X) -> Layer<Unit, X, Y, Unit>:
   Layer{p => x => Fwd{p, f(x), Unit{}}, p => s => dy => g => Bwd{p, b(dy), g}, op => p => g => st => no_step(Unit, op, p, g, st), u => Unit{}, p => PL{p, Nil{}}, p => xs => off => PA{p, xs, off}, p => xs => off => PA{p, xs, off}, u => 0}

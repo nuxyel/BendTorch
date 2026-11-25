@@ -2766,3 +2766,24 @@ runs it after the merge, and `docs/limitations.md` says so.
 - The Sunday full run on 2026-11-22 was cancelled at its 90-minute `timeout-minutes`, in the JavaScript lane, but the
   time went to the mutants: 73 minutes for 219, against 53 for 212 a week before (the whole run took 67). With
   Conv1d's eleven the full run would pass 90 again, so the limit is now 150.
+
+## Rewire in the package (#47, 2026-11-25)
+
+- The review asked for both conditioned probes to use the package layer, descriptive helper names, an explicit
+  statement that the inverse backward is the caller's responsibility and unchecked, and the local `.gitignore` hunk
+  removed. `demo/adaln_probe.bend` and `demo/adain_probe.bend` now use `T.Rewire`; `sw`/`sw2` are replaced by one
+  package helper, `two_swap`, with no local copy in either probe. The comment above `Rewire` says what `b` must do
+  and that nothing checks it. `docs/limitations.md`, `torch/README.md`, `docs/design.md` and the CHANGELOG record the
+  contract and the column split that is still missing.
+- `demo/ops_test.bend` and `reference/test_ops.py` have one direct exact case: three differently shaped matrices
+  through `(a, (b, c))` to `(b, (a, c))` and back, so a misroute cannot type-check. Its tensors are drawn after the
+  existing cases, leaving their inputs unchanged. The native and JavaScript ops suites pass: 65,980 numbers, 57,696
+  bit-identical to PyTorch, worst error 0.427 of the tolerance; the six Rewire outputs and gradients are in the exact
+  tier. adaLN remains 390 numbers, 235 bit-identical, worst 0.381; AdaIN remains 406, 270, worst 0.163 and 0.087
+  against StyleTTS2's form.
+- Gates on the review head (Bend 2.0.40, Lean 4.34.0, 2.5 GB memory guard): `make check`, `make check-js`,
+  `make laws check-ops check-adaln check-adain check-gpu-layers` and `make affected-check` pass. The device-layer
+  comparison in `make check-gpu-layers` is the CPU-thread lane; the full CUDA `make gpu` was not run for this layer.
+- `make mutate` was started and then cancelled by the user before it produced a result. No mutation count is claimed.
+  The cancellation interrupted a mutant before its restore step; that one GPU `Add2` change was reverted, and the
+  focused gates above were rerun on the restored tree.

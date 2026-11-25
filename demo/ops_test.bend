@@ -162,6 +162,46 @@ def t_residual(+dir: String) -> IO(Unit):
     g : TA.Mat<1n, 6n> <- ld(1n, 6n, dir, "residual.g")
     check(~5n, ~6n, ~6n, ~ResP, ~ResS, ~T.Residual(~5n, ~6n, ~TA.Mat<1n, 6n>, ~TA.Mat<5n, 6n>, ~T.RMSNorm(5n, 6n, 0.00001)), ~pp_res, "residual", T.Two{T.Two{Unit{}, g}, Unit{}}, x, dy)
 
+# ---- Rewire: (a, (b, c)) to (b, (a, c)), with the same involution on the gradient ----
+
+def RewX() -> Type:
+  T.Two<TA.Mat<2n, 3n>, T.Two<TA.Mat<4n, 5n>, TA.Mat<6n, 7n>>>
+
+def RewY() -> Type:
+  T.Two<TA.Mat<4n, 5n>, T.Two<TA.Mat<2n, 3n>, TA.Mat<6n, 7n>>>
+
+def Rew() -> T.Layer<Unit, RewX, RewY, Unit>:
+  T.Rewire(~RewX, ~RewY,
+    ~(x => T.two_swap(TA.Mat<2n, 3n>, TA.Mat<4n, 5n>, TA.Mat<6n, 7n>, x)),
+    ~(x => T.two_swap(TA.Mat<4n, 5n>, TA.Mat<2n, 3n>, TA.Mat<6n, 7n>, x)))
+
+def rew3(r: T.Bwd<Unit, RewX>) -> IO(Unit):
+  match r:
+    case T.Bwd{p, T.Two{da, T.Two{db, dc}}, g}:
+      do IO<Unit>:
+        T.Mat.print(2n, 3n, "rewire.dx.a", da)
+        T.Mat.print(4n, 5n, "rewire.dx.b", db)
+        T.Mat.print(6n, 7n, "rewire.dx.c", dc)
+
+def rew2(dy: RewY, r: T.Fwd<Unit, RewY, Unit>) -> IO(Unit):
+  match r:
+    case T.Fwd{p, T.Two{yb, T.Two{ya, yc}}, s}:
+      do IO<Unit>:
+        T.Mat.print(4n, 5n, "rewire.y.b", yb)
+        T.Mat.print(2n, 3n, "rewire.y.a", ya)
+        T.Mat.print(6n, 7n, "rewire.y.c", yc)
+        rew3(T.Layer.bwd(Unit, RewX, RewY, Unit, Rew(), p, s, dy, Unit{}))
+
+def t_rewire(+dir: String) -> IO(Unit):
+  do IO<Unit>:
+    a : TA.Mat<2n, 3n> <- ld(2n, 3n, dir, "rewire.a")
+    b : TA.Mat<4n, 5n> <- ld(4n, 5n, dir, "rewire.b")
+    c : TA.Mat<6n, 7n> <- ld(6n, 7n, dir, "rewire.c")
+    dya : TA.Mat<2n, 3n> <- ld(2n, 3n, dir, "rewire.dya")
+    dyb : TA.Mat<4n, 5n> <- ld(4n, 5n, dir, "rewire.dyb")
+    dyc : TA.Mat<6n, 7n> <- ld(6n, 7n, dir, "rewire.dyc")
+    rew2(T.Two{dyb, T.Two{dya, dyc}}, T.Layer.fwd(Unit, RewX, RewY, Unit, Rew(), Unit{}, T.Two{a, T.Two{b, c}}))
+
 # ---- dropout, p = 0.25, seed 7, at step 0 and at step 3 ----
 
 def t_dropout(+dir: String, +tag: String, +t: U32) -> IO(Unit):
@@ -346,6 +386,7 @@ def go(+dir: String) -> IO(Unit):
     t_lnb(dir)
     t_swiglu(dir)
     t_residual(dir)
+    t_rewire(dir)
     t_dropout(dir, "dropout0", 0)
     t_dropout(dir, "dropout3", 3)
     t_dropout_stepped(dir)

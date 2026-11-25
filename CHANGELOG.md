@@ -25,6 +25,16 @@ with a fourth digit (`2.0.0.0`). The engineering log behind each entry, measurem
   `F.interpolate(scale_factor=f, mode="nearest")`. `reference/tile_check.py` now compares the probe with it as well,
   forward and backward (`0.000e+00`). No change to the layer.
 
+### Rewire (#47)
+
+- **`Rewire(~X, ~Y, ~f, ~b)`**: a parameter-free `Layer<Unit, X, Y, Unit>` that applies the caller's `f` in the
+  forward pass and `b` to the output gradient in the backward pass. For an inverse backward, the caller must make
+  `b` the inverse of `f` on the gradient; the type checks the input and output types, not that relation. No state or
+  optimizer step is needed.
+- **`two_swap(A, B, C, x)`**: the pair involution `(a, (b, c))` to `(b, (a, c))`, for compositions that `Fork` and
+  `Both` cannot express. Both `demo/adaln_probe.bend` and `demo/adain_probe.bend` now use the package layer and helper
+  instead of local copies. The column split those compositions still need is unchanged (`docs/limitations.md`).
+
 ### Conv1d (#45, for #43)
 
 - **`Conv1d`** by @tryingET (#45, reviewed by @adeerkhan): a 1-D convolution with groups, stride, padding and dilation,

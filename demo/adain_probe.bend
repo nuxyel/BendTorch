@@ -9,8 +9,7 @@
 # here (the same weights, split by rows). Each case prints y, every input gradient and every parameter gradient as raw
 # words; reference/adain_check.py builds the same tensors in PyTorch and compares.
 #
-# The helpers down to `show_ln` are demo/adaln_probe.bend's: `Rewire` (a layer with no parameters that only moves the
-# parts of a pair around) and `Fma` ((a, (b, c)) to b + a * c) are not in torch/.
+# `T.Rewire` and `T.two_swap` come from torch/; `Fma` ((a, (b, c)) to b + a * c) is the adaLN probe's helper.
 import Base
 import bend-ml-tensor-array@0.1.20.0/main.bend as TA
 import ../torch/main.bend as T
@@ -49,22 +48,6 @@ def tag(+t: String, +name: String) -> String:
 def M(r: Nat, c: Nat) -> Type:
   TA.Mat<r, c>
 
-# ---- Rewire: a layer that moves the parts of its input, f forward and b (its inverse) on the gradient ----
-
-def Rewire(~X: Type, ~Y: Type, ~f: X -> Y, ~b: Y -> X) -> T.Layer<Unit, X, Y, Unit>:
-  T.Layer{p => x => T.Fwd{p, f(x), Unit{}}, p => s => dy => g => T.Bwd{p, b(dy), g}, op => p => g => st => T.no_step(Unit, op, p, g, st), u => Unit{}, p => T.PL{p, Nil{}}, p => xs => off => T.PA{p, xs, off}, p => xs => off => T.PA{p, xs, off}, u => 0}
-
-def sw2(-A: Type, -B: Type, -C: Type, a: A, r: T.Two<B, C>) -> T.Two<B, T.Two<A, C>>:
-  match r:
-    case T.Two{b, c}:
-      T.Two{b, T.Two{a, c}}
-
-# (a, (b, c)) to (b, (a, c)); its own inverse
-def sw(-A: Type, -B: Type, -C: Type, x: T.Two<A, T.Two<B, C>>) -> T.Two<B, T.Two<A, C>>:
-  match x:
-    case T.Two{a, r}:
-      sw2(A, B, C, a, r)
-
 # ---- Fma: (a, (b, c)) to b + a * c, over n x 4 ----
 
 def X3(n: Nat) -> Type:
@@ -87,7 +70,7 @@ def MAA(~n: Nat) -> T.Layer<T.Two<T.Two<Unit, Unit>, Unit>, X3(n), M(n, 4n), T.T
 
 def Fma(~n: Nat) -> T.Layer<FmaP, X3(n), M(n, 4n), FmaS(n)>:
   T.Seq(~Unit, ~T.Two<T.Two<Unit, Unit>, Unit>, ~X3(n), ~X3(n), ~M(n, 4n), ~Unit, ~T.Two<T.Two<Unit, MulS(n)>, Unit>,
-    ~Rewire(~X3(n), ~X3(n), ~(x => sw(M(n, 4n), M(n, 4n), M(n, 4n), x)), ~(x => sw(M(n, 4n), M(n, 4n), M(n, 4n), x))),
+    ~T.Rewire(~X3(n), ~X3(n), ~(x => T.two_swap(M(n, 4n), M(n, 4n), M(n, 4n), x)), ~(x => T.two_swap(M(n, 4n), M(n, 4n), M(n, 4n), x))),
     ~MAA(~n))
 
 def unitsF() -> FmaP:
@@ -270,7 +253,7 @@ def A2S() -> Type:
   T.Two<Unit, MS>
 
 def A2() -> T.Layer<A2P, A1Y, M(10n, 4n), A2S>:
-  T.Seq(~Unit, ~MP, ~A1Y, ~MX, ~M(10n, 4n), ~Unit, ~MS, ~Rewire(~A1Y, ~MX, ~(v => regroup(v)), ~(v => ungroup(v))), ~Mod)
+  T.Seq(~Unit, ~MP, ~A1Y, ~MX, ~M(10n, 4n), ~Unit, ~MS, ~T.Rewire(~A1Y, ~MX, ~(v => regroup(v)), ~(v => ungroup(v))), ~Mod)
 
 def AP() -> Type:
   T.Two<A1P, A2P>
