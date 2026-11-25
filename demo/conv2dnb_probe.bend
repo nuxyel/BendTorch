@@ -61,7 +61,7 @@ def c0_S() -> Type:
   TA.Mat<16n, 18n>
 
 def c0_L() -> T.Layer<c0_P(), c0_X(), c0_Y(), c0_S()>:
-  T.Conv2dNB(1n, 2n, 3n, 3n, 3n, 3n, 1n, 0n, 0n)
+  T.Conv2dNB(1n, 2n, 3n, 3n, 3n, 3n, 1n, 0n, 0n, {==}, {==})
 
 def c0() -> IO(Unit):
   one(~16n, ~2n, ~16n, ~3n, ~18n, ~c0_S(), ~c0_L(), "c0",
@@ -86,7 +86,7 @@ def c1_S() -> Type:
   TA.Mat<12n, 18n>
 
 def c1_L() -> T.Layer<c1_P(), c1_X(), c1_Y(), c1_S()>:
-  T.Conv2dNB(1n, 2n, 3n, 3n, 6n, 4n, 1n, 1n, 0n)
+  T.Conv2dNB(1n, 2n, 3n, 3n, 6n, 4n, 1n, 1n, 0n, {==}, {==})
 
 def c1() -> IO(Unit):
   one(~35n, ~2n, ~12n, ~3n, ~18n, ~c1_S(), ~c1_L(), "c1",
@@ -111,7 +111,7 @@ def c2_S() -> Type:
   TA.Mat<12n, 18n>
 
 def c2_L() -> T.Layer<c2_P(), c2_X(), c2_Y(), c2_S()>:
-  T.Conv2dNB(1n, 2n, 3n, 3n, 6n, 5n, 1n, 1n, 0n)
+  T.Conv2dNB(1n, 2n, 3n, 3n, 6n, 5n, 1n, 1n, 0n, {==}, {==})
 
 def c2() -> IO(Unit):
   one(~42n, ~2n, ~12n, ~3n, ~18n, ~c2_S(), ~c2_L(), "c2",

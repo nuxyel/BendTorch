@@ -136,7 +136,7 @@ Numbers marked "busy machine" were taken with other jobs running and are a first
 - Convolution is `Conv2d`, `im2col` then `Linear`'s three products, in `main.bend` and, with the gather and scatter as
   bangs, in `gpu.bend`: the patch matrix is `n·oh·ow` rows of `c·k·k`, the parameters are `Lin<c·k·k, co>`, so the
   optimizer, the checkpoint code and the layer plumbing serve it unchanged. The image is written as the kernel plus a
-  surplus (`h + 2p = k + hs`), so a window bigger than its image cannot be written and no call site needs a lemma. The round
+  surplus (`h + 2p = k + hs`), with erased guards `2p < k + hs` and `2p < k + ws` that keep both sides positive. The round
   trip is a law at any kernel, stride and padding, cell by cell: `conv_roundtrip_window` says slot `(ch, ky, kx)` of
   output position `(oy, ox)` is image cell `(oy·s + ky - p, ox·s + kx - p)`, channel `ch`, and the same numbers are
   still compared with PyTorch at three shapes (`reference/conv2d_check.py`). Still owed is the adjoint law
@@ -182,9 +182,10 @@ Numbers marked "busy machine" were taken with other jobs running and are a first
 - `Conv1d` (#45, by @tryingET) is in `main.bend` and `gpu.bend`, not in `fast.bend`. On the GPU both passes give
   `main.bend`'s bits (`demo/gpu_layers_test.bend`, case 25), and the CPU lane's numbers are `reference/conv1d_check.py`'s.
   Its sizes carry an erased proof of `2p < eff_k + ts`, so a padding that would leave a sequence of no cells is refused
-  when the program is checked (`tests/bad_conv1d.bend`). `Conv2d` has no such guard yet: its image side `k + hs - 2p` is
-  a `Nat.sub`, so `Conv2d` with `k = 1`, `hs = 0`, `p = 1` type-checks an image of 0 cells with an output of 2 x 2.
-  No transposed convolution yet (`ConvTranspose1d` is next, #43).
+  when the program is checked (`tests/bad_conv1d.bend`). `Conv2d` and `Conv2dNB` now carry the matching 2-D
+  guards, `2p < k + hs` and `2p < k + ws`, so neither image side can truncate to 0 cells (#46,
+  `tests/bad_conv2d.bend`). Callers pass `{==}, {==}` after the existing arguments. No transposed convolution yet
+  (`ConvTranspose1d` is next, #43).
 - Gradient accumulation (`Train.accumulate`, `Train.flush`, #36) relies on every backward pass adding into the
   gradient it receives, the layer protocol. It is tested against PyTorch on a 7-6-3 MLP (`reference/test_accum.py`),
   and over the three lanes on five small models (`demo/accum_lanes.bend`: LinearFirst, Linear, LinearNB, RMSNorm,

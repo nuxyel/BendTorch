@@ -3668,10 +3668,9 @@ def im2col(+n: Nat, +h: Nat, +w: Nat, +c: Nat, +k: Nat, +p: Nat, +s: Nat, x: TA.
 # needs, and it is not rebuilt.
 #
 # The image's size is written as the kernel plus a surplus: the caller passes `hs`/`ws` with h + 2p = k + hs and
-# w + 2p = k + ws, and the image follows, h = k + hs - 2p (cimg). A window bigger than its image is therefore
-# unwritable: k <= h + 2p holds by construction, and no call site needs a lemma (the UNet's k = 3, s = 2, p = 1 at
-# 64 x 64 writes hs = ws = 63). The one condition left is the padding's, 2p <= k + hs; a caller that breaks it gets a
-# smaller image than it asked for, and its own Mat's size refuses the mismatch.
+# w + 2p = k + ws, and the image follows, h = k + hs - 2p (cimg). The erased guards 2p < k + hs and 2p < k + ws
+# keep both sides positive, so Nat.sub cannot truncate either to 0 cells. The UNet's k = 3, s = 2, p = 1 at 64 x 64
+# writes hs = ws = 63.
 
 # the image's shape from the surplus: h = k + hs - 2p, and the output count, (h + 2p - k)/s + 1, which is hs/s + 1 once
 # the surplus is the padded image's
@@ -3695,7 +3694,12 @@ def conv_b2(+n: Nat, +c: Nat, +co: Nat, +k: Nat, +hs: Nat, +ws: Nat, +p: Nat, +s
     case Bwd{prm, dx, gg}:
       Bwd{prm, col2im(n, cimg(k, hs, p), cimg(k, ws, p), c, k, p, Nat.add(1n, s1), dx), gg}
 
-def Conv2d(+n: Nat, +c: Nat, +co: Nat, +k: Nat, +hs: Nat, +ws: Nat, +p: Nat, +s1: Nat, +par: Nat) -> Layer<Lin<ckk(c, k), co>, TA.Mat<Nat.mul(n, chw(k, hs, ws, p)), c>, TA.Mat<Nat.mul(n, cohw(k, hs, ws, p, s1)), co>, TA.Mat<Nat.mul(n, cohw(k, hs, ws, p, s1)), ckk(c, k)>>:
+# Conv2d requires 2p < k + hs and 2p < k + ws so that cimg's Nat.sub never truncates a
+# dimension to 0 cells (the hole 2p == k + hs with k=1,hs=0,p=1 gave a 0-cell image).
+# The erased proofs eh/ew are supplied by callers as {==}; tests/bad_conv2d.bend is refused.
+def Conv2d(+n: Nat, +c: Nat, +co: Nat, +k: Nat, +hs: Nat, +ws: Nat, +p: Nat, +s1: Nat, +par: Nat,
+  -eh: {True{} == Nat.is_lt(Nat.mul(2n, p), Nat.add(k, hs)) : Bool},
+  -ew: {True{} == Nat.is_lt(Nat.mul(2n, p), Nat.add(k, ws)) : Bool}) -> Layer<Lin<ckk(c, k), co>, TA.Mat<Nat.mul(n, chw(k, hs, ws, p)), c>, TA.Mat<Nat.mul(n, cohw(k, hs, ws, p, s1)), co>, TA.Mat<Nat.mul(n, cohw(k, hs, ws, p, s1)), ckk(c, k)>>:
   Layer{
     prm => x => lin_fwd(Nat.mul(n, cohw(k, hs, ws, p, s1)), ckk(c, k), co, par, prm, im2col(n, cimg(k, hs, p), cimg(k, ws, p), c, k, p, Nat.add(1n, s1), x)),
     prm => st => dy => gg => conv_b2(n, c, co, k, hs, ws, p, s1, lin_bwd(Nat.mul(n, cohw(k, hs, ws, p, s1)), ckk(c, k), co, par, prm, st, dy, gg)),
@@ -3714,7 +3718,10 @@ def convnb_b2(+n: Nat, +c: Nat, +co: Nat, +k: Nat, +hs: Nat, +ws: Nat, +p: Nat, 
     case Bwd{prm, dx, gg}:
       Bwd{prm, col2im(n, cimg(k, hs, p), cimg(k, ws, p), c, k, p, Nat.add(1n, s1), dx), gg}
 
-def Conv2dNB(+n: Nat, +c: Nat, +co: Nat, +k: Nat, +hs: Nat, +ws: Nat, +p: Nat, +s1: Nat, +par: Nat) -> Layer<TA.Mat<co, ckk(c, k)>, TA.Mat<Nat.mul(n, chw(k, hs, ws, p)), c>, TA.Mat<Nat.mul(n, cohw(k, hs, ws, p, s1)), co>, TA.Mat<Nat.mul(n, cohw(k, hs, ws, p, s1)), ckk(c, k)>>:
+# The same two guards as Conv2d, for the bias-free form (see tests/bad_conv2d.bend).
+def Conv2dNB(+n: Nat, +c: Nat, +co: Nat, +k: Nat, +hs: Nat, +ws: Nat, +p: Nat, +s1: Nat, +par: Nat,
+  -eh: {True{} == Nat.is_lt(Nat.mul(2n, p), Nat.add(k, hs)) : Bool},
+  -ew: {True{} == Nat.is_lt(Nat.mul(2n, p), Nat.add(k, ws)) : Bool}) -> Layer<TA.Mat<co, ckk(c, k)>, TA.Mat<Nat.mul(n, chw(k, hs, ws, p)), c>, TA.Mat<Nat.mul(n, cohw(k, hs, ws, p, s1)), co>, TA.Mat<Nat.mul(n, cohw(k, hs, ws, p, s1)), ckk(c, k)>>:
   Layer{
     prm => x => lnb_f2(Nat.mul(n, cohw(k, hs, ws, p, s1)), ckk(c, k), co,
       TA.Mat.matmul_nt(Nat.mul(n, cohw(k, hs, ws, p, s1)), ckk(c, k), co, par,
