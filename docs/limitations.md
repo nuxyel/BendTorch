@@ -154,10 +154,10 @@ Numbers marked "busy machine" were taken with other jobs running and are a first
 - `Tile` (a per-image row broadcast) is in `main.bend` and `gpu.bend`, not in `fast.bend`. On the GPU both passes give
   `main.bend`'s bits (`demo/gpu_layers_test.bend`, cases 19 and 20), and the CPU lane's numbers are
   `reference/tile_check.py`'s.
-- adaLN (#19) has no layer: `demo/adaln_probe.bend` composes it from `Tile`, `LayerNorm`, `Fork`, `Both`, `Mul2` and
-  `Add2`. Two pieces it needs are written in the probe or worked around, not in the package: `Rewire`, a layer without
-  parameters that regroups a pair's parts (a `Fork` and a `Both` cannot), and a column split, so `g`, `m` and `sh` come
-  from three `Linear` layers instead of one `Linear` of width `3c` cut in three. DiT's `1 + scale` is written as `m`,
+- adaLN (#19) has no layer: `demo/adaln_probe.bend` composes it from `Tile`, `LayerNorm`, `Fork`, `Both`, `Rewire`,
+  `Mul2` and `Add2`. `Rewire` regroups a pair's parts with a caller-supplied forward and inverse backward; nothing
+  checks that the backward is the inverse. A column split is still missing, so `g`, `m` and `sh` come from three
+  `Linear` layers instead of one `Linear` of width `3c` cut in three. DiT's `1 + scale` is written as `m`,
   with the 1 folded into its `Linear`'s bias. The CPU lane only: `fast.bend` has no `Tile`, and the probe was not run
   through `gpu.bend`'s layers.
 - InstanceNorm (#43) has no layer: it is `GroupNorm` with one channel per group, `GroupNorm(n, len, c, 1n, eps)`
@@ -165,8 +165,8 @@ Numbers marked "busy machine" were taken with other jobs running and are a first
   are `affine=False`'s, but a training step moves them, and the package has no combinator that holds a layer's
   parameters still. No running statistics (`track_running_stats`).
 - AdaIN (#43) has no layer either: `demo/adain_probe.bend` composes it as adaLN is composed, with that `GroupNorm` in
-  `LayerNorm`'s place, and it needs the same two pieces from outside the package (`Rewire`, and two `Linear` layers
-  where `AdaIN1d` cuts one of width `2c` in two). `AdaIN1d`'s `1 + gamma` is written as `m`, with the 1 in its
+  `LayerNorm`'s place and `Rewire` for the regrouping. A column split is still missing: two `Linear` layers stand in
+  for `AdaIN1d`'s one of width `2c` cut in two. `AdaIN1d`'s `1 + gamma` is written as `m`, with the 1 in its
   `Linear`'s bias. The CPU lane only, and the probe's sequences have one length: a length that changes with the data
   is not a type this package has.
 - `Conv2dNB` (`Conv2d` without the bias, #39) is in `main.bend` and `gpu.bend`, as `Conv2d` is. On the GPU both passes

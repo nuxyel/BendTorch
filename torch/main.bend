@@ -2213,6 +2213,20 @@ def LinearNB(+n: Nat, +i: Nat, +o: Nat, +par: Nat) -> Layer<TA.Mat<o, i>, TA.Mat
 def Id(~X: Type) -> Layer<Unit, X, X, Unit>:
   Layer{p => x => Fwd{p, x, Unit{}}, p => s => dy => g => Bwd{p, dy, g}, op => p => g => st => no_step(Unit, op, p, g, st), u => Unit{}, p => PL{p, Nil{}}, p => xs => off => PA{p, xs, off}, p => xs => off => PA{p, xs, off}, u => 0}
 
+# ---- Rewire: a parameter-free layer with a caller-supplied forward and gradient map ----
+# The caller supplies b: Y -> X to move the output gradient back to the input. For an inverse backward, b must be
+# the inverse of f on the gradient; the type checks only the shapes, and nothing checks that relation.
+# two_swap is one such involution: (a, (b, c)) to (b, (a, c)), useful when Fork and Both cannot regroup a pair.
+def two_swap(-A: Type, -B: Type, -C: Type, x: Two<A, Two<B, C>>) -> Two<B, Two<A, C>>:
+  match x:
+    case Two{a, r}:
+      match r:
+        case Two{b, c}:
+          Two{b, Two{a, c}}
+
+def Rewire(~X: Type, ~Y: Type, ~f: X -> Y, ~b: Y -> X) -> Layer<Unit, X, Y, Unit>:
+  Layer{p => x => Fwd{p, f(x), Unit{}}, p => s => dy => g => Bwd{p, b(dy), g}, op => p => g => st => no_step(Unit, op, p, g, st), u => Unit{}, p => PL{p, Nil{}}, p => xs => off => PA{p, xs, off}, p => xs => off => PA{p, xs, off}, u => 0}
+
 # one optimizer step on two layers' parameters, of any types
 def pair_step2(~P1: Type, ~X1: Type, ~Y1: Type, ~S1: Type, ~P2: Type, ~X2: Type, ~Y2: Type, ~S2: Type, ~la: Layer<P1, X1, Y1, S1>, ~lb: Layer<P2, X2, Y2, S2>, +op: Opt, p: Two<P1, P2>, g: Two<P1, P2>, st: Two<OptState<P1>, OptState<P2>>) -> Step<Two<P1, P2>>:
   match p g st:

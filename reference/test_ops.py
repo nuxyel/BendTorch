@@ -24,7 +24,8 @@ EDGE_OPS = {"relu", "sigmoid", "tanh", "silu", "gelu", "gelu_erf"}
 ROW_OPS = {"softmax", "logsoftmax", "rmsnorm", "layernorm"}
 # The exact tier: results that are a copy, a selection or one or two F32 operations in PyTorch's order, so they must be
 # the same bits, NaN included (oracle.py's tolerance still applies to everything else)
-EXACT = {"relu.y", "relu.dx", "embedding.y", "mse.dy", "nll.dy", "dropout0.y", "dropout0.dx", "dropout3.y", "dropout3.dx", "dropout4.y", "dropout4.dx"}
+EXACT = {"relu.y", "relu.dx", "embedding.y", "mse.dy", "nll.dy", "dropout0.y", "dropout0.dx", "dropout3.y", "dropout3.dx", "dropout4.y", "dropout4.dx",
+         "rewire.y.a", "rewire.y.b", "rewire.y.c", "rewire.dx.a", "rewire.dx.b", "rewire.dx.c"}
 
 
 def rmsnorm(x, g):
@@ -352,6 +353,17 @@ def case(binary: str, seed: int, failures: list[str], edge: str = "") -> tuple[f
         ref["groupnorm.y"] = torch.where(m, files["groupnorm.b"].expand(8, 6), ref["groupnorm.y"])
         ref["groupnorm.dx"] = torch.where(m, 0.0, ref["groupnorm.dx"])
         ref["groupnorm.g.g"] = g1.grad
+
+    # Rewire is an exact pair permutation, with a different shape at each position so a misroute cannot type-check.
+    # Drawn last so the cases above keep their original inputs.
+    a = leaf("rewire.a", spiced(g, (2, 3)))
+    b = leaf("rewire.b", spiced(g, (4, 5)))
+    c = leaf("rewire.c", spiced(g, (6, 7)))
+    dya, dyb, dyc = (torch.randn(*shape, generator=g) for shape in ((2, 3), (4, 5), (6, 7)))
+    files.update({"rewire.dya": dya, "rewire.dyb": dyb, "rewire.dyc": dyc})
+    torch.autograd.backward([b, a, c], [dyb, dya, dyc])
+    ref.update({"rewire.y.a": a.detach(), "rewire.y.b": b.detach(), "rewire.y.c": c.detach(),
+                "rewire.dx.a": a.grad, "rewire.dx.b": b.grad, "rewire.dx.c": c.grad})
 
     with tempfile.TemporaryDirectory() as d:
         for name, t in files.items():
